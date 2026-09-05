@@ -24,15 +24,18 @@ windows to babysit.
 ## Quick start
 
 ```bash
-scripts/install-apparmor-profile.sh     # once, needs sudo — see "Host setup"
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 
 .venv/bin/capwrap doctor                # check the host can sandbox
 examples/setup-demo.sh                  # build a playground repo + database
 
-.venv/bin/capwrap up examples/agents/dev-a.toml examples/agents/dev-b.toml
+.venv/bin/capwrap up examples/agents/dev-a.toml examples/agents/dev-b.toml \
+  --name "FastPath HashTable"
 # → http://127.0.0.1:8420
 ```
+
+`--name` is what the console and the browser tab are called. Several capwraps
+run at once, one per piece of work, and without it every tab says "capwrap".
 
 Two agents now share one repo and one database and cannot see each other's work:
 
@@ -52,28 +55,36 @@ capwrap needs `bubblewrap`. Via nix:
 home.packages = with pkgs; [ bubblewrap fuse-overlayfs git ];
 ```
 
-**On Ubuntu, a nix-installed bwrap does not work out of the box.** Ubuntu sets
+**capwrap does not need an AppArmor profile installed.** It used to, and the
+reason is worth knowing. Ubuntu sets
 `kernel.apparmor_restrict_unprivileged_userns=1`, which forces any *unconfined*
-program creating a user namespace into the `unprivileged_userns` AppArmor
-profile — and that profile denies capabilities inside the namespace, so bwrap
-fails at its first step:
+program creating a user namespace into the `unprivileged_userns` profile — and
+that profile denies capabilities inside the namespace, so bwrap fails at its
+first step:
 
 ```
 bwrap: setting up uid map: Permission denied
 ```
 
-Ubuntu ships an exemption for bubblewrap, but it attaches by path to
-`/usr/bin/bwrap` only. `scripts/install-apparmor-profile.sh` installs the same
-policy attached to the nix store path, globbed so it survives nixpkgs updates:
+Ubuntu ships an exemption for bubblewrap, but it attaches **by path**, to
+`/usr/bin/bwrap` only, so a nix-store bwrap is confined rather than exempted.
 
-```bash
-sudo scripts/install-apparmor-profile.sh
+capwrap now tries *every* bwrap on the host and uses the first that can actually
+build a namespace, preferring the packaged one. Nothing short of running them
+tells you which is which, so it runs them. On a restricted host, `apt install
+bubblewrap` is therefore the whole fix, and `doctor` says so:
+
+```
+[ok  ] bwrap can create namespaces: namespace + mounts OK (/usr/bin/bwrap), skipped 1 that could not
 ```
 
-`capwrap doctor` diagnoses this precisely rather than leaving you with the
-message above. Alternatives, if you prefer: `apt install bubblewrap`, or
-disabling the restriction system-wide (weakens the host — not recommended for a
-project about sandboxing).
+If you would rather keep using a bwrap outside `/usr`,
+`scripts/install-apparmor-profile.sh` registers it — globbed so it survives
+nixpkgs updates. That is now a preference, not a prerequisite.
+
+```bash
+sudo scripts/install-apparmor-profile.sh   # only if you want the nix one
+```
 
 A consequence worth knowing: the stacked profile denies capabilities to bwrap's
 *children*, so **nested bwrap inside a sandbox cannot work**. Agents never create
@@ -631,35 +642,255 @@ never committed.
 
 ## Console layout
 
-The three columns are resizable: drag the splitters, double-click one to reset,
-or focus it and use the arrow keys (Shift for bigger steps). Widths persist in
-`localStorage`, and the terminal reflows as you drag rather than snapping at the
-end. Only viewports under 720px drop a column, and it is the container list —
-never the inbox, which is where approvals arrive.
+The container list and the approvals inbox are panels, and each can be moved to
+any edge of the window with the arrows in its title bar — left, right, top or
+bottom, including both on the same edge, where a swap control appears to reorder
+them. Drag the splitters to resize, double-click one to reset, or focus it and
+use the arrow keys (Shift for bigger steps). Where the panels sit and how big
+they are persists in `localStorage`; `⊞` in the header puts everything back.
+
+The terminal reserves a lane for its scrollbar rather than letting xterm lay a
+column out underneath it, which is what used to paint over the right-hand border
+of a full-screen TUI.
+
+### Messages
+
+An opt-in tab recording every message the kernel delivers between containers,
+payloads included, filterable by sender and recipient. Off by default and cleared
+when switched off: the audit log already records *that* a message was sent, and
+by whom; this records what was in it, which is the agents' working content rather
+than metadata. `capwrap up --trace` starts with it on.
 
 ## Networking
 
-`sandbox.network` is all-or-nothing today. `false` (the default) unshares the
-network namespace, leaving the container with no connectivity at all. `true`
-does **not** create a filtered network — it simply omits `--unshare-net`, so the
-container **shares the host's network namespace**.
+Network access is a capability. A container reaches the destinations it holds a
+rule for, and nothing else:
 
-That has a consequence worth stating plainly: `127.0.0.1` inside such a
-container *is* the host's loopback, so a networked agent can reach the web
-console — which has no authentication — and grant itself capabilities:
+```toml
+[[caps.network]]
+name    = "pypi"
+pattern = '(pypi\.org|files\.pythonhosted\.org):443'
+
+[[caps.network]]
+name    = "anthropic"
+pattern = 'api\.anthropic\.com:443'
+```
+
+A pattern is a regex over `host:port`, anchored at both ends before it is used —
+otherwise `pypi\.org:443` would also match `pypi.org:443.attacker.example`. Ports
+count: `example.com:443` does not grant `example.com:22`.
+
+The container keeps `--unshare-net`, so it has no route anywhere. Its only way
+out is a unix socket bind-mounted into the sandbox, with a small relay inside
+turning that into an ordinary `HTTP_PROXY` every tool understands. The daemon
+answers each request by asking the kernel, and audits both outcomes:
+
+```
+ALLOW netty  example.com:443   {"rule": "example"}
+DENY  netty  pypi.org:443      {"held_rules": ["example", "anthropic-docs"]}
+DENY  netty  example.com:8443  {"held_rules": ["example", "anthropic-docs"]}
+```
+
+A denial is an HTTP 403 that names the rules the agent does hold and how to ask
+for another, so it can act on the refusal instead of hunting for a network fault:
+
+```bash
+capctl net                    # what may I reach, and through which rule?
+capctl request net_rule 'pypi=(pypi\.org|files\.pythonhosted\.org):443' \
+  --reason 'pip install needs the package index'
+```
+
+Approving that performs the delegation and the rule is live for the next
+connection. Revoking it in the console closes the hole just as immediately, and
+recursively.
+
+Each rule is its own object and its own capability, which is what makes narrowing
+work: giving a child the docs rule but not the registry rule is an ordinary
+delegation. The alternative — one capability holding a list of patterns, narrowed
+on delegation — would need to decide whether one regex contains another, which is
+undecidable in general.
+
+Only `host:port` is ever inspected. The proxy does not terminate TLS, so it
+cannot express path rules over HTTPS — and cannot read the agent's traffic
+either, which is the other half of that trade.
+
+### The escape hatch
+
+`sandbox.network = true` shares the host's whole network namespace, and is
+refused alongside any rule list, because no proxy can constrain a container that
+has its own route out.
+
+It also still defeats the capability model: `127.0.0.1` in such a container is
+the host's loopback, so the agent can reach the console — which has no
+authentication — and grant itself capabilities.
 
 ```
 $ curl -X POST http://127.0.0.1:8420/api/caps/grant -d '{"holder":"me", ...}'
 {"slot":4,"rights":["inspect","kill","send","write_input"]}
 ```
 
-Verified: an agent holding no capability on a peer granted itself one this way
-and typed into that peer's terminal. **`network = true` currently defeats the
-capability model.** Until that is closed, treat a networked container as fully
-trusted, or keep the console on a socket the containers cannot reach.
+Verified. Treat a `network = true` container as fully trusted, or use rules
+instead. `docs/networking.md` has the design and what was considered against it.
 
-Per-host or per-name filtering is not implemented. See `docs/networking.md` for
-what it would take.
+## Explaining a request
+
+An approval card says `Bash: curl -fsSL https://get.example.sh | sh`, which is
+the information an operator has least use for at the moment they have to decide.
+The question is not what the command *is* but what it will *do*, and whether it
+is a reasonable thing for this agent to be asking right now.
+
+The **Explain** button on each card asks Claude exactly that, and shows the
+answer beside the request:
+
+```bash
+pip install 'capwrap[explain]'          # optional; nothing else needs it
+export ANTHROPIC_API_KEY=...            # or `ant auth login`
+```
+
+The request reaches the model fenced as data, with the container's own
+configuration for context, and the system prompt says its job is to describe and
+flag rather than to recommend. That matters because the thing being explained was
+written by an agent that may be trying to get a dangerous action approved by
+describing it reassuringly. The answer is shown as advice about untrusted input,
+not as a verdict — it decides nothing, and the operator still clicks the button.
+
+`CAPWRAP_EXPLAIN_MODEL` overrides the model.
+
+## The terminal console
+
+```bash
+capwrap tui --port 8420
+```
+
+The same job as the web console, for when you are already on the box over SSH.
+It talks to a running instance over HTTP, so it works against one somebody else
+started.
+
+```
+Tab     agents · approvals · boards · audit
+j / k   move
+Enter   attach to the selected agent   (Ctrl-] detaches)
+y / n   allow / deny         g  go to the agent that asked
+s x i   start · stop · interrupt
+```
+
+Answering approvals is the reason it exists: five agents blocked on prompts is
+the problem capwrap is for, and needing a browser to unblock them puts a
+graphical session in the middle of it. `g` on an AskUserQuestion goes straight to
+that agent's terminal, which is the only place that kind of question can actually
+be answered.
+
+## Message boards
+
+A mailbox is one queue with one owner, and reading it consumes: two agents
+cannot both see the same message, and one that joins late has missed everything.
+That is the right shape for handing work to somebody, and the wrong shape for
+several agents coordinating.
+
+A **board** is the other shape. An orchestrator — any container holding a factory
+capability, since creating things for others to use is what a factory means —
+sets one up and hands out as much of it as each worker needs:
+
+```bash
+# In the orchestrator:
+capctl board create 3 standup          # 3 is its factory slot
+capctl grant 4 6 --rights send,read    # alpha may post and read
+capctl grant 5 6 --rights read         # beta may only read
+
+# In alpha:
+capctl board post standup "resize path reviewed"
+
+# In beta:
+capctl board read standup              # sees it; alpha still sees it too
+capctl board read standup --since 2    # only what is new to me
+```
+
+Posting and reading are separate rights, which is the whole reason to put a
+board behind a capability: a worker can report progress without reading its
+peers' notes, or follow along without being able to speak. Reading takes nothing
+off the board, so every holder sees the whole conversation and each keeps its own
+`--since` cursor. Revoking the board from the orchestrator removes it from
+everyone who got it from there, recursively, as with anything else.
+
+The console's **Boards** tab shows every board, its posts, and — the part that
+is not answerable from any one container's capability table — who may post to it
+and who may only read.
+
+A board keeps its last 500 posts. It is somewhere to coordinate, not a durable
+log; the audit log is that.
+
+### Sending to several at once
+
+Separately, an ordinary message can go to more than one recipient in one call:
+
+```bash
+capctl send 3,4,7 "build is green"
+capctl broadcast "build is green"      # everyone I may send to
+```
+
+Each slot is still checked and audited on its own, and one refusal does not
+cancel the rest — a partial send is a real outcome and the caller is told which
+recipients it missed. There is no "broadcast" right: this is exactly the messages
+you could have sent individually, sent together. The console's composer uses the
+same call when you tick more than one container.
+
+## Signing
+
+Every container gets an Ed25519 keypair when it is registered. The seed is
+written into its own private directory and bind-mounted read-only into that
+sandbox alone; the public key goes on the kernel object, where anyone can find
+it. `capctl whoami` shows the fingerprint.
+
+Board posts and messages can be signed:
+
+```bash
+capctl board post standup "resize path reviewed" --sign
+capctl send 4 "bench is green" --sign
+capctl broadcast "bench is green" --sign     # one signature, every recipient
+```
+
+and are verified on the way in — a signature that does not match is refused and
+audited, never stored looking valid:
+
+```
+capctl: cap_error: that signature does not match the post; nothing was written
+```
+
+Reading checks them again, in the reader, rather than trusting a flag:
+
+```
+[1] from alpha [signed] (message): bench is green
+#2 alpha [signed]: resize path reviewed
+#3 beta [BAD SIGNATURE]: ...
+```
+
+### Why, when attribution is already unforgeable
+
+capwrap knows who sent something because of *which socket it arrived on*, and no
+agent can lie about that. So a signature is not how the kernel decides anything.
+It buys three things the socket cannot:
+
+- **It survives leaving capwrap.** An exported board, a log, a pasted transcript:
+  a reader who was not there can still check the author.
+- **It survives being forwarded.** A message signature covers the author and the
+  payload, not the recipient, so an orchestrator relaying a worker's report
+  cannot alter it on the way past and the eventual reader can tell. The kernel
+  will correctly say the relay sent it; the signature still says who wrote it.
+- **It does not require trusting the daemon.** The daemon recorded the post and
+  could have edited it. The signature is checkable without taking its word.
+
+What it does not buy: a message signature names no recipient, so someone holding
+a capability on you could replay a message you sent them to a third party, still
+signed. The claim is "this agent wrote this", not "this agent sent this to you".
+Board posts additionally bind the board, so a post cannot be moved between them,
+and the two kinds are domain-separated — a board signature will not verify as a
+message signature.
+
+Ed25519 is implemented in pure Python in `capwrap/guest/ed25519.py`, checked
+against the RFC 8032 vectors, because `capctl` may not import from capwrap or
+assume a package is installed and both sides need the identical code. It is
+milliseconds per operation, which is fine for signing something somebody wrote
+and would be unacceptable anywhere hot.
 
 ## Reaching the console from another machine
 

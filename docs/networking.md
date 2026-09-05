@@ -1,101 +1,167 @@
-# Networking: what exists, and what filtering would take
+# Networking
 
-## What exists
+Network access is a capability like any other. A container reaches exactly the
+destinations it holds a rule for, and nothing else.
 
-One boolean, `sandbox.network`, which maps directly onto a bwrap flag:
+## The three modes
 
-| setting | flag | result |
+| config | namespace | what the agent can reach |
 |---|---|---|
-| `false` (default) | `--unshare-net` | its own network namespace, loopback only — no route anywhere |
-| `true` | *(none)* | **shares the host's network namespace** |
+| nothing (default) | `--unshare-net` | nothing at all — loopback, no route |
+| `[[caps.network]]` rules | `--unshare-net` | only what its rules match, through the proxy |
+| `sandbox.network = true` | *(shared)* | **the host's whole network stack** |
 
-There is no middle ground. `true` is not "network access", it is "the host's
-network stack", with everything that implies: the LAN, the internet, any VPN the
-host is on, and every service bound to the host's loopback.
+The third is the escape hatch and is worth being uneasy about: it is not
+"network access", it is the host's network stack, including the LAN, any VPN the
+host is on, and every service on the host's loopback — the capwrap console
+among them. Writing both `network = true` and a rule list is refused rather than
+resolved, because no proxy can constrain a container that has its own route out,
+and a config that read as restricted while not being restricted is the worst of
+the available outcomes.
 
-## The immediate problem
+## Writing rules
 
-Since the container shares the host netns, `127.0.0.1:8420` inside it is the
-capwrap web console, which has no authentication. Measured:
+```toml
+name = "builder"
+
+[[caps.network]]
+name    = "pypi"
+pattern = '(pypi\.org|files\.pythonhosted\.org):443'
+
+[[caps.network]]
+name    = "anthropic"
+pattern = 'api\.anthropic\.com:443'
+```
+
+A pattern is a regex over `host:port`, **anchored at both ends** before it is
+used. That anchoring is not a detail: unanchored, `pypi\.org:443` would also
+accept `pypi.org:443.attacker.example`, which is the opposite of what the person
+writing the rule believed it said.
+
+Ports are part of the destination. `example.com:443` does not grant
+`example.com:22`, because HTTPS to a host and SSH to the same host are not the
+same authority.
+
+Each rule is a separate kernel object and the container holds a separate
+capability on each. That is what makes narrowing work — see below.
+
+## How it works
+
+A proxied container still runs under `--unshare-net`: loopback and no route
+anywhere. It cannot reach the host, so it cannot reach the proxy either — over
+the network. What it does have is an `AF_UNIX` socket bind-mounted into its
+filesystem, because unix sockets are filesystem objects and cross a boundary
+that nothing else does.
+
+Tooling does not speak proxy-over-unix-socket, though: `HTTPS_PROXY` wants a host
+and a port. So the container's entry point is a small relay
+(`capwrap/guest/netrelay.py`) that listens on `127.0.0.1:8118` *inside* the
+sandbox and forwards to the socket, then execs the agent. The result is an
+ordinary HTTP proxy that curl, pip, git and node all understand, backed by a
+channel the container could not have opened for itself.
 
 ```
-container without any capability on dev-a:
-  POST /api/caps/grant   -> granted itself inspect,kill,send,write_input on dev-a
-  POST /api/containers/dev-a/input -> typed into dev-a's terminal
+  agent → 127.0.0.1:8118 → netrelay → /run/capwrap-proxy.sock
+                                            │  (the sandbox boundary)
+                                            ▼
+                              NetProxy → kernel.net_allows() → the internet
 ```
 
-So `network = true` is a full bypass of the capability system. The capability
-kernel governs the `/run/capwrap.sock` channel; it does not govern a TCP socket
-that happens to reach the same daemon. Worth fixing regardless of filtering —
-authentication on the console, or binding it to a Unix socket that no container
-can see, closes it.
+**Identity comes from the socket, again.** The daemon binds one proxy socket per
+container and the handler closes over the container name, exactly as the control
+socket works. Nothing in an HTTP request establishes who is asking, so there is
+nothing for an agent to forge — and one container's proxy socket is never
+mounted into another's sandbox.
 
-## Can access be limited to specific IPs or names?
+The relay runs as the entry point rather than as a second supervised process, so
+it cannot outlive the agent it exists for. It ignores `SIGINT`, because Ctrl-C at
+the terminal is delivered to the whole foreground process group and tearing the
+proxy down underneath the agent is not what the operator meant by it.
 
-Yes, several ways, with quite different costs. None is implemented.
+## What a rule can honestly say
 
-### 1. No network namespace access at all + a brokered socket
+Only `host:port`. The proxy does not terminate TLS: for HTTPS it sees a `CONNECT`
+line and then ciphertext, and it neither mints certificates nor reads bodies.
+That bounds what a rule can express — there is no way to say "this path but not
+that one" over HTTPS — and it is a deliberate trade. The agent's traffic stays
+encrypted end-to-end to the site it is talking to, and capwrap cannot read it
+even though it is carrying it.
 
-Keep `--unshare-net`, and hand the container a Unix socket, bind-mounted in,
-that the daemon serves. The container has no IP stack, so there is nothing to
-filter — the daemon *is* the only egress, and it decides what it will talk to
-and logs every request.
+Plain HTTP arrives as an absolute-URI request and does carry a path, but rules
+are still matched on `host:port` alone. A rule that meant one thing over HTTP and
+another over HTTPS would be a trap.
 
-For Claude specifically this fits the tooling: the binary reads
-`ANTHROPIC_UNIX_SOCKET`, so the agent can be pointed at a socket rather than a
-host and never needs an IP stack. For general tools (git, pip, curl) it needs a
-small relay inside the container listening on its own loopback and forwarding
-over the socket, plus `HTTPS_PROXY` pointing at it.
+## Narrowing, and why rules are separate objects
 
-Strongest isolation, no privilege, no new host dependencies. Most work, and the
-allow-list is expressed in the daemon rather than in the kernel.
+Delegation may only ever shrink authority. For rules that means handing on a
+*subset of the rules you hold*, never a narrowed pattern:
 
-### 2. User-mode networking with `slirp4netns` or `pasta`
+```bash
+capctl caps                      # which slot is which
+capctl grant 4 6 --rights connect   # give slot-4's holder my "pypi" rule
+```
 
-Give each container its own network namespace and attach a user-mode TCP/IP
-stack running as an ordinary process. This is how rootless Podman works. Both
-are in nixpkgs (`slirp4netns` 1.3.4, `passt` 2026_07_16).
+The obvious alternative — one network capability carrying a list of patterns,
+narrowed on delegation — would require deciding whether one regex is contained
+in another. That is undecidable in general, and a security model should not rest
+on a question nobody can answer. One rule, one object, one capability makes
+narrowing an ordinary delegation, checked by the same mapping database as
+everything else, and revocation recursive in the same way.
 
-`--disable-host-loopback` alone closes the escalation above. Filtering is
-coarser than nftables but real, and `pasta` can restrict which ports and
-addresses are forwarded.
+## Asking for more
 
-Costs one extra process per container and a real dependency. This is the
-conventional answer and probably the right one if the goal is "each agent gets
-metered internet".
+A denial is an HTTP 403 with the reason in the body, not a dropped connection:
 
-### 3. veth pair + nftables per container
+```
+netty holds no network capability for pypi.org:80
 
-A virtual interface into the container's netns, filtered on the host with
-`nft` — proper allow-lists by address, port, and (with `nftables` sets updated
-from DNS answers) by name.
+Rules held: example, anthropic-docs
+Ask the operator for one with:
+  capctl request net_rule '<name>=<host:port regex>' --reason '...'
+```
 
-Strongest and most conventional filtering, but creating a veth and writing host
-firewall rules both need `CAP_NET_ADMIN` on the host, so the daemon has to be
-privileged. Note that the dynamic-mapping work already wants
-`CAP_SYS_ADMIN`, so a privileged daemon may be on the cards anyway.
+Which the agent can then do, and the operator answers in the console:
 
-### 4. DNS-only filtering
+```bash
+capctl net          # what may I reach, and through which rule?
+capctl request net_rule 'pypi=(pypi\.org|files\.pythonhosted\.org):443' \
+  --reason 'pip install needs the package index'
+```
 
-Bind-mount a `resolv.conf` pointing at a resolver the daemon runs, and answer
-only for allowed names. Cheap and easy, and worth almost nothing on its own: it
-stops name resolution, not connections, so anything with a literal IP walks
-straight past it. Only useful layered on one of the above.
+Approving it performs the delegation, and the rule is live for the next
+connection — no restart. Revoking it in the console closes the hole just as
+immediately, and recursively: anything the holder passed on dies with it.
 
-## A note on "DNS names"
+Every decision is audited either way. The denials are the interesting half, since
+they are how you find out an agent has been trying to reach somewhere it should
+not:
 
-Filtering *by name* is inherently approximate. Names resolve to addresses that
-change, several names share an address, and TLS SNI is the only in-band hint —
-which an agent controls. Anything name-based is either a proxy that terminates
-the connection and inspects the request (option 1), or an address allow-list
-kept in step with DNS answers (option 3). Option 1 is the only one that can
-honestly say "this agent may reach api.anthropic.com and nothing else".
+```
+DENY  netty  pypi.org:443     {"held_rules": ["example", "anthropic-docs"]}
+DENY  netty  example.com:8443 {"held_rules": ["example", "anthropic-docs"]}
+```
 
-## Suggested order
+## What was considered instead
 
-1. Authenticate the console, or move it off a TCP port the containers can see.
-   This is a bug fix, not a feature, and it is independent of everything else.
-2. Option 1 for Claude agents, since `ANTHROPIC_UNIX_SOCKET` makes it cheap and
-   it gives the strongest guarantee.
-3. Option 2 when agents need general internet access with limits.
-4. Option 3 only if the daemon becomes privileged for other reasons.
+- **User-mode networking (`slirp4netns`, `pasta`).** A real TCP/IP stack per
+  container, as rootless Podman does. Filtering is coarser than a proxy's and
+  cannot see names at all, and it costs a process and a dependency per container.
+- **veth pair + nftables.** The most conventional filtering, and the strongest by
+  address. Both creating the interface and writing host firewall rules need
+  `CAP_NET_ADMIN`, so the daemon would have to be privileged.
+- **DNS-only filtering.** Cheap, and worth almost nothing alone: it stops name
+  resolution, not connections, so anything with a literal IP walks past it.
+
+Filtering *by name* is inherently approximate — names resolve to addresses that
+change, several names share an address, and SNI is an in-band hint the agent
+controls. A proxy that terminates the connection is the only one of these that
+can honestly say "this agent may reach api.anthropic.com and nothing else",
+which is why it is the one that got built.
+
+## Still open
+
+`sandbox.network = true` shares the host's netns, and the console is on a TCP
+port in it with no authentication. A container in that mode can grant itself
+capabilities through the web API. Rule-based access does not have this problem —
+there is no route to the host at all — but the escape hatch still does.
+Authenticating the console, or moving it onto a unix socket, closes it.
