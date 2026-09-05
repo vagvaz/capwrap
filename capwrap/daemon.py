@@ -146,12 +146,14 @@ class Daemon:
             return
         report = probe.run_all()
         check = report.get("bwrap can create namespaces")
-        if check is None or not check.ok:
+        if check is None or not check.ok or not report.bwrap:
             raise SandboxError(
                 f"cannot sandbox on this host: {check.detail if check else 'no bwrap'}"
                 + (f" -- {check.hint}" if check and check.hint else "")
             )
-        self._bwrap = probe.find_bwrap()
+        # The one the probe actually got a namespace out of, which is not
+        # necessarily the first on PATH.
+        self._bwrap = report.bwrap
         self._overlay_backend = report.overlay_backend
 
     # ==================================================================

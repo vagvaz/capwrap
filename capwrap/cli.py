@@ -55,9 +55,11 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     backend = _resolve_backend(args.overlay_backend) if _needs_overlay(config) else "kernel"
 
-    bwrap_bin = probe.find_bwrap()
+    bwrap_bin, why_not = probe.find_working_bwrap()
     if not bwrap_bin:
-        raise CapwrapError("bwrap not found; run `capwrap doctor`")
+        raise CapwrapError(
+            f"no usable bwrap on this host ({why_not}); run `capwrap doctor`"
+        )
 
     paths = ContainerPaths(config.name)
     prepared = fsprep.prepare(config, paths, overlay_backend=backend)

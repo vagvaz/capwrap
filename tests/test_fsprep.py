@@ -195,7 +195,9 @@ def test_nested_mounts_are_ordered_parents_first(tmp_path, state_dir, order):
 
 
 @pytest.mark.sandbox
-def test_nested_mount_modes_each_take_effect(tmp_path, state_dir, run_in_sandbox):
+def test_nested_mount_modes_each_take_effect(
+    tmp_path, state_dir, require_overlay, run_in_sandbox
+):
     """Three different modes at three depths of one tree, all live."""
     config = _nested_config(tmp_path, ["/a/b/c", "/a/b", "/a"])  # worst-case order
     result = run_in_sandbox(config, """
@@ -566,7 +568,9 @@ def test_config_env_overrides_defaults(tmp_path, state_dir):
 
 
 @pytest.mark.sandbox
-def test_overlay_isolates_two_agents_for_real(tmp_path, state_dir, run_in_sandbox):
+def test_overlay_isolates_two_agents_for_real(
+    tmp_path, state_dir, require_overlay, run_in_sandbox
+):
     """The claim the whole project rests on, checked against a live sandbox."""
     shared = tmp_path / "db"
     shared.mkdir()

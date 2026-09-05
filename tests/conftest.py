@@ -71,6 +71,22 @@ def require_sandbox(bwrap_report):
 
 
 @pytest.fixture
+def require_overlay(require_sandbox):
+    """Skip a test that needs a working overlay, on a host that has none.
+
+    Distinct from `require_sandbox`: plenty of hosts can build a namespace but
+    have neither unprivileged overlayfs nor fuse-overlayfs, and reporting that
+    as a capwrap failure is just noise.
+    """
+    if require_sandbox.overlay_backend is None:
+        pytest.skip(
+            "no overlay backend: kernel overlayfs is refused in a userns here "
+            "and fuse-overlayfs is not installed"
+        )
+    return require_sandbox
+
+
+@pytest.fixture
 def run_in_sandbox(require_sandbox):
     """Run a shell command inside a prepared container, returning its output."""
     from capwrap.paths import ContainerPaths
@@ -85,7 +101,10 @@ def run_in_sandbox(require_sandbox):
         )
         config.runtime.command = ["/bin/bash", "-c", script]
         argv = bwrap_mod.build_argv(
-            config, prepared, paths, bwrap=probe.find_bwrap() or "bwrap"
+            config, prepared, paths,
+            # The one the probe got a namespace out of, which is not always the
+            # first bwrap on PATH.
+            bwrap=require_sandbox.bwrap or "bwrap",
         )
         try:
             return subprocess.run(

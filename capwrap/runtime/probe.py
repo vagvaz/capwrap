@@ -30,11 +30,18 @@ class Check:
     hint: str = ""
     #: A failed check that is not fatal (a fallback exists).
     optional: bool = False
+    #: For checks that pick one of several binaries: which one they settled on.
+    path: str = ""
 
 
 @dataclass
 class Report:
     checks: list[Check] = field(default_factory=list)
+    #: The bwrap that was found to actually work here, if any.  Everything that
+    #: launches a sandbox should use this rather than re-deriving it from PATH:
+    #: a host may carry several bwraps and only some of them able to build a
+    #: namespace, and the difference is only visible by trying.
+    bwrap: str | None = None
 
     def add(self, check: Check) -> Check:
         self.checks.append(check)
@@ -58,34 +65,117 @@ class Report:
         return None
 
 
-def find_bwrap() -> str | None:
-    """Locate bwrap, preferring an explicit override.
+#: Where a distribution puts bubblewrap. Tried before PATH, because these are
+#: the paths an LSM's shipped exemption policy attaches to.
+PACKAGED_BWRAP = ("/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap")
 
-    ``CAPWRAP_BWRAP`` exists because this host has (or may have) both a nix and
-    an apt bubblewrap, and only one of them may be covered by an AppArmor
-    profile that permits user namespaces.
+
+def bwrap_candidates() -> list[str]:
+    """Every bubblewrap on this host, best bet first.
+
+    A host can easily carry two: one from the distribution under ``/usr/bin``
+    and one from nix or a local build somewhere else.  They are not
+    interchangeable.  Where an LSM restricts unprivileged user namespaces --
+    Ubuntu's ``kernel.apparmor_restrict_unprivileged_userns=1`` being the
+    common case -- the policy that exempts bubblewrap attaches *by path*, and
+    the distribution ships it attached to ``/usr/bin/bwrap`` only.  A nix-store
+    bwrap is then confined instead of exempted and fails at its first step.
+
+    So the packaged binary is tried first and the rest of PATH after it.  That
+    ordering is the whole reason capwrap no longer needs an AppArmor profile
+    installed by hand: on a restricted host, installing the distribution's
+    bubblewrap package is enough, and `check_bwrap_works` will settle on it
+    even when another bwrap comes first on PATH.
+
+    ``CAPWRAP_BWRAP`` still wins outright, for pinning one deliberately.
     """
     if override := os.environ.get("CAPWRAP_BWRAP"):
-        return override if Path(override).exists() else None
-    return shutil.which("bwrap")
+        return [override] if _is_executable(override) else []
+
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str | Path) -> None:
+        path = str(path)
+        if not _is_executable(path):
+            return
+        # Two PATH entries often reach one binary through a symlink farm;
+        # probing it twice would only double the cost of `doctor`.
+        real = os.path.realpath(path)
+        if real in seen:
+            return
+        seen.add(real)
+        found.append(path)
+
+    for packaged in PACKAGED_BWRAP:
+        add(packaged)
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if directory:
+            add(Path(directory) / "bwrap")
+    return found
 
 
-_MINIMAL_BASE = [
-    "--ro-bind", "/usr", "/usr",
-    "--ro-bind", "/lib", "/lib",
-    "--symlink", "usr/bin", "/bin",
-    "--proc", "/proc",
-    "--dev", "/dev",
-]
+def _is_executable(path: str | Path) -> bool:
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def find_bwrap() -> str | None:
+    """The first bubblewrap on the host, whether or not it works here.
+
+    Presence only.  Use `find_working_bwrap` before launching anything.
+    """
+    candidates = bwrap_candidates()
+    return candidates[0] if candidates else None
+
+
+def _bwrap_builds_a_namespace(path: str) -> tuple[bool, str]:
+    """Try it. The failure this catches is invisible to any static inspection."""
+    try:
+        proc = _run([path, "--unshare-all", *_base_binds(), "/bin/true"])
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    if proc.returncode == 0:
+        return True, "namespace + mounts OK"
+    err = (proc.stderr or proc.stdout).strip().splitlines()
+    return False, err[0] if err else f"exit {proc.returncode}"
+
+
+def find_working_bwrap() -> tuple[str | None, str]:
+    """The first candidate that can actually build a namespace, and why not."""
+    detail = "bwrap not found"
+    for path in bwrap_candidates():
+        ok, detail = _bwrap_builds_a_namespace(path)
+        if ok:
+            return path, detail
+    return None, detail
+
+
+#: Top-level entries the probe sandbox needs to run a dynamically linked
+#: binary.  Order matters only in that /usr must come first; the rest layer on.
+_MINIMAL_ROOTS = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32"]
 
 
 def _base_binds() -> list[str]:
-    """Read-only binds sufficient to run /bin/sh, adapted to this host's layout."""
-    args = list(_MINIMAL_BASE)
-    # Merged-/usr systems symlink /lib; unmerged ones need the real dirs bound.
-    for extra in ("/lib64", "/lib32"):
-        if Path(extra).is_dir() and not Path(extra).is_symlink():
-            args += ["--ro-bind", extra, extra]
+    """Read-only binds sufficient to run a host binary, whatever the /usr layout.
+
+    A symlinked entry is *recreated as a symlink* rather than bound through.
+    That distinction is the whole function: on a merged-/usr host, /lib64 is a
+    symlink to usr/lib, and it is where the ELF interpreter is looked up.  Bind
+    the target at /lib instead and every dynamically linked binary in the
+    sandbox dies with a bare ``execvp: No such file or directory`` -- which
+    reads exactly like a broken sandbox, and would have `doctor` condemn a host
+    that is in fact perfectly fine.
+    """
+    args: list[str] = []
+    for path in _MINIMAL_ROOTS:
+        p = Path(path)
+        if not p.exists():
+            continue
+        if p.is_symlink():
+            args += ["--symlink", os.readlink(path), path]
+        elif p.is_dir():
+            args += ["--ro-bind", path, path]
+    args += ["--proc", "/proc", "--dev", "/dev"]
     return args
 
 
@@ -130,55 +220,76 @@ def check_userns() -> Check:
 
 
 def check_bwrap() -> Check:
-    path = find_bwrap()
-    if not path:
+    candidates = bwrap_candidates()
+    if not candidates:
         return Check(
             "bwrap present",
             False,
             "not found on PATH",
             hint=(
-                "nix: add `bubblewrap` to home.packages and run `home-manager switch`; "
-                "apt: sudo apt install bubblewrap"
+                "apt: sudo apt install bubblewrap; "
+                "nix: add `bubblewrap` to home.packages and run `home-manager switch`"
             ),
         )
-    proc = _run([path, "--version"])
+    proc = _run([candidates[0], "--version"])
     version = proc.stdout.strip() or proc.stderr.strip()
-    return Check("bwrap present", True, f"{version} ({os.path.realpath(path)})")
+    detail = f"{version} ({os.path.realpath(candidates[0])})"
+    if len(candidates) > 1:
+        detail += f", and {len(candidates) - 1} more to fall back on"
+    return Check("bwrap present", True, detail, path=candidates[0])
 
 
 def check_bwrap_works() -> Check:
-    """The check that matters: can bwrap actually build a namespace here?
+    """The check that matters: can *any* bwrap here actually build a namespace?
 
-    On Ubuntu with ``kernel.apparmor_restrict_unprivileged_userns=1``, an
-    unconfined bwrap (as installed by nix, outside /usr/bin) is transitioned into
-    the ``unprivileged_userns`` profile, which denies it capabilities inside its
-    own namespace.  It fails writing /proc/self/uid_map.
+    Every candidate is tried in turn, because the answer differs between them.
+    On Ubuntu with ``kernel.apparmor_restrict_unprivileged_userns=1``, a bwrap
+    outside ``/usr/bin`` -- as installed by nix -- is transitioned into the
+    ``unprivileged_userns`` profile, which denies it capabilities inside its own
+    namespace, and it fails writing /proc/self/uid_map.  The packaged one beside
+    it works fine.  Nothing short of running them tells you which is which.
     """
-    path = find_bwrap()
-    if not path:
+    candidates = bwrap_candidates()
+    if not candidates:
         return Check("bwrap can create namespaces", False, "bwrap not found")
 
-    proc = _run([path, "--unshare-all", *_base_binds(), "/bin/true"])
-    if proc.returncode == 0:
-        return Check("bwrap can create namespaces", True, "namespace + mounts OK")
+    tried: list[str] = []
+    for path in candidates:
+        ok, detail = _bwrap_builds_a_namespace(path)
+        if ok:
+            note = f"{detail} ({path})"
+            if tried:
+                note += f"; skipped {len(tried)} that could not"
+            return Check("bwrap can create namespaces", True, note, path=path)
+        tried.append(f"{path}: {detail}")
 
-    err = (proc.stderr or proc.stdout).strip().splitlines()
-    detail = err[0] if err else f"exit {proc.returncode}"
-    hint = "check `dmesg | grep apparmor` for a DENIED line"
-    if "uid map" in detail or "Permission denied" in detail:
-        restricted = _apparmor_restricts_userns()
-        real = os.path.realpath(path)
-        if restricted and not real.startswith("/usr/"):
-            hint = (
-                f"AppArmor confines unprivileged userns and {real} is not covered "
-                "by a profile. Run: sudo scripts/install-apparmor-profile.sh"
-            )
-        elif restricted:
-            hint = (
-                "AppArmor is restricting unprivileged user namespaces; ensure the "
-                "bubblewrap package's profile is loaded (`sudo aa-status | grep bwrap`)"
-            )
-    return Check("bwrap can create namespaces", False, detail, hint=hint)
+    return Check(
+        "bwrap can create namespaces", False,
+        "; ".join(tried),
+        hint=_userns_hint(candidates),
+    )
+
+
+def _userns_hint(candidates: list[str]) -> str:
+    """What to do when no bubblewrap on the host can make a namespace."""
+    if not _apparmor_restricts_userns():
+        return "check `dmesg | grep apparmor` for a DENIED line"
+    if not any(os.path.realpath(p).startswith("/usr/") for p in candidates):
+        # The zero-privilege fix: the distribution's own package ships the
+        # AppArmor policy that exempts it, attached to /usr/bin/bwrap, and
+        # capwrap prefers that binary automatically once it exists.
+        return (
+            "AppArmor confines unprivileged user namespaces and no bubblewrap "
+            "here is covered by a profile. Install the distribution's package "
+            "-- `sudo apt install bubblewrap` -- and capwrap will pick it up on "
+            "its own. To keep using this one instead, register it with "
+            "`sudo scripts/install-apparmor-profile.sh`."
+        )
+    return (
+        "AppArmor is restricting unprivileged user namespaces and even the "
+        "packaged bwrap was refused; check that its profile is loaded "
+        "(`sudo aa-status | grep bwrap`)"
+    )
 
 
 def _apparmor_restricts_userns() -> bool:
@@ -186,13 +297,17 @@ def _apparmor_restricts_userns() -> bool:
     return path.exists() and path.read_text().strip() == "1"
 
 
-def check_kernel_overlay() -> Check:
+def check_kernel_overlay(bwrap: str | None = None) -> Check:
     """Can bwrap mount a kernel overlayfs inside its user namespace?
 
     Unprivileged overlayfs has been possible since Linux 5.11, but LSM policy can
     still block it, so this is a live mount test rather than a version check.
+
+    Takes the bwrap that `check_bwrap_works` settled on: testing overlay with a
+    binary that cannot even build a namespace would report a kernel limitation
+    that is nothing of the sort.
     """
-    path = find_bwrap()
+    path = bwrap or find_bwrap()
     if not path:
         return Check("overlay (kernel, in userns)", False, "bwrap not found", optional=True)
 
@@ -301,8 +416,9 @@ def run_all() -> Report:
     report.add(check_state_dir())
     report.add(check_userns())
     report.add(check_bwrap())
-    report.add(check_bwrap_works())
-    report.add(check_kernel_overlay())
+    working = report.add(check_bwrap_works())
+    report.bwrap = working.path or None
+    report.add(check_kernel_overlay(report.bwrap))
     report.add(check_fuse_overlayfs())
     report.add(check_git())
     report.add(check_live_remapping())
@@ -328,6 +444,8 @@ def format_report(report: Report, color: bool = True) -> str:
 
     backend = report.overlay_backend
     lines.append("")
+    if report.bwrap:
+        lines.append(f"  sandbox binary: {paint(report.bwrap, '36')}")
     mapping = report.get("live remapping (nsmount)")
     if mapping is not None:
         lines.append(
