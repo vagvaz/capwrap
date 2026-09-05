@@ -41,9 +41,19 @@ import pyte
 #: alternate screen, mouse reporting, bracketed paste, focus tracking.
 _PRIVATE_MODE = re.compile(rb"\x1b\[\?([0-9;]+)([hl])")
 
-#: Raw output kept per container, for replay on connect.  64 KiB is enough for
-#: a few screens of scrollback without letting a chatty agent eat the heap.
-SCROLLBACK_BYTES = 64 * 1024
+#: Raw output kept *per container*, for replay when a browser connects.
+#:
+#: This is the operator's scrollback. 64 KiB was a few screens, which meant that
+#: reconnecting -- or just clicking another agent and back -- threw away almost
+#: everything the agent had done. Several megabytes of terminal output is a long
+#: session's worth and costs little beside the sandboxes themselves; it is a ring
+#: buffer, so this is a ceiling rather than a usage.
+#:
+#: Raise it with CAPWRAP_SCROLLBACK_BYTES for an agent that produces a lot, or
+#: lower it on a small box running many containers.
+SCROLLBACK_BYTES = int(
+    os.environ.get("CAPWRAP_SCROLLBACK_BYTES", str(4 * 1024 * 1024))
+)
 
 DEFAULT_COLS = 120
 DEFAULT_ROWS = 32
@@ -113,6 +123,9 @@ class PtySession:
 
     _buffer: deque[bytes] = field(default_factory=deque, init=False)
     _buffered_bytes: int = field(default=0, init=False)
+    #: Whether anything has aged out of the ring, so a replay can say so rather
+    #: than let the operator believe they are looking at the whole session.
+    _trimmed: bool = field(default=False, init=False)
     _subscribers: list[Callable[[bytes], None]] = field(default_factory=list, init=False)
     _exit_waiters: list[asyncio.Future] = field(default_factory=list, init=False)
     _modes: dict[int, bool] = field(default_factory=dict, init=False)
@@ -170,6 +183,10 @@ class PtySession:
         self._buffered_bytes += len(data)
         while self._buffered_bytes > SCROLLBACK_BYTES and len(self._buffer) > 1:
             self._buffered_bytes -= len(self._buffer.popleft())
+            # Recorded where the loss happens, not from the size afterwards --
+            # trimming is what brings the size back under the limit, so a check
+            # after the loop never fires.
+            self._trimmed = True
 
         if self._stream is not None:
             # pyte wants text; the terminal emits bytes that may split a UTF-8
@@ -355,6 +372,11 @@ class PtySession:
 
     def scrollback(self) -> bytes:
         return b"".join(self._buffer)
+
+    @property
+    def truncated(self) -> bool:
+        """True once the retained output has started aging out of the ring."""
+        return self._trimmed
 
     def snapshot(self, tail: int | None = None) -> ScreenSnapshot:
         """What the terminal shows right now.

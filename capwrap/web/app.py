@@ -334,16 +334,29 @@ def create_app(daemon: Daemon) -> FastAPI:
 
         pump_task = loop.create_task(pump())
         try:
-            # Put the terminal back into the modes the program is using before
-            # sending anything, or xterm renders alt-screen output in the normal
-            # buffer. For a full-screen program, repaint the current screen
-            # rather than replaying redraws it has long since superseded.
+            # Replay everything retained, in the order the terminal originally
+            # received it. That is what fills the browser's scrollback: sending
+            # only the current frame -- which is all a full-screen program's
+            # repaint can give you -- left the operator able to see what an agent
+            # is doing now and nothing of what it did to get there, and threw the
+            # session away again every time they clicked another container.
+            if history := session.scrollback():
+                if session.truncated:
+                    await socket.send_bytes(
+                        b"\x1b[90m[capwrap: earlier output has aged out of the "
+                        b"buffer; raise CAPWRAP_SCROLLBACK_BYTES to keep more]"
+                        b"\x1b[0m\r\n"
+                    )
+                await socket.send_bytes(history)
+
+            # Then re-assert the program's modes and, for a full-screen one, its
+            # current frame. The replay above may have been trimmed part-way
+            # through a redraw, so this is what guarantees the live screen is
+            # right regardless of where the ring happened to start.
             if preamble := session.mode_preamble():
                 await socket.send_bytes(preamble)
             if session.alternate_screen:
                 await socket.send_bytes(session.repaint())
-            elif scrollback := session.scrollback():
-                await socket.send_bytes(scrollback)
 
             while True:
                 message = await socket.receive()

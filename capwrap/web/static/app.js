@@ -250,7 +250,10 @@ function initTerminal() {
     fontFamily: 'ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace',
     fontSize: 13,
     cursorBlink: true,
-    scrollback: 5000,
+    // Deep, because the daemon retains megabytes per container and replays all
+    // of it on connect -- a shallow client buffer would throw that away again
+    // on arrival.
+    scrollback: 100000,
     convertEol: false,
   });
   fitAddon = new FitAddon.FitAddon();

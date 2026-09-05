@@ -17,6 +17,7 @@ from capwrap.config import load_config_data
 from capwrap.daemon import Daemon
 from capwrap.errors import CapwrapError
 from capwrap.ipc.protocol import Request, Response
+from capwrap.runtime import supervisor
 
 
 @pytest.fixture
@@ -1170,7 +1171,7 @@ async def test_an_answered_question_is_not_replayed_as_open(daemon, tmp_path):
 
 @pytest.mark.sandbox
 async def test_reconnecting_restores_the_programs_terminal_modes(
-    daemon, tmp_path, require_sandbox
+    daemon, tmp_path, require_sandbox, monkeypatch
 ):
     """A long-lived TUI's startup sequences fall out of the ring buffer.
 
@@ -1178,7 +1179,13 @@ async def test_reconnecting_restores_the_programs_terminal_modes(
     starts. Replaying only the tail leaves the browser in the normal buffer
     rendering alt-screen output, which is what made a session opened from the
     overview look scrambled and refuse to scroll.
+
+    The ring is shrunk here to force the overflow. In normal use it holds
+    megabytes, so this takes a long-running agent rather than a moment -- but it
+    is exactly the case the preamble exists for, and the one that only shows up
+    after an agent has been working for a while.
     """
+    monkeypatch.setattr(supervisor, "SCROLLBACK_BYTES", 64 * 1024)
     daemon.register(config(
         "tui", tmp_path,
         runtime={"command": ["/bin/bash", "-c",
@@ -1205,3 +1212,70 @@ async def test_reconnecting_restores_the_programs_terminal_modes(
     painted = session.repaint()
     assert b"ready" in painted
     assert painted.startswith(b"\x1b[H\x1b[2J")
+
+
+@pytest.mark.sandbox
+async def test_the_whole_session_is_replayed_to_a_browser_that_connects(
+    daemon, tmp_path, require_sandbox
+):
+    """Scrollback is the operator's history, and it has to survive reconnecting.
+
+    Sending only the current frame -- which is all a full-screen program's
+    repaint can give you -- meant an operator could see what an agent was doing
+    now and nothing of how it got there, and lost even that every time they
+    clicked another container and back.
+    """
+    from capwrap.web.app import create_app
+    from fastapi.testclient import TestClient
+
+    daemon.register(config(
+        "chatty", tmp_path,
+        runtime={"command": ["/bin/bash", "-c",
+                             "for i in $(seq 1 400); do echo \"line $i\"; done; "
+                             "sleep 20"]},
+    ))
+    await daemon.start("chatty")
+    await asyncio.sleep(2.0)
+
+    client = TestClient(create_app(daemon))
+    with client.websocket_connect("/ws/terminal/chatty") as socket:
+        replayed = b""
+        for _ in range(40):
+            message = socket.receive()
+            if "bytes" in message and message["bytes"] is not None:
+                replayed += message["bytes"]
+            if b"line 400" in replayed:
+                break
+
+    # The beginning, not just the tail: 400 lines is far inside the ring.
+    assert b"line 1\r\n" in replayed
+    assert b"line 200" in replayed
+    assert b"line 400" in replayed
+
+
+@pytest.mark.sandbox
+async def test_a_replay_that_lost_its_head_says_so(
+    daemon, tmp_path, require_sandbox, monkeypatch
+):
+    """Silently showing a partial session as if it were the whole one is worse
+    than showing less: the operator draws conclusions from what is not there."""
+    monkeypatch.setattr(supervisor, "SCROLLBACK_BYTES", 8 * 1024)
+    daemon.register(config(
+        "noisy", tmp_path,
+        runtime={"command": ["/bin/bash", "-c",
+                             "head -c 60000 /dev/zero | tr '\\0' 'y'; sleep 20"]},
+    ))
+    container = await daemon.start("noisy")
+    await asyncio.sleep(2.0)
+    assert container.session.truncated
+
+    from capwrap.web.app import create_app
+    from fastapi.testclient import TestClient
+
+    client = TestClient(create_app(daemon))
+    with client.websocket_connect("/ws/terminal/noisy") as socket:
+        first = None
+        while first is None:
+            message = socket.receive()
+            first = message.get("bytes")
+    assert b"aged out of the buffer" in first
