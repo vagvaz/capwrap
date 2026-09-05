@@ -40,17 +40,45 @@ const escapeHtml = (value) =>
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
   ));
 
+const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
+
 // ------------------------------------------------------------------ theme
+
+/** The one way the theme changes.
+ *
+ * xterm does not read CSS variables -- it is handed an explicit palette -- so
+ * the document attribute and the terminal's colours have to be set together.
+ * Anything that sets one without the other leaves a light terminal in a dark
+ * interface, or the reverse.
+ */
+function setTheme(name) {
+  document.documentElement.setAttribute('data-theme', name);
+  try {
+    localStorage.setItem('capwrap-theme', name);
+  } catch (_) {
+    /* private browsing: the choice just is not remembered */
+  }
+  if (term) applyTerminalTheme();
+}
+
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'light'
+    ? 'light' : 'dark';
+}
 
 function initTheme() {
   const saved = localStorage.getItem('capwrap-theme');
   if (saved) document.documentElement.setAttribute('data-theme', saved);
-  $('theme-toggle').addEventListener('click', () => {
-    const next = document.documentElement.getAttribute('data-theme') === 'light'
-      ? 'dark' : 'light';
-    document.documentElement.setAttribute('data-theme', next);
-    localStorage.setItem('capwrap-theme', next);
-    if (term) applyTerminalTheme();
+  $('theme-toggle').addEventListener('click', () =>
+    setTheme(currentTheme() === 'light' ? 'dark' : 'light'));
+
+  // Keep every open tab of the same console in step: the theme is stored
+  // per-browser, so a change in one window is a change everywhere.
+  window.addEventListener('storage', (event) => {
+    if (event.key === 'capwrap-theme' && event.newValue) {
+      document.documentElement.setAttribute('data-theme', event.newValue);
+      if (term) applyTerminalTheme();
+    }
   });
 }
 
@@ -61,93 +89,306 @@ function applyTerminalTheme() {
     : { background: '#0a0d12', foreground: '#d7dee8', cursor: '#4c9aff' };
 }
 
-// ------------------------------------------------------------------ resizing
+// ------------------------------------------------------------------ identity
 
-// Which CSS variable each splitter drives, which way it grows, and the range it
-// is allowed to move in.
-const PANELS = {
-  'resize-sidebar': { varName: '--sidebar-w', from: 'left', min: 150, max: 560, def: 260 },
-  'resize-inbox': { varName: '--inbox-w', from: 'right', min: 200, max: 900, def: 320 },
-};
-
-const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
-
-function setPanelWidth(id, px, { persist = true } = {}) {
-  const spec = PANELS[id];
-  const width = Math.round(clamp(px, spec.min, spec.max));
-  document.documentElement.style.setProperty(spec.varName, `${width}px`);
-  if (persist) localStorage.setItem(`capwrap-${spec.varName}`, String(width));
-  return width;
+/** Put this instance's name in the header and the browser tab.
+ *
+ * Several capwraps run at once on different ports, one per piece of work. Left
+ * unnamed they are all called "capwrap", and picking the right browser tab out
+ * of five becomes guesswork.
+ */
+function applyInstanceName(name) {
+  const named = Boolean(name);
+  $('instance-name').textContent = named ? name : 'capwrap';
+  $('instance-tag').textContent = named
+    ? 'capwrap' : 'capability-governed agent containers';
+  document.title = named ? `${name} · capwrap` : 'capwrap';
 }
 
-function initResizers() {
-  // Restore whatever the operator chose last time.
-  for (const [id, spec] of Object.entries(PANELS)) {
-    const saved = Number(localStorage.getItem(`capwrap-${spec.varName}`));
-    if (saved) setPanelWidth(id, saved, { persist: false });
+// ------------------------------------------------------------------ layout
+
+// Each window edge is a dock, and either side panel can be moved into any of
+// them. The middle column is always the content pane, so a panel is described
+// entirely by which edge it sits on and, when it shares one, in what order.
+const EDGES = ['top', 'left', 'right', 'bottom'];
+const PANEL_IDS = ['containers', 'inbox'];
+
+const LAYOUT_DEFAULT = {
+  docks: { containers: 'left', inbox: 'right' },
+  order: ['containers', 'inbox'],
+  sizes: { left: 260, right: 320, top: 220, bottom: 220 },
+};
+
+// A dock must not be able to eat the window: the content pane is the point of
+// the layout, and a dock dragged to the far edge cannot be dragged back.
+const DOCK_MIN = 150;
+const dockMax = (edge) => Math.max(
+  DOCK_MIN,
+  Math.round((edge === 'top' || edge === 'bottom'
+    ? window.innerHeight : window.innerWidth) * 0.75),
+);
+
+// A badge each panel keeps beside its name. Only ever something small: the bar
+// also holds the dock control, and in a 260px panel there is no room for a
+// button with words on it.
+const PANEL_EXTRA = { inbox: 'approval-count' };
+
+const DOCK_BUTTONS = {
+  top: { glyph: '▲', title: 'Move to the top' },
+  left: { glyph: '◀', title: 'Move to the left' },
+  right: { glyph: '▶', title: 'Move to the right' },
+  bottom: { glyph: '▼', title: 'Move to the bottom' },
+};
+
+let layout = loadLayout();
+
+function loadLayout() {
+  const fallback = {
+    docks: { ...LAYOUT_DEFAULT.docks },
+    order: [...LAYOUT_DEFAULT.order],
+    sizes: { ...LAYOUT_DEFAULT.sizes },
+  };
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem('capwrap-layout') || 'null');
+  } catch (_) {
+    saved = null;
+  }
+  if (!saved || typeof saved !== 'object') return fallback;
+
+  // Field by field, because a layout read back from storage was written by an
+  // older version of this file as often as not, and a half-understood one
+  // should degrade to the default rather than throw during startup.
+  for (const id of PANEL_IDS) {
+    const edge = saved.docks && saved.docks[id];
+    if (EDGES.includes(edge)) fallback.docks[id] = edge;
+  }
+  if (Array.isArray(saved.order)) {
+    const kept = saved.order.filter((id) => PANEL_IDS.includes(id));
+    fallback.order = [...new Set([...kept, ...PANEL_IDS])];
+  }
+  for (const edge of EDGES) {
+    const size = Number(saved.sizes && saved.sizes[edge]);
+    if (Number.isFinite(size) && size > 0) fallback.sizes[edge] = size;
+  }
+  return fallback;
+}
+
+function saveLayout() {
+  try {
+    localStorage.setItem('capwrap-layout', JSON.stringify(layout));
+  } catch (_) {
+    /* private browsing: the layout just is not remembered */
+  }
+}
+
+function buildDocks() {
+  const host = $('layout');
+  const content = $('content');
+
+  const dock = (edge) => {
+    const el = document.createElement('div');
+    el.className = 'dock';
+    el.dataset.edge = edge;
+    return el;
+  };
+
+  const splitter = (edge) => {
+    const el = document.createElement('div');
+    el.className = 'resizer';
+    el.dataset.edge = edge;
+    el.dataset.axis = (edge === 'top' || edge === 'bottom') ? 'y' : 'x';
+    el.setAttribute('role', 'separator');
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('aria-label', `Resize the ${edge} panel area`);
+    el.title = 'Drag to resize · double-click to reset';
+    wireResizer(el, edge);
+    return el;
+  };
+
+  // A row nested inside a column: that is what lets the top and bottom docks
+  // span the whole width while the left and right ones flank the content.
+  const mid = document.createElement('div');
+  mid.className = 'layout-mid';
+  host.append(dock('top'), splitter('top'), mid, splitter('bottom'), dock('bottom'));
+  mid.append(dock('left'), splitter('left'), content, splitter('right'), dock('right'));
+}
+
+function dockElement(edge) {
+  return $('layout').querySelector(`.dock[data-edge="${edge}"]`);
+}
+
+function applyLayout() {
+  for (const edge of EDGES) {
+    const dock = dockElement(edge);
+    const resizer = $('layout').querySelector(`.resizer[data-edge="${edge}"]`);
+    const here = layout.order.filter((id) => layout.docks[id] === edge);
+    // append() moves an element that already has a parent, so this both places
+    // the panels and puts them in the order the operator asked for.
+    for (const id of here) dock.append($(`panel-${id}`));
+    dock.hidden = here.length === 0;
+    resizer.hidden = here.length === 0;
+    setDockSize(edge, layout.sizes[edge]);
+  }
+  for (const id of PANEL_IDS) renderPanelBar(id);
+  saveLayout();
+  requestAnimationFrame(syncTerminalSize);
+}
+
+function setDockSize(edge, px) {
+  const size = Math.round(clamp(px, DOCK_MIN, dockMax(edge)));
+  layout.sizes[edge] = size;
+  document.documentElement.style.setProperty(`--dock-${edge}`, `${size}px`);
+  return size;
+}
+
+function renderPanelBar(id) {
+  const panel = $(`panel-${id}`);
+  let bar = panel.querySelector(':scope > .panel-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.className = 'panel-bar';
+    panel.prepend(bar);
   }
 
-  for (const id of Object.keys(PANELS)) {
-    const handle = $(id);
-    if (!handle) continue;
-    const spec = PANELS[id];
+  const here = layout.docks[id];
+  const shared = PANEL_IDS.some(
+    (other) => other !== id && layout.docks[other] === here,
+  );
 
-    handle.addEventListener('pointerdown', (event) => {
-      event.preventDefault();
-      // Capture on the handle so the drag survives the pointer crossing the
-      // terminal, which would otherwise swallow the move events.
-      handle.setPointerCapture(event.pointerId);
-      handle.classList.add('dragging');
-      document.body.classList.add('resizing');
+  // Detach the badge before the rewrite. It is a live element that other
+  // renderers write to by id, and `innerHTML =` would destroy it -- after which
+  // every later lookup finds nothing and the badge is gone for good.
+  const extra = PANEL_EXTRA[id] && $(PANEL_EXTRA[id]);
+  if (extra) extra.remove();
 
-      const onMove = (move) => {
-        const width = spec.from === 'left'
-          ? move.clientX
-          : window.innerWidth - move.clientX;
-        setPanelWidth(id, width);
-        // Reflow the terminal as the column moves, so it tracks the drag
-        // instead of snapping when you let go.
-        requestAnimationFrame(fitTerminal);
-      };
+  bar.innerHTML = `
+    <span class="panel-name">${escapeHtml(panel.dataset.title)}</span>
+    <span data-extra></span>
+    <span class="spacer"></span>
+    <div class="dock-picker">
+      ${EDGES.map((edge) => `
+        <button type="button" data-dock="${edge}"
+                class="${edge === here ? 'here' : ''}"
+                ${edge === here ? 'disabled' : ''}
+                title="${escapeHtml(DOCK_BUTTONS[edge].title)}"
+        >${DOCK_BUTTONS[edge].glyph}</button>`).join('')}
+      ${shared ? `
+        <button type="button" data-swap
+                title="Swap the order of the two panels on this edge">⇅</button>` : ''}
+    </div>`;
 
-      const onUp = () => {
-        handle.releasePointerCapture(event.pointerId);
-        handle.classList.remove('dragging');
-        document.body.classList.remove('resizing');
-        handle.removeEventListener('pointermove', onMove);
-        handle.removeEventListener('pointerup', onUp);
-        handle.removeEventListener('pointercancel', onUp);
-        // The PTY only needs telling once, at the end.
-        syncTerminalSize();
-      };
+  // Moved rather than duplicated, so the elements the renderers already write
+  // to keep working wherever the bar happens to be.
+  if (extra) bar.querySelector('[data-extra]').append(extra);
 
-      handle.addEventListener('pointermove', onMove);
-      handle.addEventListener('pointerup', onUp);
-      handle.addEventListener('pointercancel', onUp);
-    });
+  bar.querySelectorAll('[data-dock]').forEach((button) =>
+    button.addEventListener('click', () => {
+      if (layout.docks[id] === button.dataset.dock) return;
+      layout.docks[id] = button.dataset.dock;
+      applyLayout();
+    }));
 
-    handle.addEventListener('dblclick', () => {
-      setPanelWidth(id, spec.def);
-      syncTerminalSize();
-    });
-
-    // Keyboard access, so the layout is not mouse-only.
-    handle.addEventListener('keydown', (event) => {
-      const step = event.shiftKey ? 40 : 10;
-      const current = parseInt(
-        getComputedStyle(document.documentElement).getPropertyValue(spec.varName), 10,
-      ) || spec.def;
-      const grow = spec.from === 'left' ? 1 : -1;
-
-      if (event.key === 'ArrowLeft') setPanelWidth(id, current - step * grow);
-      else if (event.key === 'ArrowRight') setPanelWidth(id, current + step * grow);
-      else if (event.key === 'Home') setPanelWidth(id, spec.def);
-      else return;
-
-      event.preventDefault();
-      syncTerminalSize();
+  const swap = bar.querySelector('[data-swap]');
+  if (swap) {
+    swap.addEventListener('click', () => {
+      layout.order.reverse();
+      applyLayout();
     });
   }
+}
+
+function wireResizer(handle, edge) {
+  const axis = (edge === 'top' || edge === 'bottom') ? 'y' : 'x';
+
+  // Measured against the dock's own rectangle, so dragging works the same
+  // whichever edge the panel has been moved to.
+  const sizeAt = (rect, event) => {
+    if (edge === 'left') return event.clientX - rect.left;
+    if (edge === 'right') return rect.right - event.clientX;
+    if (edge === 'top') return event.clientY - rect.top;
+    return rect.bottom - event.clientY;
+  };
+
+  handle.addEventListener('pointerdown', (event) => {
+    const dock = dockElement(edge);
+    if (!dock || dock.hidden) return;
+    event.preventDefault();
+    // Capture on the handle so the drag survives the pointer crossing the
+    // terminal, which would otherwise swallow the move events.
+    handle.setPointerCapture(event.pointerId);
+    handle.classList.add('dragging');
+    document.body.classList.add('resizing', `resizing-${axis}`);
+    const rect = dock.getBoundingClientRect();
+
+    const onMove = (move) => {
+      setDockSize(edge, sizeAt(rect, move));
+      // Reflow the terminal as the edge moves, so it tracks the drag instead
+      // of snapping when you let go.
+      requestAnimationFrame(fitTerminal);
+    };
+
+    const onUp = () => {
+      handle.releasePointerCapture(event.pointerId);
+      handle.classList.remove('dragging');
+      document.body.classList.remove('resizing', `resizing-${axis}`);
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+      saveLayout();
+      // The PTY only needs telling once, at the end.
+      syncTerminalSize();
+    };
+
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  });
+
+  handle.addEventListener('dblclick', () => {
+    setDockSize(edge, LAYOUT_DEFAULT.sizes[edge]);
+    saveLayout();
+    syncTerminalSize();
+  });
+
+  // Keyboard access, so the layout is not mouse-only.
+  handle.addEventListener('keydown', (event) => {
+    const step = event.shiftKey ? 40 : 10;
+    // Growing a left or top dock means moving the handle towards the far edge;
+    // for right and bottom it is the other way round.
+    const grow = (edge === 'left' || edge === 'top') ? 1 : -1;
+    const smaller = axis === 'x' ? 'ArrowLeft' : 'ArrowUp';
+    const bigger = axis === 'x' ? 'ArrowRight' : 'ArrowDown';
+
+    if (event.key === smaller) setDockSize(edge, layout.sizes[edge] - step * grow);
+    else if (event.key === bigger) setDockSize(edge, layout.sizes[edge] + step * grow);
+    else if (event.key === 'Home') setDockSize(edge, LAYOUT_DEFAULT.sizes[edge]);
+    else return;
+
+    event.preventDefault();
+    saveLayout();
+    syncTerminalSize();
+  });
+}
+
+function initLayout() {
+  buildDocks();
+  applyLayout();
+
+  $('layout-reset').addEventListener('click', () => {
+    layout = {
+      docks: { ...LAYOUT_DEFAULT.docks },
+      order: [...LAYOUT_DEFAULT.order],
+      sizes: { ...LAYOUT_DEFAULT.sizes },
+    };
+    applyLayout();
+  });
+
+  // A window that shrinks can leave a dock over its share of it; re-clamping
+  // keeps the content pane from disappearing entirely.
+  window.addEventListener('resize', () => {
+    for (const edge of EDGES) setDockSize(edge, layout.sizes[edge]);
+  });
 }
 
 // ------------------------------------------------------------------ tree
@@ -234,16 +475,80 @@ async function dismissContainer(name) {
   }
 }
 
+// ------------------------------------------------------------------ compose
+
+// Who the composer will send to. Held outside `state` because it is a UI
+// selection rather than daemon truth, and it has to survive every re-render
+// the event stream provokes.
+const composeTargets = new Set();
+let composeSeeded = false;
+
 function renderComposeTargets() {
-  const select = $('compose-target');
-  const previous = select.value;
-  select.innerHTML = state.containers
-    .map((c) => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`)
-    .join('');
-  if (previous) select.value = previous;
+  const host = $('compose-targets');
+  const names = state.containers.map((c) => c.name);
+
+  // A container that has been dismissed must not stay quietly selected and
+  // then fail the send with a 404 the operator cannot explain.
+  for (const name of [...composeTargets]) {
+    if (!names.includes(name)) composeTargets.delete(name);
+  }
+  if (!composeSeeded && names.length) {
+    composeSeeded = true;
+    composeTargets.add(names.includes(state.selected) ? state.selected : names[0]);
+  }
+
+  if (!names.length) {
+    host.innerHTML = '<div class="empty">No containers to send to.</div>';
+    updateComposeButton();
+    return;
+  }
+
+  const all = names.length > 1 && names.every((n) => composeTargets.has(n));
+  host.innerHTML = `
+    ${names.length > 1 ? `
+      <label class="check all${all ? ' on' : ''}">
+        <input type="checkbox" data-all ${all ? 'checked' : ''}> all
+      </label>` : ''}
+    ${names.map((name) => {
+      const on = composeTargets.has(name);
+      return `
+        <label class="check${on ? ' on' : ''}">
+          <input type="checkbox" value="${escapeHtml(name)}" ${on ? 'checked' : ''}>
+          ${escapeHtml(name)}
+        </label>`;
+    }).join('')}`;
+
+  host.querySelectorAll('input[value]').forEach((box) =>
+    box.addEventListener('change', () => {
+      if (box.checked) composeTargets.add(box.value);
+      else composeTargets.delete(box.value);
+      renderComposeTargets();
+    }));
+
+  const every = host.querySelector('[data-all]');
+  if (every) {
+    every.addEventListener('change', () => {
+      if (every.checked) names.forEach((n) => composeTargets.add(n));
+      else composeTargets.clear();
+      renderComposeTargets();
+    });
+  }
+  updateComposeButton();
+}
+
+function updateComposeButton() {
+  const button = $('compose-send');
+  const count = composeTargets.size;
+  button.disabled = count === 0;
+  button.textContent = count > 1
+    ? `Broadcast to ${count} agents` : 'Send as operator';
 }
 
 // ------------------------------------------------------------------ terminal
+
+// Width to assume for an overlay scrollbar, which occupies no layout space and
+// therefore measures zero however you ask.
+const OVERLAY_GUTTER = 12;
 
 function initTerminal() {
   term = new Terminal({
@@ -272,10 +577,68 @@ function initTerminal() {
   setTimeout(syncTerminalSize, 50);
 }
 
+/** Keep the scrollbar out of the last column, whichever kind the browser draws.
+ *
+ * xterm is supposed to do this itself -- FitAddon subtracts the viewport's
+ * scrollbar width when it works out how many columns fit -- but the width it
+ * measures internally comes back as zero here even with a classic 10px
+ * scrollbar drawn, so the last column ends up underneath it and a full-screen
+ * TUI has its right-hand border painted over. Claude Code draws its boxes right
+ * at that edge, so it is the first thing to go.
+ *
+ * Reserving the lane as padding on .xterm is the fix that does not depend on
+ * that measurement being right: FitAddon subtracts this padding too, and the
+ * viewport is absolutely positioned against the padding box, so the scrollbar
+ * stays where it was and only the text stops short of it.
+ */
+function reserveScrollbarGutter() {
+  if (!term || !term.element) return;
+  const viewport = term.element.querySelector('.xterm-viewport');
+  if (!viewport) return;
+  term.element.style.paddingRight = `${scrollbarLane(viewport)}px`;
+}
+
+/** How wide the scrollbar's lane is. */
+function scrollbarLane(viewport) {
+  // Zero means an overlay scrollbar, drawn on top of the content rather than
+  // beside it -- so it still needs a lane, it just cannot be measured.
+  return (viewport.offsetWidth - viewport.clientWidth) || OVERLAY_GUTTER;
+}
+
+/** Widen the gutter by however much of the last column is still under it.
+ *
+ * xterm rounds its screen up to whole cells, so reserving exactly the
+ * scrollbar's width can still leave a sliver of the final column beneath the
+ * thumb. Returns whether anything changed, so the caller knows to lay out again.
+ */
+function trimGutterOverlap() {
+  const viewport = term.element.querySelector('.xterm-viewport');
+  const screen = term.element.querySelector('.xterm-screen');
+  if (!viewport || !screen) return false;
+
+  const lane = scrollbarLane(viewport);
+  const overlap = screen.getBoundingClientRect().right
+    - (viewport.getBoundingClientRect().right - lane);
+  if (overlap <= 0) return false;
+
+  const current = parseFloat(getComputedStyle(term.element).paddingRight) || 0;
+  term.element.style.paddingRight = `${Math.ceil(current + overlap)}px`;
+  return true;
+}
+
 /** Reflow xterm to its container. Cheap enough to call during a drag. */
 function fitTerminal() {
   if (!fitAddon) return;
-  try { fitAddon.fit(); } catch (_) { /* panel not visible yet */ }
+  // Reserve, lay out, then correct for the rounding and lay out once more. The
+  // reservation is recomputed from scratch every time rather than accumulated,
+  // so the second pass cannot drift wider on each call.
+  reserveScrollbarGutter();
+  try {
+    fitAddon.fit();
+    if (trimGutterOverlap()) fitAddon.fit();
+  } catch (_) {
+    /* panel not visible yet */
+  }
 }
 
 /** Reflow, then tell the PTY its new size so the agent's TUI redraws to match. */
@@ -356,7 +719,7 @@ function renderCaps() {
       .map((r) => `<span class="right${STRONG_RIGHTS.has(r) ? ' strong' : ''}">${r}</span>`)
       .join('');
     const detail = cap.detail || {};
-    const extra = detail.path || detail.state
+    const extra = detail.pattern || detail.path || detail.state
       || (detail.remaining !== undefined ? `${detail.remaining} spawns left` : '');
     return `
       <tr>
@@ -471,6 +834,121 @@ function wireGrant() {
 
 // ------------------------------------------------------------------ approvals
 
+/** A capability request: answered by granting, not merely by saying yes. */
+function capabilityRequestCard(approval, ctx) {
+  const req = ctx.request || {};
+  const asked = new Set(req.rights || []);
+  // Offer the rights that mean something for this object kind, not a
+  // container-shaped list regardless of what was asked for.
+  const choices = req.valid_rights && req.valid_rights.length
+    ? req.valid_rights
+    : GRANTABLE.map((r) => r.name);
+  const boxes = [...new Set(choices)].map((name) => `
+    <label class="check" title="${escapeHtml(name)}">
+      <input type="checkbox" value="${escapeHtml(name)}"
+             ${asked.has(name) ? 'checked' : ''}>
+      <span class="right${STRONG_RIGHTS.has(name) ? ' strong' : ''}">${escapeHtml(name)}</span>
+    </label>`).join('');
+
+  return `
+    <div class="approval" data-request="${approval.id}">
+      <div class="who">${escapeHtml(approval.container)} · capability request</div>
+      <div class="q">
+        wants a <strong>${escapeHtml(req.kind || '?')}</strong> capability
+        ${req.target ? `on <span class="mono">${escapeHtml(req.target)}</span>` : ''}
+        ${req.kind === 'factory' ? `(quota ${Number(req.quota) || 1})` : ''}
+      </div>
+      ${req.reason ? `<div class="ctx">${escapeHtml(req.reason)}</div>` : ''}
+      <div class="rights-picker">${boxes}</div>
+      <div class="actions">
+        <button class="primary small" data-grant="${approval.id}">Grant</button>
+        <button class="small danger" data-deny="${approval.id}">Deny</button>
+        <button class="ghost small" data-goto="${escapeHtml(approval.container)}">Open</button>
+        ${explainBlock(approval)}
+      </div>
+    </div>`;
+}
+
+/** The agent is asking its human something, via Claude's AskUserQuestion.
+ *
+ * Allowing this does not answer anything: it lets the tool run, and the picker
+ * is then drawn in that agent's own terminal, where someone has to work through
+ * it with the arrow keys. So the card shows what was asked and makes going
+ * there the primary action, rather than offering an allow/deny pair that looks
+ * like it settles the question and does not.
+ */
+function userQuestionCard(approval, ctx) {
+  const blocks = (ctx.questions || []).map((q) => `
+    <div class="ask">
+      ${q.header ? `<div class="ask-header">${escapeHtml(q.header)}</div>` : ''}
+      <div class="ask-q">${escapeHtml(q.question)}</div>
+      ${(q.options || []).map((o) => `
+        <div class="ask-option">
+          <span class="label">${escapeHtml(o.label)}</span>
+          <span class="desc">${escapeHtml(o.description)}</span>
+        </div>`).join('')}
+      ${q.multi_select
+        ? '<div class="muted small">more than one answer allowed</div>' : ''}
+    </div>`).join('');
+
+  return `
+    <div class="approval question">
+      <div class="who">${escapeHtml(approval.container)} · asking you</div>
+      ${blocks || `<div class="q">${escapeHtml(approval.question)}</div>`}
+      <div class="note">
+        A question, not a permission. Answering it means going to
+        ${escapeHtml(approval.container)}'s terminal and picking there.
+      </div>
+      <div class="actions">
+        <button class="primary small" data-answer="${approval.id}"
+                data-container="${escapeHtml(approval.container)}">
+          Answer in the terminal
+        </button>
+        <button class="small danger" data-deny="${approval.id}">Deny</button>
+        ${explainBlock(approval)}
+      </div>
+    </div>`;
+}
+
+// Explanations, kept out of `state` because they are the operator's working
+// notes on a card rather than daemon truth, and they have to survive the
+// re-render every event provokes.
+const explanations = new Map();
+
+/** The Explain block for one card: a button, or what came back from it. */
+function explainBlock(approval) {
+  const held = explanations.get(approval.id);
+  if (!held) {
+    return `<button class="ghost small" data-explain="${approval.id}">Explain</button>`;
+  }
+  if (held.pending) {
+    return '<div class="explain pending">asking Claude…</div>';
+  }
+  if (held.error) {
+    return `<div class="explain error">${escapeHtml(held.error)}</div>`;
+  }
+  return `
+    <div class="explain">
+      <div class="explain-note">
+        ${escapeHtml(held.model)}'s reading of this request. It is advice about
+        untrusted input, not a verdict — the decision is still yours.
+      </div>
+      <div class="explain-body">${escapeHtml(held.text)}</div>
+    </div>`;
+}
+
+async function explainApproval(id) {
+  explanations.set(id, { pending: true });
+  renderApprovals();
+  try {
+    const result = await api(`/api/approvals/${id}/explain`, { method: 'POST' });
+    explanations.set(id, { text: result.text, model: result.model });
+  } catch (err) {
+    explanations.set(id, { error: err.message });
+  }
+  renderApprovals();
+}
+
 function renderApprovals() {
   const host = $('approvals');
   $('approval-count').textContent = state.approvals.length;
@@ -484,42 +962,8 @@ function renderApprovals() {
 
   host.innerHTML = state.approvals.map((approval) => {
     const ctx = approval.context || {};
-
-    // A capability request is answered by *granting*, not by saying yes: the
-    // approval performs the delegation, and the operator can trim the rights
-    // on the way through.
-    if (ctx.kind === 'capability_request') {
-      const req = ctx.request || {};
-      const asked = new Set(req.rights || []);
-      // Offer the rights that mean something for this object kind, not a
-      // container-shaped list regardless of what was asked for.
-      const choices = req.valid_rights && req.valid_rights.length
-        ? req.valid_rights
-        : GRANTABLE.map((r) => r.name);
-      const boxes = [...new Set(choices)].map((name) => `
-        <label class="check" title="${escapeHtml(name)}">
-          <input type="checkbox" value="${escapeHtml(name)}"
-                 ${asked.has(name) ? 'checked' : ''}>
-          <span class="right${STRONG_RIGHTS.has(name) ? ' strong' : ''}">${escapeHtml(name)}</span>
-        </label>`).join('');
-
-      return `
-        <div class="approval" data-request="${approval.id}">
-          <div class="who">${escapeHtml(approval.container)} · capability request</div>
-          <div class="q">
-            wants a <strong>${escapeHtml(req.kind || '?')}</strong> capability
-            ${req.target ? `on <span class="mono">${escapeHtml(req.target)}</span>` : ''}
-            ${req.kind === 'factory' ? `(quota ${Number(req.quota) || 1})` : ''}
-          </div>
-          ${req.reason ? `<div class="ctx">${escapeHtml(req.reason)}</div>` : ''}
-          <div class="rights-picker">${boxes}</div>
-          <div class="actions">
-            <button class="primary small" data-grant="${approval.id}">Grant</button>
-            <button class="small danger" data-deny="${approval.id}">Deny</button>
-            <button class="ghost small" data-goto="${escapeHtml(approval.container)}">Open</button>
-          </div>
-        </div>`;
-    }
+    if (ctx.kind === 'capability_request') return capabilityRequestCard(approval, ctx);
+    if (ctx.kind === 'user_question') return userQuestionCard(approval, ctx);
 
     const context = Object.keys(ctx).length
       ? `<div class="ctx">${escapeHtml(JSON.stringify(ctx, null, 2))}</div>`
@@ -533,6 +977,7 @@ function renderApprovals() {
           <button class="primary small" data-allow="${approval.id}">Allow</button>
           <button class="small danger" data-deny="${approval.id}">Deny</button>
           <button class="ghost small" data-goto="${escapeHtml(approval.container)}">Open</button>
+          ${explainBlock(approval)}
         </div>
       </div>`;
   }).join('');
@@ -560,21 +1005,61 @@ function renderApprovals() {
       resolve(Number(b.dataset.grant), 'allow', rights);
     }));
 
+  host.querySelectorAll('[data-answer]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const container = b.dataset.container;
+      // Allow first, then jump: the picker is then already being drawn when the
+      // terminal comes up, instead of appearing a beat later on a blank screen.
+      await resolve(Number(b.dataset.answer), 'allow');
+      select(container, { focusTerminal: true });
+    }));
+
   host.querySelectorAll('[data-allow]').forEach((b) =>
     b.addEventListener('click', () => resolve(Number(b.dataset.allow), 'allow')));
   host.querySelectorAll('[data-deny]').forEach((b) =>
     b.addEventListener('click', () => resolve(Number(b.dataset.deny), 'deny')));
   host.querySelectorAll('[data-goto]').forEach((b) =>
     b.addEventListener('click', () => select(b.dataset.goto, { focusTerminal: true })));
+  host.querySelectorAll('[data-explain]').forEach((b) =>
+    b.addEventListener('click', () => explainApproval(Number(b.dataset.explain))));
 }
+
+// A question that has been decided -- allowed, denied, timed out, or abandoned
+// because its asker went away.
+function isDecidedQuestion(message) {
+  return message.kind === 'question'
+    && message.payload
+    && typeof message.payload === 'object'
+    && Boolean(message.payload.decision);
+}
+
+// Whether to show those. Off by default: the inbox is replayed in full on every
+// connect, so without this the panel fills up with old settled requests each
+// time the socket comes back, and it takes reading each one to work out that
+// none of them want anything.
+let showAnsweredQuestions = false;
 
 function renderMessages() {
   const host = $('messages');
-  if (!state.messages.length) {
-    host.innerHTML = '<div class="empty">No messages yet.</div>';
+  const decided = state.messages.filter(isDecidedQuestion);
+  const visible = showAnsweredQuestions
+    ? state.messages
+    : state.messages.filter((m) => !isDecidedQuestion(m));
+
+  const toggle = $('inbox-history');
+  toggle.hidden = decided.length === 0;
+  toggle.textContent = showAnsweredQuestions
+    ? `hide ${decided.length} answered` : `show ${decided.length} answered`;
+
+  if (!visible.length) {
+    host.innerHTML = decided.length
+      ? '<div class="empty">Nothing outstanding.</div>'
+      : '<div class="empty">No messages yet.</div>';
     return;
   }
-  host.innerHTML = state.messages.slice(-40).reverse().map((m) => {
+  const live = new Set(state.containers.map((c) => c.name));
+
+  host.innerHTML = visible.slice(-40).reverse().map((m) => {
     // A question carries its outcome once answered. The inbox is replayed on
     // reload, so without showing that, a decided request looks open again.
     if (m.kind === 'question' && m.payload && typeof m.payload === 'object') {
@@ -582,21 +1067,32 @@ function renderMessages() {
       const mark = decided
         ? `<span class="pill ${decided === 'allow' ? 'pill-ok' : 'pill-bad'}">${escapeHtml(decided)}</span>`
         : '<span class="pill pill-warn">waiting</span>';
+      // Going to the asker's terminal is the answer to half of these, so the
+      // way there belongs on the entry rather than only on the live card.
+      const open = live.has(m.from) ? `
+        <div class="actions">
+          <button class="ghost small" data-goto="${escapeHtml(m.from)}"
+          >Open ${escapeHtml(m.from)}</button>
+        </div>` : '';
       return `
         <div class="message${decided ? ' answered' : ''}">
           <div class="from">${escapeHtml(m.from)} asked ${mark}</div>
           <div>${escapeHtml(m.payload.question || '')}</div>
           ${m.payload.reason ? `<div class="muted small">${escapeHtml(m.payload.reason)}</div>` : ''}
+          ${open}
         </div>`;
     }
     const body = typeof m.payload === 'string'
       ? m.payload : JSON.stringify(m.payload);
     return `
       <div class="message">
-        <div class="from">${escapeHtml(m.from)} → operator</div>
+        <div class="from">${escapeHtml(m.from)} → operator ${signedBadge(m)}</div>
         <div>${escapeHtml(body)}</div>
       </div>`;
   }).join('');
+
+  host.querySelectorAll('[data-goto]').forEach((b) =>
+    b.addEventListener('click', () => select(b.dataset.goto, { focusTerminal: true })));
 }
 
 // ------------------------------------------------------------------ grid
@@ -649,8 +1145,8 @@ let gridBusy = false;
 
 function syncGridTiles(names) {
   const host = $('grid');
-  const wanted = names.join(' ');
-  if (wanted === [...gridTiles].join(' ')) return;
+  const wanted = names.join(' ');
+  if (wanted === [...gridTiles].join(' ')) return;
 
   gridTiles = new Set(names);
   if (!names.length) {
@@ -705,6 +1201,218 @@ async function renderGrid() {
   }
 }
 
+// ------------------------------------------------------------------ boards
+
+/** Shared boards, and who may read or write each one.
+ *
+ * The holder list is the point of this view. A board is somewhere several
+ * agents meet, so "who can post here and who can only read" is the question an
+ * operator actually has, and it cannot be answered from any one container's
+ * capability table.
+ */
+async function renderBoards() {
+  const host = $('boards');
+  let boards = [];
+  try {
+    ({ boards } = await api('/api/boards?limit=50'));
+  } catch (err) {
+    host.innerHTML = `<div class="empty">Could not load boards: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  $('boards-count').textContent = boards.length
+    ? `${boards.length} board${boards.length === 1 ? '' : 's'}` : '';
+
+  if (!boards.length) {
+    host.innerHTML = `
+      <div class="trace-off">
+        No boards yet. An agent holding a factory capability creates one with
+        <span class="mono">capctl board create &lt;factory-slot&gt; &lt;topic&gt;</span>,
+        then hands each worker as much of it as they need — posting and reading
+        are separate rights, so a worker can report progress without reading its
+        peers' notes, or follow along without being able to speak.
+      </div>`;
+    return;
+  }
+
+  host.innerHTML = boards.map((board) => {
+    const holders = (board.holders || []).map((h) => {
+      const may = [h.may_post ? 'post' : null, h.may_read ? 'read' : null]
+        .filter(Boolean).join(' + ') || 'neither';
+      return `<span class="right" title="${escapeHtml(h.rights.join(', '))}"
+        >${escapeHtml(h.container)}: ${may}</span>`;
+    }).join('') || '<span class="muted small">nobody but the operator</span>';
+
+    const posts = (board.recent || []).slice().reverse().map((p) => `
+      <tr>
+        <td class="mono">#${p.id}</td>
+        <td class="mono">${escapeHtml(p.from)} ${signedBadge(p)}</td>
+        <td class="muted small">${new Date(p.ts * 1000).toLocaleTimeString()}</td>
+        <td><pre class="trace-payload">${escapeHtml(payloadText(p.payload))}</pre></td>
+      </tr>`).join('');
+
+    return `
+      <div class="cap-group">
+        <h3>${escapeHtml(board.topic)}</h3>
+        <p class="muted small">
+          created by ${escapeHtml(board.created_by || '?')} ·
+          ${board.posts} post${board.posts === 1 ? '' : 's'}
+        </p>
+        <div class="rights-picker">${holders}</div>
+        ${posts ? `<table><tbody>${posts}</tbody></table>`
+                : '<div class="empty">Nothing posted yet.</div>'}
+      </div>`;
+  }).join('');
+}
+
+// ------------------------------------------------------------------ trace
+
+// Rows held in the browser. The daemon keeps its own bounded buffer; this is
+// only what is on screen.
+const TRACE_VIEW_LIMIT = 300;
+
+const trace = { enabled: false, rows: [], from: '', to: '' };
+
+/** The rows currently on show, after the sender/recipient filters. */
+function tracedRows() {
+  return trace.rows.filter((r) =>
+    (!trace.from || r.from === trace.from) && (!trace.to || r.to === trace.to));
+}
+
+/** Keep the two filter dropdowns offering whoever has actually appeared.
+ *
+ * Built from the trace itself as well as the container list, because `root` is
+ * a sender the operator will want to filter on and is not a container, and a
+ * container that has since been dismissed may still be in the rows.
+ */
+function renderTraceFilters() {
+  const names = new Set();
+  for (const row of trace.rows) { names.add(row.from); names.add(row.to); }
+  for (const c of state.containers) names.add(c.name);
+
+  for (const [id, key, anyone] of [
+    ['trace-from', 'from', 'anyone'], ['trace-to', 'to', 'anyone'],
+  ]) {
+    const select = $(id);
+    const options = ['', ...[...names].sort()];
+    const markup = options.map((name) => `
+      <option value="${escapeHtml(name)}" ${name === trace[key] ? 'selected' : ''}
+      >${name ? escapeHtml(name) : anyone}</option>`).join('');
+    if (select.innerHTML !== markup) select.innerHTML = markup;
+  }
+}
+
+/** How a signature is shown: a badge, and never a claim capwrap cannot back.
+ *
+ * The console reports what the kernel verified when the message was accepted --
+ * a signature that did not check out was refused, so anything stored as signed
+ * has been checked once. It says "signed by" rather than "genuine": the key is
+ * the container's, and what it proves is that the post came from that container,
+ * not that its contents are true.
+ */
+function signedBadge(entry) {
+  if (!entry || !entry.signed) return '';
+  const who = (entry.public_key || '').slice(0, 16);
+  return `<span class="right signed" title="Signed by ${escapeHtml(entry.from)}, key ${escapeHtml(who)}">signed</span>`;
+}
+
+const payloadText = (payload) =>
+  typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+
+async function loadTrace() {
+  try {
+    const data = await api(`/api/messages?limit=${TRACE_VIEW_LIMIT}`);
+    trace.enabled = Boolean(data.enabled);
+    trace.rows = data.messages || [];
+  } catch (_) {
+    trace.rows = [];
+  }
+  renderTrace();
+}
+
+function renderTrace() {
+  $('trace-toggle').checked = trace.enabled;
+  renderTraceFilters();
+
+  const rows = tracedRows();
+  const filtered = trace.from || trace.to;
+  $('trace-state').textContent = !trace.enabled ? ''
+    : filtered ? `${rows.length} of ${trace.rows.length} recorded`
+    : `${trace.rows.length} recorded`;
+
+  const host = $('trace');
+  if (!trace.enabled) {
+    host.innerHTML = `
+      <div class="trace-off">
+        Off. Switch it on to record every message the kernel delivers between
+        containers, payloads included — which is what you need when two agents
+        are talking past each other, and is exactly why it is not on by default.
+        The audit tab already records that a message was sent, and by whom.
+      </div>`;
+    return;
+  }
+  if (!rows.length) {
+    host.innerHTML = trace.rows.length
+      ? '<div class="empty">Nothing matches that filter.</div>'
+      : '<div class="empty">Nothing has been sent yet.</div>';
+    return;
+  }
+
+  host.innerHTML = `
+    <table>
+      <thead><tr>
+        <th>Time</th><th>From</th><th>To</th><th>Kind</th><th>Slot</th><th>Payload</th>
+      </tr></thead>
+      <tbody>
+        ${rows.slice(-TRACE_VIEW_LIMIT).reverse().map((r) => `
+          <tr>
+            <td class="muted small">${new Date(r.ts * 1000).toLocaleTimeString()}</td>
+            <td class="mono">${escapeHtml(r.from)} ${signedBadge(r)}</td>
+            <td class="mono">${escapeHtml(r.to)}</td>
+            <td>${escapeHtml(r.kind)}</td>
+            <td class="mono">${r.via_slot ?? ''}</td>
+            <td><pre class="trace-payload">${escapeHtml(payloadText(r.payload))}</pre></td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+const traceVisible = () => Boolean(document.querySelector('#tab-messages.active'));
+
+function wireTrace() {
+  $('trace-toggle').addEventListener('change', async () => {
+    const wanted = $('trace-toggle').checked;
+    try {
+      const result = await api('/api/trace', {
+        method: 'POST',
+        body: JSON.stringify({ enabled: wanted }),
+      });
+      trace.enabled = result.enabled;
+      if (!trace.enabled) trace.rows = [];
+    } catch (err) {
+      alert(`Could not change tracing: ${err.message}`);
+    }
+    renderTrace();
+  });
+
+  for (const [id, key] of [['trace-from', 'from'], ['trace-to', 'to']]) {
+    $(id).addEventListener('change', () => {
+      trace[key] = $(id).value;
+      renderTrace();
+    });
+  }
+
+  $('trace-clear').addEventListener('click', async () => {
+    try {
+      await api('/api/messages', { method: 'DELETE' });
+    } catch (err) {
+      alert(`Could not clear the trace: ${err.message}`);
+      return;
+    }
+    trace.rows = [];
+    renderTrace();
+  });
+}
 
 // ------------------------------------------------------------------ audit
 
@@ -757,23 +1465,43 @@ function showTab(name) {
     gridTimer = setInterval(renderGrid, GRID_POLL_MS);
   }
   if (name === 'audit') renderAudit();
+  if (name === 'boards') renderBoards();
+  if (name === 'messages') loadTrace();
   if (name === 'terminal') setTimeout(syncTerminalSize, 30);
 }
 
 // ------------------------------------------------------------------ events
 
+let eventSocket = null;
+let reconnectTimer = null;
+
 function connect() {
+  // One socket, ever. A page that suspends and resumes can fire `onclose` more
+  // than once, and every extra socket would deliver its own copy of every
+  // event — which is one of the ways an approval ends up on screen twice.
+  if (eventSocket
+      && (eventSocket.readyState === WebSocket.OPEN
+          || eventSocket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(`${proto}//${location.host}/ws/events`);
+  eventSocket = socket;
 
   socket.onopen = () => {
     $('conn').textContent = 'live';
     $('conn').className = 'pill pill-ok';
   };
   socket.onclose = () => {
+    if (eventSocket !== socket) return;    // already superseded
+    eventSocket = null;
     $('conn').textContent = 'reconnecting…';
     $('conn').className = 'pill pill-bad';
-    setTimeout(connect, 2000);
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 2000);
   };
   socket.onmessage = (raw) => handleEvent(JSON.parse(raw.data));
 }
@@ -781,6 +1509,10 @@ function connect() {
 function handleEvent(event) {
   switch (event.event) {
     case 'overview':
+      // Sent on every connect, so this is also what puts the queue straight
+      // after a reconnect: anything the daemon has since retired is simply not
+      // in the list any more.
+      applyInstanceName(event.instance || '');
       state.containers = event.containers || [];
       state.tree = event.tree || [];
       state.approvals = event.approvals || [];
@@ -793,13 +1525,28 @@ function handleEvent(event) {
       break;
 
     case 'approval.requested':
-      state.approvals.push(event);
-      renderApprovals();
+      // The overview that arrives on connect already carries every pending
+      // approval, so an event racing it must not add a second card.
+      if (!state.approvals.some((a) => a.id === event.id)) {
+        state.approvals.push(event);
+        renderApprovals();
+      }
       break;
 
     case 'approval.resolved':
       state.approvals = state.approvals.filter((a) => a.id !== event.id);
+      explanations.delete(event.id);
+      // The inbox keeps its own copy of the question as history. Stamp the
+      // outcome on it as well, or a question that has just been answered goes
+      // on reading as one still waiting until the next reload.
+      for (const message of state.messages) {
+        if (message.kind === 'question'
+            && message.payload && message.payload.id === event.id) {
+          message.payload.decision = event.decision;
+        }
+      }
       renderApprovals();
+      renderMessages();
       break;
 
     case 'message':
@@ -807,6 +1554,24 @@ function handleEvent(event) {
         state.messages.push(event.message);
         renderMessages();
       }
+      break;
+
+    case 'board.posted':
+      if (document.querySelector('#tab-boards.active')) renderBoards();
+      break;
+
+    case 'message.trace':
+      trace.rows.push(event.record);
+      if (trace.rows.length > TRACE_VIEW_LIMIT * 2) {
+        trace.rows.splice(0, trace.rows.length - TRACE_VIEW_LIMIT);
+      }
+      if (traceVisible()) renderTrace();
+      break;
+
+    case 'trace.changed':
+      trace.enabled = Boolean(event.enabled);
+      if (!trace.enabled) trace.rows = [];
+      if (traceVisible()) renderTrace();
       break;
 
     case 'container.registered':
@@ -820,12 +1585,15 @@ function handleEvent(event) {
 
 async function refreshOverview() {
   const data = await api('/api/overview');
+  applyInstanceName(data.instance || '');
   state.containers = data.containers;
   state.tree = data.tree;
   state.approvals = data.approvals;
+  state.messages = data.operator_inbox || state.messages;
   renderTree();
   renderComposeTargets();
   renderApprovals();
+  renderMessages();
   if (state.selected) loadCaps(state.selected);
 }
 
@@ -836,17 +1604,23 @@ function wire() {
     b.addEventListener('click', () => showTab(b.dataset.tab)));
 
   $('audit-refresh').addEventListener('click', renderAudit);
+  $('boards-refresh').addEventListener('click', renderBoards);
+
+  $('inbox-history').addEventListener('click', () => {
+    showAnsweredQuestions = !showAnsweredQuestions;
+    renderMessages();
+  });
   $('audit-denied').addEventListener('change', renderAudit);
 
   $('compose').addEventListener('submit', async (event) => {
     event.preventDefault();
-    const target = $('compose-target').value;
+    const targets = [...composeTargets];
     const message = $('compose-body').value.trim();
-    if (!target || !message) return;
+    if (!targets.length || !message) return;
     try {
       await api('/api/send', {
         method: 'POST',
-        body: JSON.stringify({ target, message }),
+        body: JSON.stringify({ targets, message }),
       });
       $('compose-body').value = '';
     } catch (err) {
@@ -884,6 +1658,7 @@ function wire() {
   });
 
   wireGrant();
+  wireTrace();
 }
 
 // A hidden tab should cost nothing; browsers throttle timers but still run them.
@@ -898,7 +1673,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 initTheme();
-initResizers();
+initLayout();
 initTerminal();
 wire();
 connect();

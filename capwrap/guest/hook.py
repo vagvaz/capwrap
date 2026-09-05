@@ -94,6 +94,18 @@ def describe(tool: str, tool_input: dict) -> str:
     """
     if tool == "Bash":
         return str(tool_input.get("command", "")).strip()
+    if tool == "AskUserQuestion":
+        # The agent is asking its human something. The queue line should be the
+        # question itself, not `questions=[{'question': ...}]`.
+        questions = tool_input.get("questions") or []
+        asked = [
+            str(q.get("question", "")).strip()
+            for q in questions if isinstance(q, dict) and q.get("question")
+        ]
+        if asked:
+            first = _short(asked[0])
+            extra = f" (+{len(asked) - 1} more)" if len(asked) > 1 else ""
+            return first + extra
     for key in ("file_path", "path", "url", "pattern", "notebook_path",
                 "command", "name", "query", "prompt"):
         if key in tool_input:
@@ -143,6 +155,33 @@ def ask_operator(question: str, context: dict) -> dict:
     return reply.get("result") or {}
 
 
+def _questions(tool_input: dict) -> list[dict]:
+    """The AskUserQuestion payload, reduced to what the console renders.
+
+    Copied out field by field rather than passed through whole: the operator
+    console displays this, and it should show what the tool actually asked even
+    if the tool's schema grows fields capwrap knows nothing about.
+    """
+    out: list[dict] = []
+    for raw in tool_input.get("questions") or []:
+        if not isinstance(raw, dict):
+            continue
+        options = [
+            {
+                "label": str(o.get("label", "")),
+                "description": str(o.get("description", "")),
+            }
+            for o in (raw.get("options") or []) if isinstance(o, dict)
+        ]
+        out.append({
+            "header": str(raw.get("header", "")),
+            "question": str(raw.get("question", "")),
+            "multi_select": bool(raw.get("multiSelect")),
+            "options": options,
+        })
+    return out
+
+
 def main() -> None:
     try:
         event: dict[str, Any] = json.load(sys.stdin)
@@ -162,14 +201,24 @@ def main() -> None:
     container = os.environ.get("CAPWRAP_CONTAINER", "?")
     question = f"{tool}: {summary}" if summary else f"run {tool}"
 
+    context = {
+        "tool": tool,
+        "input": tool_input,
+        "container": container,
+        "cwd": event.get("cwd"),
+        "session": event.get("session_id"),
+    }
+    if tool == "AskUserQuestion":
+        # Flagged, because this one is not a permission at all. Allowing it only
+        # draws the picker in *this agent's* terminal, where someone still has
+        # to answer it with the arrow keys -- so the console needs to show the
+        # choices and offer to take the operator there, rather than presenting
+        # the usual allow/deny pair as if that settled anything.
+        context["kind"] = "user_question"
+        context["questions"] = _questions(tool_input)
+
     try:
-        result = ask_operator(question, {
-            "tool": tool,
-            "input": tool_input,
-            "container": container,
-            "cwd": event.get("cwd"),
-            "session": event.get("session_id"),
-        })
+        result = ask_operator(question, context)
     except (OSError, json.JSONDecodeError, socket.timeout) as exc:
         # Fall back to Claude's own prompt rather than deciding for the operator.
         respond("ask", f"capwrap unreachable ({exc}); falling back to the local prompt")
