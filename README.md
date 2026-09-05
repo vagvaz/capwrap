@@ -402,6 +402,25 @@ explorer is read-only; only the orchestrator holds a factory, and its
 `child_rights` decide what it may do to the agents it spawns. See
 `examples/team/README.md`.
 
+### Crossing a role with a disposition
+
+`examples/roles-and-personas/` separates the two, because they are not the same
+kind of thing. A role is a job *and a set of capabilities*, and it is enforced.
+A persona is a disposition -- a prompt, enforcing nothing.
+
+```bash
+examples/roles-and-personas/compose.py --list          # 22 roles x 15 personas
+examples/roles-and-personas/compose.py architect:idealist architect:pragmatist
+capwrap up examples/roles-and-personas/built/*.toml
+```
+
+Running one role twice with opposed dispositions is the useful case: each gets
+its own branch, neither can see the other's work, so you get two independent
+answers to the same question and the disagreement is the decision. Three roles
+there have no repository at all -- `user`, `product-owner`, `domain-expert` --
+because an opinion on whether the thing works is worth something precisely when
+it was not formed by reading the source.
+
 ## Agents discover capctl on their own
 
 Every container gets a Claude Code skill at
