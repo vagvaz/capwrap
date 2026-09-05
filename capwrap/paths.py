@@ -6,6 +6,8 @@ Layout under the state root (``$CAPWRAP_STATE`` or ``~/.local/state/capwrap``)::
     daemon.sock                 host control socket (the CLI talks to this)
     containers/<name>/
         agent.sock              bound to /run/capwrap.sock inside the sandbox
+        proxy.sock              the network capability proxy, when one is used
+        signing.key             this container's Ed25519 seed, 0600
         shared/                 bound to /shared; delegated files land here
         upper/<slug>/           overlay upper dirs, one per overlay mount
         work/<slug>/            overlay work dirs (must share a fs with upper)
@@ -30,6 +32,15 @@ from pathlib import Path
 GUEST_SOCKET = "/run/capwrap.sock"
 #: Where the guest-side tools (capctl, hook.py) are mounted inside a sandbox.
 GUEST_TOOLS = "/opt/capwrap"
+#: The capability proxy's socket, inside a sandbox. Beside the control socket
+#: and identified the same way: by which socket the connection arrived on.
+GUEST_PROXY_SOCKET = "/run/capwrap-proxy.sock"
+#: The container's Ed25519 signing seed, inside the sandbox. Its own and no
+#: other's: one file per container, never mounted anywhere else.
+GUEST_SIGNING_KEY = "/run/capwrap-key"
+#: Loopback port the in-sandbox relay listens on, and what HTTP_PROXY names.
+#: Inside the container's own network namespace, so it collides with nothing.
+GUEST_PROXY_PORT = 8118
 #: Where delegated dataspaces appear inside a sandbox.
 GUEST_SHARED = "/shared"
 #: Auto-approval policy inside a sandbox. On the /run tmpfs rather than under
@@ -110,6 +121,14 @@ class ContainerPaths:
     @property
     def socket(self) -> Path:
         return self.root / "agent.sock"
+
+    @property
+    def signing_key(self) -> Path:
+        return self.root / "signing.key"
+
+    @property
+    def proxy_socket(self) -> Path:
+        return self.root / "proxy.sock"
 
     @property
     def shared(self) -> Path:

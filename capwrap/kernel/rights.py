@@ -54,6 +54,13 @@ class Rights(Flag):
     #: Create new containers, subject to the factory's quota.
     CREATE = auto()
 
+    # --- Net rule -------------------------------------------------------
+    #: Open connections that this rule's pattern matches. Held per rule, so
+    #: handing a child part of your reach is delegating a subset of your rules
+    #: rather than narrowing a pattern -- which keeps "authority only shrinks"
+    #: a decidable check instead of regex containment, which is not.
+    CONNECT = auto()
+
     def __contains__(self, other: "Rights") -> bool:
         """True when `self` carries every right in `other`.
 
@@ -93,6 +100,12 @@ VALID_RIGHTS: dict[str, Rights] = {
     ),
     "factory": Rights.INSPECT | Rights.DELEGATE | Rights.CREATE,
     "gate": Rights.INSPECT | Rights.DELEGATE | Rights.SEND,
+    "net_rule": Rights.INSPECT | Rights.DELEGATE | Rights.CONNECT,
+    # A board reuses SEND and READ rather than inventing post/subscribe: they
+    # already mean "may put something in" and "may look at the contents", and a
+    # second pair of names for the same two ideas would only be one more thing
+    # to look up.
+    "board": Rights.INSPECT | Rights.DELEGATE | Rights.SEND | Rights.READ,
 }
 
 _BY_NAME = {r.name.lower(): r for r in Rights if r.value}

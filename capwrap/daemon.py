@@ -19,18 +19,23 @@ import contextlib
 import os
 import shutil
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
 from .config import ContainerConfig, load_config_data
 from .errors import CapabilityError, CapwrapError, SandboxError
+from .explain import Explainer
+from .guest import ed25519
 from .ipc.mailbox import MailboxRegistry, write_inbox_file
 from .ipc.protocol import AGENT_OPS, MAX_REQUEST_BYTES, ProtocolError, Request, Response
 from .kernel.audit import AuditLog
 from .kernel.kernel import ROOT, CapKernel
 from .kernel.objects import ContainerObject
+from .kernel import signing
 from .kernel.policy import contains as policy_contains
 from .kernel.rights import VALID_RIGHTS, Rights, parse_rights
+from .net.proxy import NetProxy
 from .paths import ContainerPaths, db_path, force_rmtree, state_root
 from .runtime import bwrap as bwrap_mod
 from .runtime import fsprep, mapper as mapper_mod
@@ -39,11 +44,16 @@ from .runtime.supervisor import PtySession
 
 OPERATOR = "operator"
 
+#: How many inter-container messages the debug trace keeps.  Bounded because a
+#: trace holds whole payloads, which are the agents' working content.
+MESSAGE_TRACE_LIMIT = 2000
+
 #: What an agent gets if it requests a capability without naming rights.
 DEFAULT_REQUEST_RIGHTS = {
     "container": Rights.SEND | Rights.INSPECT,
     "dataspace": Rights.READ,
     "factory": Rights.CREATE,
+    "net_rule": Rights.CONNECT,
 }
 
 
@@ -65,6 +75,9 @@ class PendingApproval:
         self.context = context
         self.created_at = time.time()
         self.future: asyncio.Future[dict] = asyncio.get_event_loop().create_future()
+        #: Set once an outcome has been recorded, so answering and abandoning
+        #: cannot both stamp the inbox entry.
+        self.closed = False
 
     def to_dict(self) -> dict:
         return {
@@ -77,6 +90,62 @@ class PendingApproval:
         }
 
 
+class _RequestTooLong(Exception):
+    """A peer sent more than MAX_REQUEST_BYTES without a newline."""
+
+
+class _Framed:
+    """Newline framing over a StreamReader, plus a raceable end-of-stream.
+
+    `StreamReader.readuntil` cannot be raced against an in-flight request: the
+    losing read has already taken bytes off the stream and nothing hands them
+    back.  That race is exactly what is needed here, because an agent that dies
+    while blocked on an approval must not leave its question sitting in the
+    operator's queue.  So the buffer lives in this object, where whatever
+    arrives *during* a request is simply kept for the request after it.
+    """
+
+    def __init__(self, reader: asyncio.StreamReader, limit: int) -> None:
+        self._reader = reader
+        self._limit = limit
+        self._buffer = bytearray()
+        self.eof = False
+
+    async def readline(self) -> bytes | None:
+        """The next request line, or None once the peer is finished."""
+        while True:
+            cut = self._buffer.find(b"\n")
+            if cut >= 0:
+                line = bytes(self._buffer[: cut + 1])
+                del self._buffer[: cut + 1]
+                return line
+            if len(self._buffer) > self._limit:
+                raise _RequestTooLong
+            if self.eof or not await self._fill():
+                return None
+
+    async def wait_closed(self) -> None:
+        """Resolve when the peer goes away; keep anything it sends first."""
+        while not self.eof:
+            if len(self._buffer) > self._limit:
+                # Stop reading rather than buffer without bound. The next
+                # `readline` refuses the request; until then this simply never
+                # reports a close, which is the safe direction to be wrong in.
+                await asyncio.Event().wait()
+            await self._fill()
+
+    async def _fill(self) -> bool:
+        try:
+            chunk = await self._reader.read(65536)
+        except (ConnectionResetError, asyncio.IncompleteReadError, OSError):
+            chunk = b""
+        if not chunk:
+            self.eof = True
+            return False
+        self._buffer += chunk
+        return True
+
+
 class Container:
     """A registered container and, when running, its sandbox."""
 
@@ -87,6 +156,8 @@ class Container:
         self.session: PtySession | None = None
         self.prepared: fsprep.PreparedFs | None = None
         self.server: asyncio.AbstractServer | None = None
+        #: Only for a container with network rules; None means no network.
+        self.proxy: NetProxy | None = None
 
     @property
     def name(self) -> str:
@@ -118,7 +189,17 @@ class Container:
 class Daemon:
     """Owns every container, and implements the kernel's effects."""
 
-    def __init__(self, audit_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        audit_path: Path | None = None,
+        trace_messages: bool = False,
+        instance_name: str = "",
+    ) -> None:
+        #: What this whole capwrap is *for* -- "FastPath HashTable", say. Purely
+        #: a label, but a load-bearing one: several of these run at once on
+        #: different ports, and without it every browser tab is called "capwrap"
+        #: and you cannot tell which team of agents you are looking at.
+        self.instance_name = instance_name.strip()
         self.state = state_root()
         self.state.mkdir(parents=True, exist_ok=True)
         self.audit = AuditLog(audit_path if audit_path is not None else db_path())
@@ -126,6 +207,13 @@ class Daemon:
         self.mailboxes = MailboxRegistry()
         self.containers: dict[str, Container] = {}
         self.approvals: dict[int, PendingApproval] = {}
+        #: Opt-in, and off by default: a trace holds whole message payloads,
+        #: which are the agents' working content, not metadata. The audit log
+        #: records that a message was sent; this records what was in it.
+        self.trace_messages = bool(trace_messages)
+        self.message_trace: deque[dict] = deque(maxlen=MESSAGE_TRACE_LIMIT)
+        #: Explanations of pending requests, produced on demand.
+        self.explainer = Explainer()
         #: Operator-inbox entries for questions, so a resolved one can be marked.
         #: The inbox is history and survives a reload; without this an answered
         #: question comes back looking like an open one.
@@ -165,10 +253,34 @@ class Daemon:
         config.validate_sources()
         obj = self.kernel.register_container(config, parent=parent)
         container = Container(config, obj)
+        self._mint_signing_key(container)
         self.containers[config.name] = container
         self.mailboxes.get(config.name)
         self._emit("container.registered", {"container": config.name})
         return container
+
+    def _mint_signing_key(self, container: Container) -> None:
+        """Give a container a signing identity, and keep only its public half.
+
+        The seed is written into the container's own private directory and bound
+        into its sandbox alone; the public key goes on the kernel object, where
+        anyone reading a board can find it. The daemon does not keep the seed in
+        memory, which is not a strong claim -- it wrote the file and could read
+        it back -- but it does mean the ordinary path never has it.
+
+        A key is minted per registration rather than per start, so a container
+        that is stopped and started again keeps the identity its earlier posts
+        were signed with.
+        """
+        paths = container.paths
+        paths.root.mkdir(parents=True, exist_ok=True)
+        if paths.signing_key.exists():
+            seed = paths.signing_key.read_bytes()
+        else:
+            seed = ed25519.generate_seed()
+            paths.signing_key.write_bytes(seed)
+        os.chmod(paths.signing_key, 0o600)
+        container.obj.public_key = ed25519.public_key(seed).hex()
 
     def link_all_peers(self) -> None:
         """Resolve peer capabilities that referred to containers registered later."""
@@ -194,9 +306,10 @@ class Daemon:
         )
         container.obj.mounts = fsprep.describe(container.prepared)
 
-        # Bind the container's socket *before* building the argv, because
-        # `build_argv` only mounts it if the file already exists.
+        # Bind the container's sockets *before* building the argv, because
+        # `build_argv` only mounts them if the files already exist.
         container.server = await self._serve_container(container)
+        await self._serve_proxy(container)
 
         argv = bwrap_mod.build_argv(
             container.config,
@@ -231,6 +344,7 @@ class Daemon:
         container.obj.state = "exited"
         container.obj.exit_code = code
         container.obj.pid = None
+        self.abandon_approvals(container.name, "the container exited")
         self.audit.record(ROOT, "container.exit", allowed=True, target=container.name,
                           detail={"exit_code": code})
         self._emit("container.exited", {"container": container.name, "exit_code": code})
@@ -261,11 +375,19 @@ class Daemon:
 
         if container.server is not None:
             container.server.close()
+            # Bounded. `wait_closed` also waits for in-flight handler tasks, and
+            # an agent that opened the control socket and never closed it would
+            # otherwise park the daemon here for good -- which on the way out of
+            # `capwrap up` means a process that will not exit.
             with contextlib.suppress(Exception):
-                await container.server.wait_closed()
+                await asyncio.wait_for(container.server.wait_closed(), timeout=2.0)
+        if container.proxy is not None:
+            await container.proxy.stop()
+            container.proxy = None
         if container.prepared is not None:
             container.prepared.cleanup()
 
+        self.abandon_approvals(name, "the container was dismissed")
         result = self.kernel.forget_container(name)
         self.mailboxes.drop(name)
         del self.containers[name]
@@ -311,20 +433,38 @@ class Daemon:
         os.chmod(socket_path, 0o600)
         return server
 
+    async def _serve_proxy(self, container: Container) -> None:
+        """Bind this container's network proxy, if it has any network rules.
+
+        A container with none gets no socket at all -- not an empty allowlist.
+        The difference matters: there is then nothing in its filesystem that even
+        gestures at an outside world.
+        """
+        if not container.config.proxied_network:
+            return
+        proxy = NetProxy(
+            container.name,
+            decide=lambda name, host, port: self.kernel.net_allows(name, host, port),
+            on_event=lambda record: self._emit("net.request", record),
+        )
+        await proxy.start(container.paths.proxy_socket)
+        container.proxy = proxy
+
     async def _handle_connection(
         self, actor: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        framed = _Framed(reader, MAX_REQUEST_BYTES)
         try:
             while True:
                 try:
-                    line = await reader.readuntil(b"\n")
-                except asyncio.LimitOverrunError:
+                    line = await framed.readline()
+                except _RequestTooLong:
                     await self._reply(writer, Response(
                         id=0, ok=False, code="protocol_error",
                         message="request exceeds the maximum size",
                     ))
                     return
-                except (asyncio.IncompleteReadError, ConnectionResetError):
+                if line is None:
                     return
                 if not line.strip():
                     continue
@@ -335,12 +475,46 @@ class Daemon:
                     ))
                     return
 
-                response = await self._dispatch(actor, line)
+                response = await self._serve(actor, line, framed)
+                if response is None:
+                    return          # the caller hung up mid-request
                 await self._reply(writer, response)
         finally:
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
+
+    async def _serve(
+        self, actor: str, line: bytes, framed: _Framed
+    ) -> Response | None:
+        """Handle one request, giving it up if the caller disappears.
+
+        The requests that take real time are the blocking ones -- `ask` and
+        `cap.request` -- and those are precisely the ones that leave something
+        behind.  A hook whose agent is killed mid-prompt would otherwise leave
+        its question in the operator's queue with nothing on the far end:
+        answering it does nothing, and it is still sitting there when the
+        browser next reconnects, which is what makes stale approvals look like
+        a UI bug rather than a daemon one.
+        """
+        dispatch = asyncio.ensure_future(self._dispatch(actor, line))
+        hung_up = asyncio.ensure_future(framed.wait_closed())
+        try:
+            await asyncio.wait(
+                {dispatch, hung_up}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if dispatch.done():
+                # `_dispatch` turns every failure into a Response, so the only
+                # way it ends without one is cancellation.
+                return None if dispatch.cancelled() else dispatch.result()
+            dispatch.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await dispatch
+            return None
+        finally:
+            hung_up.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await hung_up
 
     async def _reply(self, writer: asyncio.StreamWriter, response: Response) -> None:
         writer.write(response.encode())
@@ -377,7 +551,13 @@ class Daemon:
         k = self.kernel
 
         if op == "whoami":
-            return {"container": actor, "caps": len(k.tasks[actor])}
+            obj = k.find_container(actor)
+            return {
+                "container": actor,
+                "caps": len(k.tasks[actor]),
+                "public_key": obj.public_key if obj else "",
+                "fingerprint": signing.fingerprint(obj.public_key) if obj else "",
+            }
         if op == "cap.list":
             return [c.to_dict() for c in k.cap_list(actor)]
         if op == "cap.info":
@@ -392,7 +572,32 @@ class Daemon:
                 actor, int(args["slot"]), bool(args.get("include_self", False))
             )
         if op == "msg.send":
-            return k.msg_send(actor, int(args["slot"]), args.get("payload"))
+            return k.msg_send(
+                actor, int(args["slot"]), args.get("payload"),
+                signature=str(args.get("signature") or ""),
+            )
+        if op == "msg.broadcast":
+            slots = args.get("slots")
+            if not isinstance(slots, list) or not slots:
+                raise ProtocolError("'slots' must be a non-empty list")
+            return k.msg_broadcast(
+                actor, [int(s) for s in slots], args.get("payload"),
+                signature=str(args.get("signature") or ""),
+            )
+        if op == "board.create":
+            return k.board_create(
+                actor, int(args["factory_slot"]), str(args.get("topic", ""))
+            )
+        if op == "board.post":
+            return k.board_post(
+                actor, int(args["slot"]), args.get("payload"),
+                signature=str(args.get("signature") or ""),
+            )
+        if op == "board.read":
+            return k.board_read(
+                actor, int(args["slot"]),
+                since=int(args.get("since", 0)), limit=int(args.get("limit", 50)),
+            )
         if op == "msg.recv":
             box = self.mailboxes.get(actor)
             timeout = args.get("timeout", 0)
@@ -531,6 +736,7 @@ class Daemon:
         box = self.mailboxes.get(target)
         posted = box.post(message)
 
+        notify = "none"
         container = self.containers.get(target)
         if container is not None:
             notify = container.config.runtime.notify
@@ -543,7 +749,76 @@ class Daemon:
                         f"\r\n[capwrap] message from {posted.sender}: "
                         f"{posted.payload}\r\n"
                     )
+        self._trace_message(target, posted, notify)
         self._emit("message", {"to": target, "message": posted.to_dict()})
+
+    # ------------------------------------------------------------------
+    # message tracing -- opt-in, for working out why agents are not talking
+    # ------------------------------------------------------------------
+
+    def _trace_message(self, target: str, posted: Any, notify: str) -> None:
+        """Record one delivery, if tracing is on.
+
+        The audit log already says that a message was sent and through which
+        slot. What it deliberately does not keep is the payload, and that is
+        the one thing you need when two agents are talking past each other. So
+        this is a separate, opt-in buffer rather than more audit detail.
+        """
+        if not self.trace_messages:
+            return
+        record = {
+            "id": posted.id,
+            "ts": posted.ts,
+            "from": posted.sender,
+            "to": target,
+            "kind": posted.kind,
+            "via_slot": posted.via_slot,
+            "notify": notify,
+            "payload": posted.payload,
+            "signature": posted.signature,
+            "public_key": posted.public_key,
+            "signed": posted.signed,
+        }
+        self.message_trace.append(record)
+        self._emit("message.trace", {"record": record})
+
+    def trace_state(self) -> dict:
+        return {
+            "enabled": self.trace_messages,
+            "recorded": len(self.message_trace),
+            "capacity": self.message_trace.maxlen,
+        }
+
+    def set_message_trace(self, enabled: bool) -> dict:
+        """Turn the trace on or off at runtime.
+
+        Turning it off discards what was collected: leaving payloads in memory
+        after the operator has said they no longer want them recorded would
+        make "off" mean something weaker than it says.
+        """
+        enabled = bool(enabled)
+        if enabled != self.trace_messages:
+            self.audit.record(
+                OPERATOR, "trace.messages", allowed=True,
+                detail={"enabled": enabled},
+            )
+        self.trace_messages = enabled
+        if not enabled:
+            self.message_trace.clear()
+        self._emit("trace.changed", self.trace_state())
+        return self.trace_state()
+
+    def traced_messages(self, limit: int = 200) -> list[dict]:
+        return list(self.message_trace)[-max(1, limit):]
+
+    def board_posted(self, topic: str, entry: dict) -> None:
+        """A board gained a post.
+
+        Emitted, not delivered: a board is read by whoever holds it rather than
+        pushed at anyone, so there is no mailbox to write to. The console is the
+        one reader that wants telling.
+        """
+        self._emit("board.posted", {"board": topic, "post": entry})
 
     def kill_container(self, name: str, signal: int) -> None:
         container = self.containers.get(name)
@@ -644,10 +919,17 @@ class Daemon:
         self.kernel.audit.record(
             container, "ask", allowed=True, target=OPERATOR, detail=question[:200]
         )
-        self._question_messages[pending.id] = self.mailboxes.get(OPERATOR).post({
+        message = self.mailboxes.get(OPERATOR).post({
             "from": container, "kind": "question",
             "payload": {"id": pending.id, "question": question, "context": context},
         })
+        self._question_messages[pending.id] = message
+        # Posted straight to the mailbox rather than through `deliver_message`,
+        # since the operator is not a container -- so the event that a browser
+        # listens for has to be emitted here too. Without it a question only
+        # showed up in the inbox after a reload, which made the inbox look like
+        # it had missed it.
+        self._emit("message", {"to": OPERATOR, "message": message.to_dict()})
         self._emit("approval.requested", pending.to_dict())
 
         if not blocking:
@@ -656,7 +938,16 @@ class Daemon:
         try:
             return await asyncio.wait_for(pending.future, timeout=timeout)
         except (asyncio.TimeoutError, TimeoutError):
+            self._abandon(pending, "timeout", "no answer from the operator")
             return {"id": pending.id, "decision": "timeout", "reason": "no answer"}
+        except asyncio.CancelledError:
+            # The asker is gone: its process died, its container exited, or the
+            # control connection dropped. Nobody is left to receive an answer,
+            # so the question must not stay in the queue looking answerable.
+            self._abandon(
+                pending, "abandoned", f"{container} is no longer waiting for an answer"
+            )
+            raise
         finally:
             self.approvals.pop(pending.id, None)
 
@@ -695,6 +986,13 @@ class Daemon:
         # and the kernel would reject the grant after the operator had already
         # clicked approve.
         requested = parse_rights(rights) if rights else DEFAULT_REQUEST_RIGHTS[kind]
+
+        if kind == "net_rule" and "=" not in target:
+            raise CapabilityError(
+                "a net_rule request names the rule and its pattern, as "
+                "'name=<host:port regex>' -- for example "
+                "\"pypi=(pypi\\.org|files\\.pythonhosted\\.org):443\""
+            )
 
         self.audit.record(
             actor, "cap.request", allowed=True, target=target,
@@ -759,14 +1057,7 @@ class Daemon:
         pending.future.set_result(
             {"decision": decision, "reason": reason, "rights": rights}
         )
-
-        # Record the outcome on the inbox entry. That list is replayed verbatim
-        # when the page reloads, so an answered question would otherwise come
-        # back indistinguishable from one still waiting.
-        message = self._question_messages.pop(approval_id, None)
-        if message is not None and isinstance(message.payload, dict):
-            message.payload["decision"] = decision
-            message.payload["reason"] = reason
+        self._close_question(pending, decision, reason)
         self.kernel.audit.record(
             OPERATOR, "approval.resolve", allowed=(decision == "allow"),
             target=pending.container, detail={"decision": decision, "reason": reason},
@@ -778,6 +1069,67 @@ class Daemon:
         return [
             p.to_dict() for p in self.approvals.values() if not p.future.done()
         ]
+
+    def _close_question(
+        self, pending: PendingApproval, decision: str, reason: str
+    ) -> None:
+        """Stamp an outcome onto the operator-inbox copy of a question.
+
+        The inbox is history and is replayed verbatim on reload, so a question
+        with nothing recorded against it comes back looking like one still
+        waiting on you.
+        """
+        if pending.closed:
+            return
+        pending.closed = True
+        self.explainer.forget(pending.id)
+        message = self._question_messages.pop(pending.id, None)
+        if message is not None and isinstance(message.payload, dict):
+            message.payload["decision"] = decision
+            message.payload["reason"] = reason
+
+    def _abandon(self, pending: PendingApproval, decision: str, reason: str) -> None:
+        """Retire a question that is not going to be answered.
+
+        The waiter, if there still is one, is given the outcome rather than
+        having its connection dropped: a container being dismissed out from
+        under a `capctl ask` should see "abandoned" and exit on it, not report
+        that the daemon hung up on it. Where the waiter has already gone -- the
+        connection-lost case -- the future is cancelled by then and this only
+        records what happened.
+
+        Idempotent, because the two paths overlap: resolving the future to clear
+        a dead container's queue is itself what wakes the coroutine that then
+        finds its own question already closed.
+        """
+        if pending.closed:
+            self.approvals.pop(pending.id, None)
+            return
+        self._close_question(pending, decision, reason)
+        self.approvals.pop(pending.id, None)
+        if not pending.future.done():
+            pending.future.set_result({"decision": decision, "reason": reason})
+        self.audit.record(
+            ROOT, "approval.abandon", allowed=False, target=pending.container,
+            detail={"decision": decision, "reason": reason},
+        )
+        self._emit("approval.resolved", {"id": pending.id, "decision": decision})
+
+    def abandon_approvals(self, container: str, reason: str) -> int:
+        """Clear every question a container still has open.
+
+        Called when it exits or is dismissed. Without this its questions
+        outlive it: `pending_approvals` still reports them, so they come back
+        on every page load and every reconnect, and clicking Allow resolves a
+        future that nothing is waiting on.
+        """
+        stale = [
+            p for p in list(self.approvals.values())
+            if p.container == container and not p.closed
+        ]
+        for pending in stale:
+            self._abandon(pending, "abandoned", reason)
+        return len(stale)
 
     # ==================================================================
     # events, for the web UI
@@ -807,6 +1159,7 @@ class Daemon:
 
     def overview(self) -> dict:
         return {
+            "instance": self.instance_name,
             "containers": [c.status() for c in self.containers.values()],
             "tree": self.kernel.container_tree(),
             "approvals": self.pending_approvals(),
@@ -816,7 +1169,14 @@ class Daemon:
         }
 
     async def shutdown(self) -> None:
+        """Tear everything down, on the way out of `capwrap up`.
+
+        `force`, because `destroy` otherwise refuses a running container. That
+        guard exists to stop a mis-click in the tree ending an agent mid-task,
+        and it has no business surviving into shutdown: without it Ctrl-C left
+        every sandbox running and the process hanging on its own cleanup.
+        """
         for name in list(self.containers):
             with contextlib.suppress(Exception):
-                await self.destroy(name)
+                await self.destroy(name, force=True)
         self.audit.close()

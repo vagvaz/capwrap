@@ -512,3 +512,263 @@ def test_an_operator_launched_container_is_not_clamped(kernel):
     factory = [c for c in kernel.cap_list("top") if c.kind == "factory"][0]
     assert factory.detail["quota_containers"] == 50
     assert "kill" in factory.detail["child_rights"]
+
+
+# ==========================================================================
+# broadcast
+# ==========================================================================
+
+
+def test_broadcast_is_the_same_messages_sent_together(kernel):
+    """One call, but every slot is still checked and delivered on its own."""
+    delivered: list[tuple[str, object]] = []
+
+    class Recording:
+        def deliver_message(self, target, message):
+            delivered.append((target, message["payload"]))
+
+        def __getattr__(self, _name):  # every other hook is unused here
+            return lambda *a, **k: None
+
+    kernel.hooks = Recording()
+    for name in ("b", "c", "d"):
+        kernel.register_container(config(name))
+    kernel.register_container(config("a", peers=[
+        {"container": n, "rights": ["send"]} for n in ("b", "c", "d")
+    ]))
+
+    slots = [slot_labelled(kernel, "a", f"peer:{n}") for n in ("b", "c", "d")]
+    result = kernel.msg_broadcast("a", slots, "stand up")
+
+    assert result["recipients"] == ["b", "c", "d"]
+    assert result["refused"] == []
+    assert delivered == [("b", "stand up"), ("c", "stand up"), ("d", "stand up")]
+
+
+def test_broadcast_grants_no_reach_it_did_not_already_have(kernel):
+    """There is no 'broadcast' right: a slot you may not send through is refused.
+
+    The point of checking this is that a bulk operation is exactly where an
+    ambient-authority hole would hide -- one unchecked slot in a list of five is
+    easy to miss and hard to notice in use.
+    """
+    kernel.register_container(config("b"))
+    kernel.register_container(config("c"))
+    kernel.register_container(config("a", peers=[
+        {"container": "b", "rights": ["send"]},
+        {"container": "c", "rights": ["inspect"]},   # no send
+    ]))
+
+    good = slot_labelled(kernel, "a", "peer:b")
+    weak = slot_labelled(kernel, "a", "peer:c")
+    result = kernel.msg_broadcast("a", [good, weak, 91], "hello")
+
+    assert result["recipients"] == ["b"]
+    assert [r["slot"] for r in result["refused"]] == [weak, 91]
+    assert result["refused"][0]["code"] == "insufficient_rights"
+    assert result["refused"][1]["code"] == "no_such_cap"
+
+
+def test_one_refusal_does_not_cancel_the_rest_of_a_broadcast(kernel):
+    """A partial broadcast is a real outcome, not a failure to be rolled back."""
+    kernel.register_container(config("b"))
+    kernel.register_container(config("a", peers=[{"container": "b", "rights": ["send"]}]))
+    result = kernel.msg_broadcast(
+        "a", [91, slot_labelled(kernel, "a", "peer:b")], "still went"
+    )
+    assert result["recipients"] == ["b"]
+
+
+def test_naming_a_slot_twice_delivers_once(kernel):
+    kernel.register_container(config("b"))
+    kernel.register_container(config("a", peers=[{"container": "b", "rights": ["send"]}]))
+    slot = slot_labelled(kernel, "a", "peer:b")
+    result = kernel.msg_broadcast("a", [slot, slot, slot], "once please")
+    assert len(result["delivered"]) == 1
+
+
+# ==========================================================================
+# boards
+# ==========================================================================
+
+
+def test_a_board_needs_a_factory_to_create(kernel):
+    """Creating something for others to use is what a factory capability means.
+
+    A worker holding no factory has no way to mint a board and then hand itself
+    rights on it, which would otherwise be a way to manufacture a channel the
+    operator never authorised.
+    """
+    kernel.register_container(config("worker"))
+    with pytest.raises(NoSuchCapability):
+        kernel.board_create("worker", 99, "standup")
+
+
+def test_the_creator_of_a_board_holds_all_of_it(kernel):
+    kernel.register_container(config(
+        "boss", factory={"rights": ["create"], "quota": {"containers": 1}}
+    ))
+    factory = slot_labelled(kernel, "boss", "factory")
+    result = kernel.board_create("boss", factory, "standup")
+
+    assert result["board"] == "standup"
+    assert set(result["rights"]) == {"send", "read", "inspect", "delegate"}
+
+
+def test_reading_a_board_takes_nothing_off_it(kernel):
+    """The whole difference from a mailbox.
+
+    A mailbox is one queue with one owner and reading consumes, so two agents
+    cannot both see the same message. Several agents coordinating need the
+    opposite, and a late arrival needs to be able to catch up.
+    """
+    kernel.register_container(config(
+        "boss", factory={"rights": ["create"], "quota": {"containers": 1}}
+    ))
+    slot = kernel.board_create(
+        "boss", slot_labelled(kernel, "boss", "factory"), "standup"
+    )["slot"]
+
+    kernel.board_post("boss", slot, "first")
+    kernel.board_post("boss", slot, "second")
+
+    first_read = kernel.board_read("boss", slot)
+    second_read = kernel.board_read("boss", slot)
+    assert [p["payload"] for p in first_read["posts"]] == ["first", "second"]
+    assert [p["payload"] for p in second_read["posts"]] == ["first", "second"]
+
+
+def test_each_reader_keeps_its_own_place(kernel):
+    kernel.register_container(config(
+        "boss", factory={"rights": ["create"], "quota": {"containers": 1}}
+    ))
+    slot = kernel.board_create(
+        "boss", slot_labelled(kernel, "boss", "factory"), "standup"
+    )["slot"]
+    kernel.board_post("boss", slot, "first")
+    kernel.board_post("boss", slot, "second")
+
+    caught_up = kernel.board_read("boss", slot, since=1)
+    assert [p["payload"] for p in caught_up["posts"]] == ["second"]
+    assert caught_up["latest"] == 2
+
+
+def test_posting_and_reading_a_board_are_separate_rights(kernel):
+    """Which is the point of putting a board behind a capability at all.
+
+    An orchestrator can give a worker `send` so it reports progress without
+    reading its peers' notes, or `read` so it follows along without being able
+    to speak.
+    """
+    kernel.register_container(config("reader"))
+    kernel.register_container(config("writer"))
+    kernel.register_container(config(
+        "boss",
+        factory={"rights": ["create"], "quota": {"containers": 1}},
+        peers=[
+            {"container": "reader", "rights": ["send"]},
+            {"container": "writer", "rights": ["send"]},
+        ],
+    ))
+    board_slot = kernel.board_create(
+        "boss", slot_labelled(kernel, "boss", "factory"), "standup"
+    )["slot"]
+
+    kernel.cap_delegate(
+        "boss", slot_labelled(kernel, "boss", "peer:reader"), board_slot, ["read"]
+    )
+    kernel.cap_delegate(
+        "boss", slot_labelled(kernel, "boss", "peer:writer"), board_slot, ["send"]
+    )
+
+    reader_slot = slot_labelled(kernel, "reader", "board:standup")
+    writer_slot = slot_labelled(kernel, "writer", "board:standup")
+
+    kernel.board_post("writer", writer_slot, "from the writer")
+    with pytest.raises(InsufficientRights):
+        kernel.board_post("reader", reader_slot, "should be refused")
+    with pytest.raises(InsufficientRights):
+        kernel.board_read("writer", writer_slot)
+
+    seen = kernel.board_read("reader", reader_slot)
+    assert [p["payload"] for p in seen["posts"]] == ["from the writer"]
+
+
+def test_a_board_capability_cannot_be_widened_on_the_way_out(kernel):
+    """The usual monotonicity rule, on the newest object kind."""
+    kernel.register_container(config("worker"))
+    kernel.register_container(config(
+        "boss",
+        factory={"rights": ["create"], "quota": {"containers": 1}},
+        peers=[{"container": "worker", "rights": ["send"]}],
+    ))
+    board_slot = kernel.board_create(
+        "boss", slot_labelled(kernel, "boss", "factory"), "standup"
+    )["slot"]
+
+    # Hand on read-only, then try to widen from there.
+    kernel.cap_delegate(
+        "boss", slot_labelled(kernel, "boss", "peer:worker"), board_slot, ["read"]
+    )
+    worker_board = slot_labelled(kernel, "worker", "board:standup")
+    with pytest.raises(InsufficientRights):
+        # No `delegate` right either, so it cannot pass anything on at all.
+        kernel.cap_delegate("worker", 1, worker_board, ["read", "send"])
+
+
+def test_revoking_a_board_removes_it_from_everyone_derived_from_you(kernel):
+    kernel.register_container(config("worker"))
+    kernel.register_container(config(
+        "boss",
+        factory={"rights": ["create"], "quota": {"containers": 1}},
+        peers=[{"container": "worker", "rights": ["send"]}],
+    ))
+    board_slot = kernel.board_create(
+        "boss", slot_labelled(kernel, "boss", "factory"), "standup"
+    )["slot"]
+    kernel.cap_delegate(
+        "boss", slot_labelled(kernel, "boss", "peer:worker"), board_slot, ["read"]
+    )
+    assert any(c.label == "board:standup" for c in kernel.cap_list("worker"))
+
+    kernel.cap_revoke("boss", board_slot)
+    assert not any(c.label == "board:standup" for c in kernel.cap_list("worker"))
+
+
+def test_a_board_keeps_a_bounded_history(kernel):
+    """A board is somewhere to coordinate, not a durable log; audit is that."""
+    from capwrap.kernel.objects import BOARD_HISTORY
+
+    kernel.register_container(config(
+        "boss", factory={"rights": ["create"], "quota": {"containers": 1}}
+    ))
+    slot = kernel.board_create(
+        "boss", slot_labelled(kernel, "boss", "factory"), "chatty"
+    )["slot"]
+    for n in range(BOARD_HISTORY + 25):
+        kernel.board_post("boss", slot, n)
+
+    board = kernel.boards()[0]
+    assert len(board.posts) == BOARD_HISTORY
+    assert board.posts[-1]["payload"] == BOARD_HISTORY + 24
+
+
+def test_the_operator_can_see_who_may_post_and_who_may_only_read(kernel):
+    kernel.register_container(config("reader"))
+    kernel.register_container(config(
+        "boss",
+        factory={"rights": ["create"], "quota": {"containers": 1}},
+        peers=[{"container": "reader", "rights": ["send"]}],
+    ))
+    board_slot = kernel.board_create(
+        "boss", slot_labelled(kernel, "boss", "factory"), "standup"
+    )["slot"]
+    kernel.cap_delegate(
+        "boss", slot_labelled(kernel, "boss", "peer:reader"), board_slot, ["read"]
+    )
+
+    holders = {
+        h["container"]: h for h in kernel.board_holders(kernel.boards()[0].oid)
+    }
+    assert holders["boss"]["may_post"] and holders["boss"]["may_read"]
+    assert holders["reader"]["may_read"] and not holders["reader"]["may_post"]

@@ -1,0 +1,40 @@
+# An agent that may reach two places on the internet and nowhere else.
+#
+#   capwrap up examples/agents/networked.toml
+#
+# It keeps --unshare-net, so it has no route anywhere. Its only egress is the
+# capability proxy, which asks the kernel about every connection and audits both
+# answers. See docs/networking.md.
+
+name = "networked"
+
+[runtime]
+command = ["/bin/bash", "-l"]
+cwd     = "/work"
+tty     = true
+
+[sandbox]
+base    = "host-ro"
+# Deliberately absent: `network = true` would hand over the host's whole network
+# stack, and is refused alongside rules for exactly that reason.
+unshare = ["pid", "ipc", "uts", "cgroup"]
+
+[[mounts]]
+dest = "/work"
+mode = "tmpfs"
+size = "256m"
+
+# Patterns are regexes over host:port, anchored at both ends before use -- so
+# `pypi\.org:443` cannot also match `pypi.org:443.attacker.example`. Ports are
+# part of the destination: :443 here does not grant :22.
+[[caps.network]]
+name    = "pypi"
+pattern = '(pypi\.org|files\.pythonhosted\.org):443'
+
+[[caps.network]]
+name    = "anthropic"
+pattern = 'api\.anthropic\.com:443'
+
+# Anything else is refused with a 403 naming the rules it does hold, and how to
+# ask for another:
+#   capctl request net_rule 'github=github\.com:443' --reason '...'

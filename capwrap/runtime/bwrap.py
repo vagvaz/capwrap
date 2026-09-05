@@ -20,7 +20,10 @@ from ..paths import (
     GUEST_GITDIR_ROOT,
     GUEST_HOME,
     GUEST_POLICY,
+    GUEST_PROXY_PORT,
+    GUEST_PROXY_SOCKET,
     GUEST_SHARED,
+    GUEST_SIGNING_KEY,
     GUEST_SOCKET,
     GUEST_TOOLS,
     ContainerPaths,
@@ -60,7 +63,7 @@ def build_argv(
     # capwrap's own mounts (HOME, /shared, the socket) go before the config's,
     # so a config can layer over them -- e.g. mounting a private copy of an
     # agent's credential directory at $HOME/.claude.
-    argv += _capwrap_args(paths, guest_tools)
+    argv += _capwrap_args(paths, guest_tools, proxied=config.proxied_network)
     argv += _mount_args(prepared.mounts)
     # Injected files come last and therefore win over every mount.
     argv += _file_args(prepared.files)
@@ -69,8 +72,27 @@ def build_argv(
     # See `build_env`.
     argv += ["--chdir", config.runtime.cwd]
     argv += ["--"]
-    argv += list(config.runtime.command)
+    argv += _entry_command(config)
     return argv
+
+
+def _entry_command(config: ContainerConfig) -> list[str]:
+    """What actually runs inside: the agent, or the relay wrapping it.
+
+    A proxied container has no route to the host, so the proxy is reachable only
+    over a bind-mounted unix socket -- which no HTTP client can be pointed at.
+    The relay turns it into a loopback port that every client understands, and
+    runs as the entry point so it cannot outlive the agent it exists for.
+    """
+    command = list(config.runtime.command)
+    if not config.proxied_network:
+        return command
+    return [
+        "/usr/bin/env", "python3", f"{GUEST_TOOLS}/netrelay.py",
+        "--port", str(GUEST_PROXY_PORT),
+        "--socket", GUEST_PROXY_SOCKET,
+        "--", *command,
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -82,6 +104,8 @@ def _namespace_args(config: ContainerConfig) -> list[str]:
 
     requested = set(sb.unshare)
     if not sb.network:
+        # Proxied containers land here too, and must: the proxy only means
+        # anything if the container has no other way out.
         requested.add("net")
     elif "net" in requested:
         raise SandboxError(
@@ -134,7 +158,11 @@ def _base_args(config: ContainerConfig) -> list[str]:
     # wants to drop there.
     args += ["--tmpfs", "/run", "--tmpfs", "/var/tmp"]
 
-    if config.sandbox.network:
+    if config.sandbox.network or config.proxied_network:
+        # A proxied container resolves nothing itself -- the proxy does the DNS
+        # -- but TLS libraries and HTTP clients still read /etc/hosts and
+        # /etc/nsswitch.conf on the way past, and a dangling symlink there is an
+        # error rather than a no-op.
         args += _resolver_args()
     return args
 
@@ -195,7 +223,9 @@ def _mount_args(mounts: list[ResolvedMount]) -> list[str]:
     return args
 
 
-def _capwrap_args(paths: ContainerPaths, guest_tools: Path | None) -> list[str]:
+def _capwrap_args(
+    paths: ContainerPaths, guest_tools: Path | None, proxied: bool = False
+) -> list[str]:
     """Mount the container's single channel to the outside world.
 
     The agent socket is the container's only route to the capability kernel, and
@@ -208,6 +238,12 @@ def _capwrap_args(paths: ContainerPaths, guest_tools: Path | None) -> list[str]:
     ]
     if paths.socket.exists():
         args += ["--bind", str(paths.socket), GUEST_SOCKET]
+    if proxied and paths.proxy_socket.exists():
+        args += ["--bind", str(paths.proxy_socket), GUEST_PROXY_SOCKET]
+    # Read-only: the container signs with it and has no business rewriting the
+    # identity its earlier posts were made under.
+    if paths.signing_key.exists():
+        args += ["--ro-bind", str(paths.signing_key), GUEST_SIGNING_KEY]
     if guest_tools is not None and guest_tools.exists():
         args += ["--ro-bind", str(guest_tools), GUEST_TOOLS]
     return args
@@ -272,8 +308,19 @@ def build_env(config: ContainerConfig, extra: dict[str, str] | None = None) -> d
         "CAPWRAP_CONTAINER": config.name,
         "CAPWRAP_SHARED": GUEST_SHARED,
         "CAPWRAP_POLICY": GUEST_POLICY,
+        "CAPWRAP_SIGNING_KEY": GUEST_SIGNING_KEY,
         "GIT_CONFIG_GLOBAL": f"{GUEST_HOME}/.gitconfig",
     })
+    if config.proxied_network:
+        # Both cases, because tooling is split on which it reads, and `no_proxy`
+        # keeps the loopback relay itself from being proxied through itself.
+        proxy = f"http://127.0.0.1:{GUEST_PROXY_PORT}"
+        env.update({
+            "HTTP_PROXY": proxy, "HTTPS_PROXY": proxy,
+            "http_proxy": proxy, "https_proxy": proxy,
+            "ALL_PROXY": proxy, "all_proxy": proxy,
+            "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
+        })
     if config.runtime.tty:
         env["TERM"] = os.environ.get("TERM", "xterm-256color")
     env.update(extra or {})

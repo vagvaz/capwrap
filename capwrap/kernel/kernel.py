@@ -23,6 +23,7 @@ Design rules, in order of importance:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -39,15 +40,18 @@ from .audit import AuditLog
 from .captable import Task
 from .mapdb import MapNode, MappingDB
 from .objects import (
+    BoardObject,
     CapRef,
     ContainerObject,
     DataspaceObject,
     FactoryObject,
     GateObject,
     KernelObject,
+    NetRuleObject,
     new_oid,
 )
 from .rights import VALID_RIGHTS, Rights, parse_rights, validate_for
+from .signing import verify_message, verify_post
 
 #: The operator's task.  Holds a root capability on every object, which is what
 #: makes "revoke anything from the web UI" always possible.
@@ -60,6 +64,10 @@ ROOT = "root"
 #: an agent spawns a child, the child's "talk back to your parent" capability is
 #: derived from the parent's capability on itself, and without DELEGATE that
 #: derivation is illegal and every spawn fails.
+#: How many boards one container may create. Bounded because a board holds
+#: messages in memory and creating them is otherwise free.
+BOARD_LIMIT_PER_CONTAINER = 32
+
 SELF_RIGHTS = (
     Rights.INSPECT
     | Rights.SEND
@@ -73,6 +81,7 @@ class Hooks(Protocol):
     """Effects the kernel authorises but does not perform."""
 
     def deliver_message(self, target: str, message: dict) -> None: ...
+    def board_posted(self, topic: str, entry: dict) -> None: ...
     def kill_container(self, name: str, signal: int) -> None: ...
     def signal_container(self, name: str, signal: int) -> None: ...
     def write_input(self, name: str, data: str) -> None: ...
@@ -90,6 +99,9 @@ class NullHooks:
     """No-op hooks, so the kernel can be exercised on its own in tests."""
 
     def deliver_message(self, target: str, message: dict) -> None:
+        pass
+
+    def board_posted(self, topic: str, entry: dict) -> None:
         pass
 
     def kill_container(self, name: str, signal: int) -> None:
@@ -137,6 +149,31 @@ class CapInfo:
             "rights": self.rights,
             "detail": self.detail,
         }
+
+
+#: Compiled patterns, keyed by the pattern text. The proxy calls `net_allows`
+#: on every connection, and recompiling a regex per request is pure waste.
+_PATTERN_CACHE: dict[str, "re.Pattern[str]"] = {}
+
+
+def _matches(pattern: str, target: str) -> bool:
+    """Whether an operator's rule matches a ``host:port``.
+
+    Anchored at both ends, always. A rule written ``pypi\\.org:443`` is meant to
+    say "pypi, on 443" -- unanchored it would also accept
+    ``evil-pypi.org:443.attacker.example``, which is the opposite of what the
+    person writing it believed they were doing.
+    """
+    compiled = _PATTERN_CACHE.get(pattern)
+    if compiled is None:
+        try:
+            compiled = re.compile(f"(?:{pattern})\\Z")
+        except re.error:
+            # An unusable rule denies rather than crashing the proxy; the config
+            # layer rejects these already, so this is the belt to that's braces.
+            return False
+        _PATTERN_CACHE[pattern] = compiled
+    return compiled.match(target) is not None
 
 
 def _unique_label(task: Task, base: str) -> str:
@@ -216,6 +253,32 @@ class CapKernel:
         self._register(factory)
         self._mint_root_cap(factory)
         return factory
+
+    def create_board(self, topic: str, created_by: str) -> BoardObject:
+        board = BoardObject(
+            oid=new_oid(), label=f"board:{topic}", topic=topic, created_by=created_by
+        )
+        self._register(board)
+        self._mint_root_cap(board)
+        return board
+
+    def create_net_rule(self, name: str, pattern: str) -> NetRuleObject:
+        """Mint a network rule object. Reused when the same rule already exists.
+
+        Deduplicated on (name, pattern) so two containers configured with the
+        same rule share one object: revoking it in the console then means the
+        same thing to both, which is what an operator reading one row expects.
+        """
+        for obj in self.objects.values():
+            if (isinstance(obj, NetRuleObject)
+                    and obj.rule == name and obj.pattern == pattern):
+                return obj
+        rule = NetRuleObject(
+            oid=new_oid(), label=f"net:{name}", rule=name, pattern=pattern
+        )
+        self._register(rule)
+        self._mint_root_cap(rule)
+        return rule
 
     def find_dataspace(self, path: Path) -> DataspaceObject | None:
         for obj in self.objects.values():
@@ -345,6 +408,12 @@ class CapKernel:
                 continue
             self._delegate_from(
                 granter, task, peer_obj.oid, peer.mask, label=f"peer:{peer.container}"
+            )
+
+        for rule_spec in caps.network:
+            rule = self.create_net_rule(rule_spec.name, rule_spec.pattern)
+            self._delegate_from(
+                granter, task, rule.oid, rule_spec.mask, label=f"net:{rule_spec.name}"
             )
 
         for ds_spec in caps.dataspaces:
@@ -538,12 +607,24 @@ class CapKernel:
 
     # -- messaging -------------------------------------------------------
 
-    def msg_send(self, actor: str, slot: int, payload: Any) -> dict:
-        """Post a message through a capability that carries SEND."""
+    def msg_send(
+        self, actor: str, slot: int, payload: Any, signature: str = ""
+    ) -> dict:
+        """Post a message through a capability that carries SEND.
+
+        An optional signature travels with it, for the same reason board posts
+        have one: the kernel's own attribution is unforgeable but stops at the
+        edge of capwrap, and a message that gets forwarded loses it entirely.
+        A signature lets the eventual reader check the author itself.
+        """
         _task, ref = self._checked(actor, "msg.send", slot, Rights.SEND)
         obj = self.objects[ref.oid]
+        key = self._check_signature(actor, payload, signature)
 
-        message = {"from": actor, "payload": payload, "via_slot": slot}
+        message = {
+            "from": actor, "payload": payload, "via_slot": slot,
+            "signature": signature, "public_key": key,
+        }
         if isinstance(obj, ContainerObject):
             self.hooks.deliver_message(obj.name, message)
             return {"delivered_to": obj.name}
@@ -551,6 +632,77 @@ class CapKernel:
             self.hooks.deliver_message(obj.label, message)
             return {"delivered_to": obj.label}
         raise InsufficientRights(f"slot {slot} does not name a message endpoint")
+
+    def _check_signature(self, actor: str, payload: Any, signature: str) -> str:
+        """Verify a message signature before it is delivered, or refuse.
+
+        Refusing rather than delivering it unmarked: a message that arrives
+        looking signed and is not is worse than an unsigned one.
+        """
+        if not signature:
+            return ""
+        author = self.find_container(actor)
+        key = author.public_key if author is not None else ""
+        if not key:
+            raise CapabilityError(f"{actor} has no signing key registered")
+        if not verify_message(key, actor, payload, signature):
+            self.audit.record(
+                actor, "msg.send", allowed=False,
+                detail="the signature does not match the message",
+            )
+            raise CapabilityError(
+                "that signature does not match the message; nothing was sent"
+            )
+        return key
+
+    def msg_broadcast(
+        self, actor: str, slots: list[int], payload: Any, signature: str = ""
+    ) -> dict:
+        """Post one message through several capabilities at once.
+
+        Not sugar for a loop in the caller.  Each slot is checked on its own and
+        audited on its own, and a refusal on one does not cancel the others: an
+        agent told to report to three peers should not have to discover which of
+        them it may actually talk to one failed command at a time, and a partial
+        broadcast is a real outcome that the caller has to be able to see.
+
+        Rights are unchanged by this -- there is no "broadcast" right, and no way
+        to reach a container you hold no capability on.  A broadcast is exactly
+        the messages you could have sent individually, sent together.
+        """
+        # Checked once, before the loop: the signature covers the author and the
+        # payload, not the recipient, so it is the same signature for every slot
+        # -- and verifying is pure-Python Ed25519, which is not free.
+        self._check_signature(actor, payload, signature)
+
+        delivered: list[dict] = []
+        refused: list[dict] = []
+        seen: set[int] = set()
+
+        for slot in slots:
+            # Naming a slot twice must not deliver the message twice; a caller
+            # expanding a label list can easily produce a duplicate.
+            if slot in seen:
+                continue
+            seen.add(slot)
+            try:
+                delivered.append({
+                    "slot": slot,
+                    **self.msg_send(actor, slot, payload, signature=signature),
+                })
+            except CapabilityError as exc:
+                refused.append({"slot": slot, "code": exc.code, "error": str(exc)})
+
+        self.audit.record(
+            actor, "msg.broadcast", allowed=bool(delivered),
+            target=",".join(str(d["delivered_to"]) for d in delivered) or None,
+            detail={"delivered": len(delivered), "refused": len(refused)},
+        )
+        return {
+            "delivered": delivered,
+            "refused": refused,
+            "recipients": [d["delivered_to"] for d in delivered],
+        }
 
     # -- delegation ------------------------------------------------------
 
@@ -797,6 +949,184 @@ class CapKernel:
         return {"recipient": target.name, "slot": new_slot,
                 "path": f"/shared/{dest_name}"}
 
+    # -- boards ----------------------------------------------------------
+
+    def board_create(self, actor: str, factory_slot: int, topic: str) -> dict:
+        """Set up a board others can be given access to.
+
+        Gated on a factory capability, because that is already what "may bring
+        new things into being for others to use" means here -- an orchestrator
+        holds one, a worker does not. It does not consume container quota: a
+        board is not a container, and spending a container's worth of allowance
+        on somewhere to leave notes would make orchestration cost the thing it
+        is meant to organise.
+
+        The creator gets every right on it, so it can post, read, and hand out
+        narrower access to each worker.
+        """
+        task, ref = self._checked(actor, "board.create", factory_slot, Rights.CREATE)
+        factory = self.objects[ref.oid]
+        if not isinstance(factory, FactoryObject):
+            raise InsufficientRights(f"slot {factory_slot} does not name a factory")
+
+        topic = topic.strip()
+        if not topic:
+            raise CapabilityError("a board needs a topic")
+
+        mine = [
+            obj for obj in self.objects.values()
+            if isinstance(obj, BoardObject) and obj.created_by == actor
+        ]
+        if len(mine) >= BOARD_LIMIT_PER_CONTAINER:
+            raise QuotaExceeded(
+                f"{actor} has already created {BOARD_LIMIT_PER_CONTAINER} boards"
+            )
+
+        board = self.create_board(topic, created_by=actor)
+        slot = self._delegate_from_root(
+            task, board.oid, VALID_RIGHTS["board"],
+            label=_unique_label(task, f"board:{topic}"),
+        )
+        self.audit.record(
+            actor, "board.create", allowed=True, target=topic, slot=slot,
+            rights=str(VALID_RIGHTS["board"]),
+        )
+        return {
+            "board": topic, "slot": slot,
+            "rights": VALID_RIGHTS["board"].names(),
+        }
+
+    def board_post(
+        self, actor: str, slot: int, payload: Any, signature: str = ""
+    ) -> dict:
+        """Put something on a board. Needs SEND, which is separate from READ.
+
+        An optional Ed25519 signature travels with the post. capwrap already
+        knows who wrote it -- attribution comes from the socket the request
+        arrived on and cannot be forged from inside a container -- so the
+        signature is not how the kernel decides anything. It is what lets the
+        post be checked *later*, by a reader who was not there: after an export,
+        after a restart, after passing through another agent, or by someone who
+        would rather not have to trust the daemon that recorded it.
+
+        A signature that does not verify is refused rather than stored unmarked.
+        Keeping one would leave a post that looks signed and is not, which is
+        worse than an unsigned post and much worse than an error.
+        """
+        _task, ref = self._checked(actor, "board.post", slot, Rights.SEND)
+        board = self.objects[ref.oid]
+        if not isinstance(board, BoardObject):
+            raise InsufficientRights(f"slot {slot} does not name a board")
+
+        key = ""
+        if signature:
+            author = self.find_container(actor)
+            key = author.public_key if author is not None else ""
+            if not key:
+                raise CapabilityError(f"{actor} has no signing key registered")
+            if not verify_post(key, board.topic, actor, payload, signature):
+                self.audit.record(
+                    actor, "board.post", allowed=False, target=board.topic,
+                    detail="the signature does not match the post",
+                )
+                raise CapabilityError(
+                    "that signature does not match the post; nothing was written"
+                )
+
+        entry = board.post(actor, payload, signature=signature, key=key)
+        self.hooks.board_posted(board.topic, entry)
+        return {"board": board.topic, "id": entry["id"], "signed": bool(signature)}
+
+    def board_read(
+        self, actor: str, slot: int, since: int = 0, limit: int = 50
+    ) -> dict:
+        """Read a board without taking anything off it.
+
+        Every holder sees every post, and each keeps its own `since`. That is the
+        difference from a mailbox, and the reason a board is the right shape for
+        several agents coordinating rather than one being handed work.
+        """
+        _task, ref = self._checked(actor, "board.read", slot, Rights.READ)
+        board = self.objects[ref.oid]
+        if not isinstance(board, BoardObject):
+            raise InsufficientRights(f"slot {slot} does not name a board")
+        posts = board.read(since=since, limit=limit)
+        return {
+            "board": board.topic,
+            "posts": posts,
+            "latest": board.posts[-1]["id"] if board.posts else 0,
+        }
+
+    def boards(self) -> list[BoardObject]:
+        """Every board, for the operator's console."""
+        return [o for o in self.objects.values() if isinstance(o, BoardObject)]
+
+    def board_holders(self, oid: int) -> list[dict]:
+        """Who holds a capability on this board, and what they may do with it.
+
+        The useful view for an operator: a board is a place several agents meet,
+        so "who can read this and who can write to it" is the question, and it
+        is not answerable from any one container's capability table.
+        """
+        out: list[dict] = []
+        for name, task in self.tasks.items():
+            if name == ROOT:
+                continue
+            for slot in sorted(task.slots):
+                ref = task.slots[slot]
+                if ref.oid != oid:
+                    continue
+                out.append({
+                    "container": name, "slot": slot,
+                    "rights": ref.rights.names(),
+                    "may_post": Rights.SEND in ref.rights,
+                    "may_read": Rights.READ in ref.rights,
+                })
+        return out
+
+    # -- network ---------------------------------------------------------
+
+    def net_rules(self, actor: str) -> list[tuple[int, NetRuleObject]]:
+        """Every rule this container may actually connect through."""
+        task = self.tasks.get(actor)
+        if task is None:
+            return []
+        out: list[tuple[int, NetRuleObject]] = []
+        for slot in sorted(task.slots):
+            ref = task.slots[slot]
+            obj = self.objects.get(ref.oid)
+            if isinstance(obj, NetRuleObject) and Rights.CONNECT in ref.rights:
+                out.append((slot, obj))
+        return out
+
+    def net_allows(self, actor: str, host: str, port: int) -> dict:
+        """Decide whether `actor` may open a connection to `host:port`.
+
+        Called by the proxy for every request, and audited either way -- a denial
+        is the interesting half, since it is how you find out an agent tried to
+        reach somewhere it should not.
+
+        There is no ambient permission here and no default-allow: a container
+        with no network rules is refused everything, which is the same position
+        it is in with no capability at all.
+        """
+        target = f"{host}:{port}"
+        for slot, rule in self.net_rules(actor):
+            if _matches(rule.pattern, target):
+                self.audit.record(
+                    actor, "net.connect", allowed=True, target=target,
+                    slot=slot, rights=str(Rights.CONNECT),
+                    detail={"rule": rule.rule},
+                )
+                return {"allowed": True, "rule": rule.rule, "slot": slot}
+
+        held = [rule.rule for _slot, rule in self.net_rules(actor)]
+        self.audit.record(
+            actor, "net.connect", allowed=False, target=target,
+            detail={"held_rules": held},
+        )
+        return {"allowed": False, "rule": None, "held_rules": held}
+
     # -- operator --------------------------------------------------------
 
     def ask(self, actor: str, question: str, context: dict | None = None) -> dict:
@@ -843,6 +1173,23 @@ class CapKernel:
         elif kind == "dataspace":
             obj = self.create_dataspace(Path(target))
             default_label = target
+        elif kind == "board":
+            obj = next(
+                (b for b in self.boards() if b.topic == target), None
+            )
+            if obj is None:
+                raise NoSuchCapability(f"no such board: {target}")
+            default_label = f"board:{target}"
+        elif kind == "net_rule":
+            # `target` carries "name=pattern", so the console can grant a hole
+            # in the network the same way it grants anything else.
+            name, _, pattern = target.partition("=")
+            if not name or not pattern:
+                raise CapabilityError(
+                    "a net_rule grant needs a target of the form 'name=pattern'"
+                )
+            obj = self.create_net_rule(name.strip(), pattern.strip())
+            default_label = f"net:{name.strip()}"
         elif kind == "factory":
             obj = self.create_factory(
                 f"{holder_name}-factory", quota,

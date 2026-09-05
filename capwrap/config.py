@@ -280,6 +280,44 @@ class DataspaceCap(Base):
         return parse_rights(self.rights)
 
 
+class NetRuleCap(Base):
+    """One named hole in an otherwise closed network.
+
+    The pattern is a regex over ``host:port`` and is anchored at both ends
+    before it is used, so ``pypi\\.org:443`` cannot also match
+    ``evil-pypi.org:443``. Ports are explicit because 443 and 22 to the same
+    host are not the same authority.
+    """
+
+    name: str
+    pattern: str
+    rights: list[str] = Field(default_factory=lambda: ["connect"])
+
+    @property
+    def mask(self) -> Rights:
+        from .kernel.rights import validate_for
+
+        return validate_for("net_rule", parse_rights(self.rights))
+
+    @field_validator("name")
+    @classmethod
+    def _usable_name(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("a network rule needs a name")
+        return v.strip()
+
+    @field_validator("pattern")
+    @classmethod
+    def _compiles(cls, v: str) -> str:
+        import re
+
+        try:
+            re.compile(v)
+        except re.error as exc:
+            raise ValueError(f"not a valid regex: {exc}") from None
+        return v
+
+
 class Quota(Base):
     containers: int = 0
 
@@ -318,6 +356,9 @@ class CapsSpec(Base):
     factory: FactoryCap | None = None
     peers: list[PeerCap] = Field(default_factory=list)
     dataspaces: list[DataspaceCap] = Field(default_factory=list)
+    #: Where this container may connect. An empty list is a container with no
+    #: network at all, which is still the default.
+    network: list[NetRuleCap] = Field(default_factory=list)
 
     @property
     def parent_mask(self) -> Rights:
@@ -333,6 +374,32 @@ class ContainerConfig(Base):
     mounts: list[MountSpec] = Field(default_factory=list)
     files: list[FileSpec] = Field(default_factory=list)
     caps: CapsSpec = Field(default_factory=CapsSpec)
+
+    @property
+    def proxied_network(self) -> bool:
+        """Whether this container reaches the network through the capability proxy.
+
+        Implied by having any network rule at all, rather than configured
+        separately: a rule list *is* the statement that this container has some
+        network, and a second switch to turn it on would only be a way to get it
+        wrong.
+        """
+        return bool(self.caps.network) and not self.sandbox.network
+
+    @model_validator(mode="after")
+    def _network_mode_is_unambiguous(self) -> "ContainerConfig":
+        # `sandbox.network = true` hands over the host's network namespace
+        # wholesale, which no proxy can then constrain -- the agent would simply
+        # connect directly. Silently ignoring the rules in that case would be
+        # the worst outcome: the config would read as restricted and not be.
+        if self.sandbox.network and self.caps.network:
+            raise ValueError(
+                "sandbox.network = true gives the container the host's network "
+                "directly, so the [[caps.network]] rules could not be enforced. "
+                "Drop `network = true` to reach the listed destinations through "
+                "the capability proxy instead."
+            )
+        return self
 
     #: Directory the config was loaded from; relative paths resolve against it.
     source_dir: Path | None = Field(default=None, exclude=True)

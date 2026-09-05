@@ -32,6 +32,15 @@ class Message:
     kind: str = "message"
     ts: float = field(default_factory=time.time)
     via_slot: int | None = None
+    #: Ed25519 signature over (sender, payload), and the key to check it with.
+    #: Carried on the message so a recipient can verify without asking anyone,
+    #: and so it survives being forwarded.
+    signature: str = ""
+    public_key: str = ""
+
+    @property
+    def signed(self) -> bool:
+        return bool(self.signature)
 
     def to_dict(self) -> dict:
         return {
@@ -41,6 +50,9 @@ class Message:
             "payload": self.payload,
             "ts": self.ts,
             "via_slot": self.via_slot,
+            "signature": self.signature,
+            "public_key": self.public_key,
+            "signed": self.signed,
         }
 
 
@@ -66,6 +78,8 @@ class Mailbox:
             payload=raw.get("payload"),
             kind=raw.get("kind", "message"),
             via_slot=raw.get("via_slot"),
+            signature=raw.get("signature", "") or "",
+            public_key=raw.get("public_key", "") or "",
         )
         self._next_id += 1
         self.history.append(message)

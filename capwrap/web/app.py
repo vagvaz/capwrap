@@ -28,8 +28,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ..config import load_config_data
 from ..daemon import OPERATOR, Daemon
 from ..errors import CapabilityError, CapwrapError
+from ..explain import ExplainError
 from ..kernel.kernel import ROOT
 from ..kernel.rights import parse_rights
 
@@ -42,8 +44,39 @@ STATIC = Path(__file__).resolve().parent / "static"
 
 
 class SendBody(BaseModel):
-    target: str
+    """One message, to one container or to several.
+
+    `target` is kept alongside `targets` because it is the shape every existing
+    caller uses; a broadcast is the same operation with more than one name in it.
+    """
+
     message: str
+    target: str | None = None
+    targets: list[str] | None = None
+
+    def recipients(self) -> list[str]:
+        names = list(self.targets or [])
+        if self.target:
+            names.append(self.target)
+        # Order-preserving dedupe: picking a container twice in the composer
+        # must not post to it twice.
+        return list(dict.fromkeys(names))
+
+
+class TraceBody(BaseModel):
+    enabled: bool
+
+
+class AddBody(BaseModel):
+    """A container to bring into a capwrap that is already running.
+
+    The config arrives already parsed and with its paths resolved, because the
+    CLI that sends it is the thing sitting in the directory the config's relative
+    paths are written against.
+    """
+
+    config: dict
+    start: bool = True
 
 
 class ApprovalBody(BaseModel):
@@ -92,6 +125,11 @@ def create_app(daemon: Daemon) -> FastAPI:
     @app.get("/api/overview")
     async def overview() -> dict:
         return daemon.overview()
+
+    @app.get("/api/instance")
+    async def instance() -> dict:
+        """What this capwrap is called, for the page title and the header."""
+        return {"name": daemon.instance_name}
 
     @app.get("/api/containers")
     async def containers() -> list[dict]:
@@ -159,6 +197,26 @@ def create_app(daemon: Daemon) -> FastAPI:
             ],
         }
 
+    @app.get("/api/boards")
+    async def boards(limit: int = 100) -> dict:
+        """Every board and its recent posts.
+
+        The operator sees all of them regardless of who created one: the root
+        capability is the ancestor of every mapping in the system, and a board
+        that agents are coordinating on is exactly what a human overseeing them
+        needs to be able to read.
+        """
+        return {
+            "boards": [
+                {
+                    **board.describe(),
+                    "holders": daemon.kernel.board_holders(board.oid),
+                    "recent": board.posts[-max(1, limit):],
+                }
+                for board in daemon.kernel.boards()
+            ],
+        }
+
     @app.get("/api/caps/{name}")
     async def caps(name: str) -> list[dict]:
         if name not in daemon.kernel.tasks:
@@ -181,6 +239,33 @@ def create_app(daemon: Daemon) -> FastAPI:
     # ------------------------------------------------------------------
     # control
     # ------------------------------------------------------------------
+
+    @app.post("/api/containers")
+    async def add(body: AddBody) -> dict:
+        """Register a new container, and start it unless told not to.
+
+        The point of a running capwrap is that agents come and go: a review
+        needs a reviewer, a build needs a tester, and stopping everything to
+        restart with one more config file wastes whatever the others were in the
+        middle of.
+
+        It registers under the *operator*, not under any existing container, so
+        this is an authority grant from the human rather than a spawn -- an agent
+        wanting a child still goes through a factory capability and its quota.
+        """
+        config = load_config_data(dict(body.config), base_dir=Path.cwd(),
+                                  origin="operator:add")
+        if config.name in daemon.containers:
+            raise HTTPException(409, f"a container named {config.name} already exists")
+
+        container = daemon.register(config)
+        # Both directions: the newcomer's peer references resolve, and any
+        # existing container that named it before it existed gets its capability
+        # filled in now rather than never.
+        daemon.link_all_peers()
+        if body.start:
+            await daemon.start(config.name)
+        return {**container.status(), "started": body.start}
 
     @app.post("/api/containers/{name}/start")
     async def start(name: str) -> dict:
@@ -227,19 +312,61 @@ def create_app(daemon: Daemon) -> FastAPI:
 
     @app.post("/api/send")
     async def send(body: SendBody) -> dict:
-        """Send a message as the operator.
+        """Send a message as the operator, to one container or to several.
 
         The operator holds root capabilities on every container, so this is a
-        normal `msg.send` through the kernel rather than a back door -- it is
-        audited exactly like an agent's message would be.
+        normal `msg.send`/`msg.broadcast` through the kernel rather than a back
+        door -- it is audited exactly like an agent's message would be.
         """
-        target = daemon.kernel.find_container(body.target)
-        if target is None:
-            raise HTTPException(404, f"no such container: {body.target}")
-        slot = daemon.kernel.root.find(target.oid)
-        if slot is None:
-            raise HTTPException(500, "the operator holds no capability on that container")
-        return daemon.kernel.msg_send(ROOT, slot, body.message)
+        names = body.recipients()
+        if not names:
+            raise HTTPException(400, "name at least one container to send to")
+
+        slots: list[int] = []
+        for name in names:
+            target = daemon.kernel.find_container(name)
+            if target is None:
+                raise HTTPException(404, f"no such container: {name}")
+            slot = daemon.kernel.root.find(target.oid)
+            if slot is None:
+                raise HTTPException(
+                    500, f"the operator holds no capability on {name}"
+                )
+            slots.append(slot)
+
+        if len(slots) == 1:
+            return daemon.kernel.msg_send(ROOT, slots[0], body.message)
+        return daemon.kernel.msg_broadcast(ROOT, slots, body.message)
+
+    # ------------------------------------------------------------------
+    # message tracing
+    # ------------------------------------------------------------------
+
+    @app.get("/api/trace")
+    async def trace_state() -> dict:
+        return daemon.trace_state()
+
+    @app.post("/api/trace")
+    async def set_trace(body: TraceBody) -> dict:
+        """Turn the inter-container message trace on or off.
+
+        Off by default and cleared when turned off: a trace keeps whole message
+        payloads, which is the agents' working content rather than metadata.
+        """
+        return daemon.set_message_trace(body.enabled)
+
+    @app.get("/api/messages")
+    async def traced_messages(limit: int = 200) -> dict:
+        return {
+            **daemon.trace_state(),
+            "messages": daemon.traced_messages(limit=limit),
+        }
+
+    @app.delete("/api/messages")
+    async def clear_trace() -> dict:
+        """Drop what has been recorded so far, leaving tracing on."""
+        daemon.message_trace.clear()
+        return daemon.trace_state()
 
     # ------------------------------------------------------------------
     # approvals
@@ -258,6 +385,40 @@ def create_app(daemon: Daemon) -> FastAPI:
         ):
             raise HTTPException(404, "no such pending approval")
         return {"id": approval_id, "decision": body.decision}
+
+    @app.post("/api/approvals/{approval_id}/explain")
+    async def explain(approval_id: int) -> dict:
+        """What would this request actually do?
+
+        Advisory, and labelled as such wherever it is shown: it is one model's
+        reading of another model's request. It decides nothing -- the operator
+        still clicks the button.
+        """
+        pending = daemon.approvals.get(approval_id)
+        if pending is None or pending.future.done():
+            raise HTTPException(404, "no such pending approval")
+
+        container = daemon.containers.get(pending.container)
+        detail = None
+        if container is not None:
+            detail = {"config": {
+                "command": container.config.runtime.command,
+                "cwd": container.config.runtime.cwd,
+                "network": container.config.sandbox.network,
+                "mounts": [
+                    {"dest": m.dest, "mode": m.mode} for m in container.config.mounts
+                ],
+            }}
+
+        try:
+            result = await daemon.explainer.explain(pending.to_dict(), detail)
+        except ExplainError as exc:
+            raise HTTPException(503, str(exc)) from None
+        daemon.audit.record(
+            OPERATOR, "approval.explain", allowed=True,
+            target=pending.container, detail={"model": result["model"]},
+        )
+        return result
 
     # ------------------------------------------------------------------
     # capability administration

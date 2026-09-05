@@ -8,6 +8,7 @@ the socket a connection arrived on rather than from anything the caller says.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from pathlib import Path
 
@@ -375,7 +376,11 @@ async def test_a_running_container_can_use_capctl(daemon, tmp_path, require_sand
     output = container.session.scrollback().decode(errors="replace")
     assert code == 0, output
     assert "peer:beta" in output, output
-    assert '"container": "alpha"' in output, output
+    # `whoami` prints for a person, not for a parser -- `--json` is the parser's
+    # form. It also names the container's signing key, which is how an agent
+    # finds out it has one.
+    assert "container: alpha" in output, output
+    assert "key:" in output, output
 
 
 @pytest.mark.sandbox
@@ -1212,6 +1217,270 @@ async def test_reconnecting_restores_the_programs_terminal_modes(
     painted = session.repaint()
     assert b"ready" in painted
     assert painted.startswith(b"\x1b[H\x1b[2J")
+
+
+# ==========================================================================
+# approvals that outlive their asker
+# ==========================================================================
+
+
+async def _serve(daemon, name, tmp_path, **extra):
+    daemon.register(config(name, tmp_path, **extra))
+    c = daemon.containers[name]
+    c.server = await daemon._serve_container(c)
+    return c
+
+
+async def _wait_for_approval(daemon, timeout: float = 5.0):
+    """Wait until the container's blocking `ask` has reached the queue."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if daemon.pending_approvals():
+            return daemon.pending_approvals()[0]
+        await asyncio.sleep(0.01)
+    raise AssertionError("no approval was queued")
+
+
+async def test_a_question_dies_with_the_agent_that_asked_it(daemon, tmp_path):
+    """The queue must not outlive the process that is waiting on it.
+
+    A hook whose agent is killed mid-prompt leaves nothing to receive an answer.
+    If the question stays queued, it comes back on every page load and every
+    reconnect, and clicking Allow resolves a future nobody is waiting on -- which
+    reads as a stuck UI rather than a departed agent.
+    """
+    c = await _serve(daemon, "alpha", tmp_path)
+
+    reader, writer = await asyncio.open_unix_connection(str(c.paths.socket))
+    writer.write(Request(op="ask", id=1, args={
+        "question": "may I install curl?", "block": True, "timeout": 60,
+    }).encode())
+    await writer.drain()
+
+    pending = await _wait_for_approval(daemon)
+    assert pending["container"] == "alpha"
+
+    writer.close()                       # the agent goes away, still blocked
+    with contextlib.suppress(Exception):
+        await writer.wait_closed()
+
+    deadline = asyncio.get_running_loop().time() + 5
+    while daemon.pending_approvals():
+        assert asyncio.get_running_loop().time() < deadline, "question was never retired"
+        await asyncio.sleep(0.01)
+
+    answered = [
+        m for m in daemon.mailboxes.get("operator").recent(10)
+        if m.kind == "question"
+    ]
+    assert answered[-1].payload["decision"] == "abandoned"
+    reader.feed_eof()
+
+
+async def test_a_question_dies_with_its_container(daemon, tmp_path):
+    """Same again, but the connection is still open: the container itself ends."""
+    c = await _serve(daemon, "alpha", tmp_path)
+
+    reader, writer = await asyncio.open_unix_connection(str(c.paths.socket))
+    writer.write(Request(op="ask", id=1, args={
+        "question": "shall I push?", "block": True, "timeout": 60,
+    }).encode())
+    await writer.drain()
+    await _wait_for_approval(daemon)
+
+    assert daemon.abandon_approvals("alpha", "the container exited") == 1
+    assert daemon.pending_approvals() == []
+
+    reply = Response.parse(await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5))
+    assert reply.ok and reply.result["decision"] == "abandoned"
+    writer.close()
+
+
+async def test_answering_a_question_still_reaches_the_agent(daemon, tmp_path):
+    """The abandonment machinery must not have broken the ordinary path."""
+    c = await _serve(daemon, "alpha", tmp_path)
+
+    reader, writer = await asyncio.open_unix_connection(str(c.paths.socket))
+    writer.write(Request(op="ask", id=1, args={
+        "question": "may I write bench.c?", "block": True, "timeout": 60,
+    }).encode())
+    await writer.drain()
+
+    pending = await _wait_for_approval(daemon)
+    assert daemon.resolve_approval(pending["id"], "allow", "go ahead")
+
+    reply = Response.parse(await asyncio.wait_for(reader.readuntil(b"\n"), timeout=5))
+    assert reply.ok
+    assert reply.result["decision"] == "allow"
+    assert reply.result["reason"] == "go ahead"
+    writer.close()
+
+
+async def test_a_second_request_on_the_same_connection_still_works(daemon, tmp_path):
+    """Framing moved into the daemon to make the disconnect race possible.
+
+    Two requests down one connection is the thing that would break if the reader
+    watching for a hang-up ate bytes belonging to the request after it.
+    """
+    c = await _serve(daemon, "alpha", tmp_path)
+    reader, writer = await asyncio.open_unix_connection(str(c.paths.socket))
+    try:
+        # Both at once, so the second is already buffered while the first runs.
+        writer.write(Request(op="whoami", id=1).encode()
+                     + Request(op="cap.list", id=2).encode())
+        await writer.drain()
+
+        first = Response.parse(await asyncio.wait_for(reader.readuntil(b"\n"), 5))
+        second = Response.parse(await asyncio.wait_for(reader.readuntil(b"\n"), 5))
+        assert first.ok and first.result["container"] == "alpha"
+        assert second.ok and {c["label"] for c in second.result} == {"self", "operator"}
+    finally:
+        writer.close()
+
+
+# ==========================================================================
+# broadcast, over the wire
+# ==========================================================================
+
+
+async def test_an_agent_can_broadcast_to_several_peers_at_once(daemon, tmp_path):
+    peers = {"caps": {"peers": [
+        {"container": "beta", "rights": ["send"]},
+        {"container": "gamma", "rights": ["send"]},
+    ]}}
+    await _serve(daemon, "alpha", tmp_path, **peers)
+    await _serve(daemon, "beta", tmp_path)
+    await _serve(daemon, "gamma", tmp_path)
+    daemon.link_all_peers()
+
+    caps = (await request(daemon.containers["alpha"].paths.socket, "cap.list")).result
+    slots = [c["slot"] for c in caps if c["label"].startswith("peer:")]
+
+    sent = await request(
+        daemon.containers["alpha"].paths.socket,
+        "msg.broadcast", {"slots": slots, "payload": "build is green"},
+    )
+    assert sent.ok
+    assert sorted(sent.result["recipients"]) == ["beta", "gamma"]
+
+    for name in ("beta", "gamma"):
+        got = await request(daemon.containers[name].paths.socket, "msg.recv",
+                            {"timeout": 0})
+        assert got.result[0]["payload"] == "build is green"
+
+
+async def test_broadcast_needs_a_non_empty_slot_list(daemon, tmp_path):
+    await _serve(daemon, "alpha", tmp_path)
+    reply = await request(
+        daemon.containers["alpha"].paths.socket, "msg.broadcast", {"slots": []}
+    )
+    assert not reply.ok and reply.code == "protocol_error"
+
+
+# ==========================================================================
+# message tracing
+# ==========================================================================
+
+
+async def test_message_payloads_are_only_recorded_when_asked_for(daemon, tmp_path):
+    """Off by default: a trace holds the agents' working content, not metadata."""
+    peers = {"caps": {"peers": [{"container": "beta", "rights": ["send"]}]}}
+    await _serve(daemon, "alpha", tmp_path, **peers)
+    await _serve(daemon, "beta", tmp_path)
+    daemon.link_all_peers()
+
+    caps = (await request(daemon.containers["alpha"].paths.socket, "cap.list")).result
+    slot = [c["slot"] for c in caps if c["label"] == "peer:beta"][0]
+    socket_path = daemon.containers["alpha"].paths.socket
+
+    assert daemon.trace_state()["enabled"] is False
+    await request(socket_path, "msg.send", {"slot": slot, "payload": "unrecorded"})
+    assert daemon.traced_messages() == []
+
+    daemon.set_message_trace(True)
+    await request(socket_path, "msg.send", {"slot": slot, "payload": "recorded"})
+
+    trace = daemon.traced_messages()
+    assert [t["payload"] for t in trace] == ["recorded"]
+    assert trace[0]["from"] == "alpha" and trace[0]["to"] == "beta"
+
+    # Turning it off discards what was collected, or "off" would mean less than
+    # it says.
+    daemon.set_message_trace(False)
+    assert daemon.traced_messages() == []
+
+
+async def test_the_instance_can_be_named(state_dir, tmp_path):
+    """Several capwraps run at once; the name is how their tabs stay tellable apart."""
+    d = Daemon(audit_path=Path(state_dir) / "audit.db",
+               instance_name="  FastPath HashTable  ")
+    try:
+        assert d.instance_name == "FastPath HashTable"
+        assert d.overview()["instance"] == "FastPath HashTable"
+    finally:
+        await d.shutdown()
+
+
+# ==========================================================================
+# adding a container to a running capwrap
+# ==========================================================================
+
+
+async def test_a_container_can_be_added_while_others_are_running(daemon, tmp_path):
+    """The point of a running capwrap is that agents come and go.
+
+    A review needs a reviewer; stopping everything to restart with one more
+    config wastes whatever the other agents were in the middle of.
+    """
+    from capwrap.web.app import create_app
+    from fastapi.testclient import TestClient
+
+    daemon.register(config("alpha", tmp_path))
+    client = TestClient(create_app(daemon))
+
+    late = config("late", tmp_path, caps={"peers": [
+        {"container": "alpha", "rights": ["send"]},
+    ]})
+    body = {"config": json.loads(late.model_dump_json(exclude={"source_dir"})),
+            "start": False}
+
+    response = client.post("/api/containers", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "late"
+    assert "late" in daemon.containers
+
+    # Its peer capability resolved, rather than being deferred forever.
+    labels = {c.label for c in daemon.kernel.cap_list("late")}
+    assert "peer:alpha" in labels
+
+    # And a second attempt under the same name is refused rather than clobbering.
+    assert client.post("/api/containers", json=body).status_code == 409
+
+
+async def test_a_container_added_late_is_reachable_from_the_ones_already_there(
+    daemon, tmp_path
+):
+    """A config that named a container before it existed gets filled in.
+
+    `link_all_peers` runs both ways on add, so an agent configured to talk to a
+    reviewer that had not been created yet is not left holding nothing.
+    """
+    from capwrap.web.app import create_app
+    from fastapi.testclient import TestClient
+
+    daemon.register(config("dev", tmp_path, caps={"peers": [
+        {"container": "reviewer", "rights": ["send"]},
+    ]}))
+    assert "peer:reviewer" not in {c.label for c in daemon.kernel.cap_list("dev")}
+
+    client = TestClient(create_app(daemon))
+    reviewer = config("reviewer", tmp_path)
+    client.post("/api/containers", json={
+        "config": json.loads(reviewer.model_dump_json(exclude={"source_dir"})),
+        "start": False,
+    })
+
+    assert "peer:reviewer" in {c.label for c in daemon.kernel.cap_list("dev")}
 
 
 @pytest.mark.sandbox

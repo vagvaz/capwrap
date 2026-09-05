@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import shutil
 import sys
@@ -114,7 +115,10 @@ def cmd_show(args: argparse.Namespace) -> int:
     print(f"name:     {config.name}")
     print(f"command:  {' '.join(config.runtime.command)}")
     print(f"cwd:      {config.runtime.cwd}")
-    print(f"network:  {config.sandbox.network}")
+    if config.proxied_network:
+        print("network:  through the capability proxy")
+    else:
+        print(f"network:  {'host, unrestricted' if config.sandbox.network else 'none'}")
     print(f"state:    {paths.root}")
     print("mounts:")
     for m in config.mounts:
@@ -138,6 +142,8 @@ def cmd_show(args: argparse.Namespace) -> int:
         print(f"  peer {p.container}: {', '.join(p.rights)}")
     for d in config.caps.dataspaces:
         print(f"  dataspace {d.path}: {', '.join(d.rights)}")
+    for n in config.caps.network:
+        print(f"  net {n.name}: {n.pattern}  ({', '.join(n.rights)})")
     return 0
 
 
@@ -199,8 +205,10 @@ def cmd_up(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    instance_name = args.name or os.environ.get("CAPWRAP_NAME", "")
+
     async def run() -> None:
-        daemon = Daemon()
+        daemon = Daemon(trace_messages=args.trace, instance_name=instance_name)
         for config in configs:
             daemon.register(config)
         # Two passes, so configs may refer to each other in any order.
@@ -215,9 +223,14 @@ def cmd_up(args: argparse.Namespace) -> int:
             app, log_level="warning", access_log=False,
         ))
 
-        print(f"capwrap: {len(configs)} container(s) registered")
+        label = f"capwrap[{instance_name}]" if instance_name else "capwrap"
+        print(f"{label}: {len(configs)} container(s) registered")
         for config in configs:
             print(f"  - {config.name}")
+        if args.trace:
+            print("\n  message tracing is ON -- every message between containers "
+                  "is recorded,\n  payloads included. Turn it off in the "
+                  "Messages tab when you are done.")
         shown = "127.0.0.1" if args.host == "0.0.0.0" else args.host
         print(f"\n  web interface: http://{shown}:{args.port}\n", flush=True)
 
@@ -231,6 +244,60 @@ def cmd_up(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         pass
     return 0
+
+
+def cmd_add(args: argparse.Namespace) -> int:
+    """Bring a new container into a capwrap that is already running.
+
+    The config is loaded and validated *here*, in the directory its relative
+    paths are written against, and sent over resolved. That also means a typo
+    is reported against the file you just edited, before anything is registered.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    configs = [load_config(path) for path in args.configs]
+    for config in configs:
+        config.validate_sources()
+
+    base = f"http://{args.host}:{args.port}"
+    added = []
+    for config in configs:
+        payload = json.dumps({
+            "config": json.loads(config.model_dump_json(exclude={"source_dir"})),
+            "start": not args.no_start,
+        }).encode()
+        request = urllib.request.Request(
+            f"{base}/api/containers", data=payload, method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                added.append(json.load(response))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")
+            with contextlib.suppress(Exception):
+                body = json.loads(detail)
+                detail = body.get("error") or body.get("detail") or detail
+            raise CapwrapError(f"{config.name}: {detail}") from None
+        except urllib.error.URLError as exc:
+            raise CapwrapError(
+                f"no capwrap answering on {base} ({exc.reason}). "
+                "Start one with `capwrap up`, or pass --port."
+            ) from None
+
+    for entry in added:
+        state = "started" if entry.get("started") else "registered, not started"
+        print(f"{entry['name']}: {state}")
+    return 0
+
+
+def cmd_tui(args: argparse.Namespace) -> int:
+    """The terminal console, against a capwrap that is already running."""
+    from .tui import run
+
+    return run(host=args.host, port=args.port)
 
 
 def cmd_state(args: argparse.Namespace) -> int:
@@ -277,7 +344,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8420)
     p.add_argument("--no-start", action="store_true",
                    help="register the containers but do not launch them")
+    p.add_argument("--name", default="",
+                   help="what this capwrap is for, e.g. 'FastPath HashTable'. "
+                        "Shown in the header and the browser tab, so several "
+                        "instances stay tellable apart (env: CAPWRAP_NAME)")
+    p.add_argument("--trace", action="store_true",
+                   help="record every message passed between containers, "
+                        "payloads included, for the Messages tab (also "
+                        "switchable there while running)")
     p.set_defaults(func=cmd_up)
+
+    p = sub.add_parser(
+        "add", help="add a container to a capwrap that is already running"
+    )
+    p.add_argument("configs", nargs="+", help="one or more container .toml files")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8420)
+    p.add_argument("--no-start", action="store_true",
+                   help="register it but do not launch it")
+    p.set_defaults(func=cmd_add)
+
+    p = sub.add_parser(
+        "tui", help="the terminal console: approvals, screens, attach"
+    )
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8420)
+    p.set_defaults(func=cmd_tui)
 
     p = sub.add_parser("clean", help="remove a container's host-side state")
     p.add_argument("name")
