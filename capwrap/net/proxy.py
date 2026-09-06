@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, NoReturn, Protocol
 
 #: Refuse a request line longer than this rather than buffering it. A proxy
 #: client that never sends a newline must not be able to grow the daemon.
@@ -62,13 +62,17 @@ def parse_authority(authority: str, default_port: int) -> tuple[str, int]:
     if not authority:
         raise ProxyError("no destination in the request")
 
-    if authority.startswith("["):                       # [::1]:443
+    if authority.startswith("["):  # [::1]:443
         close = authority.find("]")
         if close < 0:
             raise ProxyError("unterminated IPv6 literal")
         host = authority[1:close]
         rest = authority[close + 1 :]
-        port = int(rest[1:]) if rest.startswith(":") and rest[1:].isdigit() else default_port
+        port = (
+            int(rest[1:])
+            if rest.startswith(":") and rest[1:].isdigit()
+            else default_port
+        )
         return host, port
 
     host, sep, tail = authority.rpartition(":")
@@ -156,7 +160,8 @@ class NetProxy:
         self._emit(host, port, verdict)
         if not verdict.get("allowed"):
             await self._refuse(
-                writer, 403,
+                writer,
+                403,
                 f"{self.container} holds no network capability for {host}:{port}",
                 held=verdict.get("held_rules") or [],
             )
@@ -175,9 +180,7 @@ class NetProxy:
                 writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 await writer.drain()
             else:
-                upstream_writer.write(
-                    _origin_form(method, target, version, headers)
-                )
+                upstream_writer.write(_origin_form(method, target, version, headers))
                 await upstream_writer.drain()
             await _splice(reader, writer, upstream_reader, upstream_writer)
         finally:
@@ -203,7 +206,10 @@ class NetProxy:
         return lines[0], lines[1:]
 
     async def _refuse(
-        self, writer: asyncio.StreamWriter, status: int, message: str,
+        self,
+        writer: asyncio.StreamWriter,
+        status: int,
+        message: str,
         held: list[str] | None = None,
     ) -> None:
         """Answer with a real HTTP error, so the agent is told *why*.
@@ -215,9 +221,10 @@ class NetProxy:
         body = message
         if held is not None:
             body += (
-                "\n\nRules held: " + (", ".join(held) or "none")
+                "\n\nRules held: "
+                + (", ".join(held) or "none")
                 + "\nAsk the operator for one with:"
-                  "\n  capctl request net_rule '<name>=<host:port regex>' --reason '...'"
+                "\n  capctl request net_rule '<name>=<host:port regex>' --reason '...'"
             )
         payload = body.encode()
         reason = {400: "Bad Request", 403: "Forbidden", 502: "Bad Gateway"}[status]
@@ -226,7 +233,8 @@ class NetProxy:
             f"Content-Type: text/plain; charset=utf-8\r\n"
             f"Content-Length: {len(payload)}\r\n"
             "Connection: close\r\n"
-            "\r\n".encode() + payload
+            "\r\n".encode()
+            + payload
         )
         with contextlib.suppress(Exception):
             await writer.drain()
@@ -238,16 +246,18 @@ class NetProxy:
         if self.on_event is None:
             return
         with contextlib.suppress(Exception):
-            self.on_event({
-                "container": self.container,
-                "host": host,
-                "port": port,
-                "allowed": bool(verdict.get("allowed")),
-                "rule": verdict.get("rule"),
-            })
+            self.on_event(
+                {
+                    "container": self.container,
+                    "host": host,
+                    "port": port,
+                    "allowed": bool(verdict.get("allowed")),
+                    "rule": verdict.get("rule"),
+                }
+            )
 
 
-def _fail_incomplete() -> None:
+def _fail_incomplete() -> NoReturn:
     raise ProxyError("the client closed the connection mid-request")
 
 
@@ -260,8 +270,15 @@ def _split_request_line(line: str) -> tuple[str, str, str]:
 
 #: Headers that belong to one hop and must not be forwarded upstream.
 _HOP_BY_HOP = {
-    "proxy-connection", "proxy-authorization", "proxy-authenticate",
-    "connection", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade",
+    "proxy-connection",
+    "proxy-authorization",
+    "proxy-authenticate",
+    "connection",
+    "keep-alive",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
 }
 
 
@@ -283,13 +300,14 @@ def _origin_form(method: str, target: str, version: str, headers: list[str]) -> 
             break
 
     kept = [
-        h for h in headers
+        h
+        for h in headers
         if h and h.split(":", 1)[0].strip().lower() not in _HOP_BY_HOP
     ]
     kept.append("Connection: close")
-    return (
-        f"{method} {path} {version}\r\n" + "\r\n".join(kept) + "\r\n\r\n"
-    ).encode("latin-1")
+    return (f"{method} {path} {version}\r\n" + "\r\n".join(kept) + "\r\n\r\n").encode(
+        "latin-1"
+    )
 
 
 async def _splice(

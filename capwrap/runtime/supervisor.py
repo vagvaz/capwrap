@@ -51,9 +51,7 @@ _PRIVATE_MODE = re.compile(rb"\x1b\[\?([0-9;]+)([hl])")
 #:
 #: Raise it with CAPWRAP_SCROLLBACK_BYTES for an agent that produces a lot, or
 #: lower it on a small box running many containers.
-SCROLLBACK_BYTES = int(
-    os.environ.get("CAPWRAP_SCROLLBACK_BYTES", str(4 * 1024 * 1024))
-)
+SCROLLBACK_BYTES = int(os.environ.get("CAPWRAP_SCROLLBACK_BYTES", str(4 * 1024 * 1024)))
 
 DEFAULT_COLS = 120
 DEFAULT_ROWS = 32
@@ -87,8 +85,17 @@ class ScreenSnapshot:
         }
 
 
-_FG = {"black": 30, "red": 31, "green": 32, "brown": 33, "yellow": 33,
-       "blue": 34, "magenta": 35, "cyan": 36, "white": 37}
+_FG = {
+    "black": 30,
+    "red": 31,
+    "green": 32,
+    "brown": 33,
+    "yellow": 33,
+    "blue": 34,
+    "magenta": 35,
+    "cyan": 36,
+    "white": 37,
+}
 
 
 def _sgr(run: dict) -> bytes:
@@ -126,7 +133,9 @@ class PtySession:
     #: Whether anything has aged out of the ring, so a replay can say so rather
     #: than let the operator believe they are looking at the whole session.
     _trimmed: bool = field(default=False, init=False)
-    _subscribers: list[Callable[[bytes], None]] = field(default_factory=list, init=False)
+    _subscribers: list[Callable[[bytes], None]] = field(
+        default_factory=list, init=False
+    )
     _exit_waiters: list[asyncio.Future] = field(default_factory=list, init=False)
     _modes: dict[int, bool] = field(default_factory=dict, init=False)
     _screen: pyte.Screen | None = field(default=None, init=False)
@@ -267,7 +276,8 @@ class PtySession:
             return None
 
         self.exit_code = (
-            os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode")
+            os.waitstatus_to_exitcode(status)
+            if hasattr(os, "waitstatus_to_exitcode")
             else status
         )
         self.finished_at = time.time()
@@ -358,7 +368,8 @@ class PtySession:
             return
         try:
             fcntl.ioctl(
-                self.master_fd, termios.TIOCSWINSZ,
+                self.master_fd,
+                termios.TIOCSWINSZ,
                 struct.pack("HHHH", rows, cols, 0, 0),
             )
         except OSError:

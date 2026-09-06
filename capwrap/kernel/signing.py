@@ -43,8 +43,11 @@ def _canonical(tag: bytes, fields: dict) -> bytes:
     gets its own tag.
     """
     document = json.dumps(
-        fields, sort_keys=True, separators=(",", ":"),
-        ensure_ascii=True, default=str,
+        fields,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
     )
     return tag + b"\n" + document.encode()
 

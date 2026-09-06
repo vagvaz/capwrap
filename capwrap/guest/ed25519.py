@@ -24,10 +24,10 @@ import hashlib
 import os
 
 # Curve25519 / edwards25519 parameters, RFC 8032 section 5.1.
-_P = 2 ** 255 - 19
-_L = 2 ** 252 + 27742317777372353535851937790883648493
+_P = 2**255 - 19
+_L = 2**252 + 27742317777372353535851937790883648493
 _D = (-121665 * pow(121666, _P - 2, _P)) % _P
-_I = pow(2, (_P - 1) // 4, _P)          # a square root of -1
+_I = pow(2, (_P - 1) // 4, _P)  # a square root of -1
 
 #: Base point.
 _BY = (4 * pow(5, _P - 2, _P)) % _P
@@ -89,10 +89,9 @@ def _decode_point(data: bytes) -> tuple | None:
 
 def _on_curve(p: tuple) -> bool:
     x, y, z, t = p
-    return (
-        (x * y) % _P == (z * t) % _P
-        and (-x * x + y * y - z * z - _D * t * t) % _P == 0
-    )
+    return (x * y) % _P == (z * t) % _P and (
+        -x * x + y * y - z * z - _D * t * t
+    ) % _P == 0
 
 
 def _hash_to_scalar(*chunks: bytes) -> int:
@@ -101,8 +100,8 @@ def _hash_to_scalar(*chunks: bytes) -> int:
 
 def _clamp(digest: bytes) -> int:
     a = int.from_bytes(digest[:32], "little")
-    a &= (1 << 254) - 8            # clear the low 3 bits and the top bit
-    a |= 1 << 254                  # set the second-highest bit
+    a &= (1 << 254) - 8  # clear the low 3 bits and the top bit
+    a |= 1 << 254  # set the second-highest bit
     return a
 
 
@@ -158,7 +157,7 @@ def verify(key: bytes, message: bytes, signature: bytes) -> bool:
         return False
 
     s = int.from_bytes(signature[32:], "little")
-    if s >= _L:                     # non-canonical S; reject rather than reduce
+    if s >= _L:  # non-canonical S; reject rather than reduce
         return False
 
     k = _hash_to_scalar(signature[:32], key, message)

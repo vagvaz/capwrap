@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from ..config import ContainerConfig
 from ..errors import (
@@ -76,6 +76,7 @@ SELF_RIGHTS = (
     | Rights.SIGNAL
     | Rights.DELEGATE
 )
+
 
 class Hooks(Protocol):
     """Effects the kernel authorises but does not perform."""
@@ -192,7 +193,9 @@ def _unique_label(task: Task, base: str) -> str:
 class CapKernel:
     """Objects, tasks, mappings and the operations over them."""
 
-    def __init__(self, audit: AuditLog | None = None, hooks: Hooks | None = None) -> None:
+    def __init__(
+        self, audit: AuditLog | None = None, hooks: Hooks | None = None
+    ) -> None:
         self.objects: dict[int, KernelObject] = {}
         self.tasks: dict[str, Task] = {}
         self.mapdb = MappingDB()
@@ -236,18 +239,25 @@ class CapKernel:
         if existing is not None:
             return existing
         ds = DataspaceObject(
-            oid=new_oid(), label=label or str(path), path=path, ds_kind=kind  # type: ignore[arg-type]
+            oid=new_oid(),
+            label=label or str(path),
+            path=path,
+            ds_kind=kind,  # type: ignore[arg-type]
         )
         self._register(ds)
         self._mint_root_cap(ds)
         return ds
 
     def create_factory(
-        self, label: str, quota_containers: int,
+        self,
+        label: str,
+        quota_containers: int,
         child_rights: Rights = Rights.NONE,
     ) -> FactoryObject:
         factory = FactoryObject(
-            oid=new_oid(), label=label, quota_containers=quota_containers,
+            oid=new_oid(),
+            label=label,
+            quota_containers=quota_containers,
             child_rights=child_rights,
         )
         self._register(factory)
@@ -270,8 +280,11 @@ class CapKernel:
         same thing to both, which is what an operator reading one row expects.
         """
         for obj in self.objects.values():
-            if (isinstance(obj, NetRuleObject)
-                    and obj.rule == name and obj.pattern == pattern):
+            if (
+                isinstance(obj, NetRuleObject)
+                and obj.rule == name
+                and obj.pattern == pattern
+            ):
                 return obj
         rule = NetRuleObject(
             oid=new_oid(), label=f"net:{name}", rule=name, pattern=pattern
@@ -297,7 +310,10 @@ class CapKernel:
     # ==================================================================
 
     def register_container(
-        self, config: ContainerConfig, parent: str = ROOT, mounts: list[str] | None = None
+        self,
+        config: ContainerConfig,
+        parent: str = ROOT,
+        mounts: list[str] | None = None,
     ) -> ContainerObject:
         """Create a container object plus its task and initial capability table.
 
@@ -315,7 +331,9 @@ class CapKernel:
             raise CapabilityError(f"unknown parent task {parent!r}")
 
         obj = ContainerObject(
-            oid=new_oid(), label=config.name, name=config.name,
+            oid=new_oid(),
+            label=config.name,
+            name=config.name,
             parent=None if parent == ROOT else parent,
             mounts=mounts or [],
         )
@@ -327,7 +345,10 @@ class CapKernel:
         self._grant_initial_caps(task, config, granter, obj)
 
         self.audit.record(
-            parent, "container.register", allowed=True, target=config.name,
+            parent,
+            "container.register",
+            allowed=True,
+            target=config.name,
             detail={"caps": len(task)},
         )
         return obj
@@ -387,9 +408,7 @@ class CapKernel:
                         f"{granter_factory.child_rights}"
                     )
 
-            factory = self.create_factory(
-                f"{config.name}-factory", quota, child_rights
-            )
+            factory = self.create_factory(f"{config.name}-factory", quota, child_rights)
             self._delegate_from_root(
                 task, factory.oid, caps.factory.mask, label="factory"
             )
@@ -401,8 +420,11 @@ class CapKernel:
                 # exists.  Recorded and skipped rather than fatal; `link_peers`
                 # fills these in once both sides are registered.
                 self.audit.record(
-                    config.name, "cap.grant.deferred", allowed=True,
-                    target=peer.container, rights=str(peer.mask),
+                    config.name,
+                    "cap.grant.deferred",
+                    allowed=True,
+                    target=peer.container,
+                    rights=str(peer.mask),
                     detail="peer not registered yet",
                 )
                 continue
@@ -443,7 +465,9 @@ class CapKernel:
         parent_node = self._root_node_for(oid)
         slot = task._free_slot()
         node = self.mapdb.map(parent_node.id, task.name, slot, rights)
-        task.insert(CapRef(oid, rights, node.id, label or self.objects[oid].label), slot)
+        task.insert(
+            CapRef(oid, rights, node.id, label or self.objects[oid].label), slot
+        )
         return slot
 
     def _delegate_from(
@@ -501,7 +525,10 @@ class CapKernel:
         if obj is not None:
             obj.state = "destroyed"
         self.audit.record(
-            ROOT, "container.destroy", allowed=True, target=name,
+            ROOT,
+            "container.destroy",
+            allowed=True,
+            target=name,
             detail={"mappings_revoked": len(killed)},
         )
 
@@ -544,11 +571,17 @@ class CapKernel:
         self.objects.pop(obj.oid, None)
 
         self.audit.record(
-            ROOT, "container.forget", allowed=True, target=name,
+            ROOT,
+            "container.forget",
+            allowed=True,
+            target=name,
             detail={"mappings_revoked": len(killed), "reparented": adopted},
         )
-        return {"forgotten": name, "mappings_revoked": len(killed),
-                "reparented": adopted}
+        return {
+            "forgotten": name,
+            "mappings_revoked": len(killed),
+            "reparented": adopted,
+        }
 
     # ==================================================================
     # the syscall surface -- everything below is reachable by an agent
@@ -569,12 +602,20 @@ class CapKernel:
             ref = task.require(slot, needed)
         except CapabilityError as exc:
             self.audit.record(
-                actor, op, allowed=False, slot=slot,
-                rights=str(needed), detail=str(exc),
+                actor,
+                op,
+                allowed=False,
+                slot=slot,
+                rights=str(needed),
+                detail=str(exc),
             )
             raise
         self.audit.record(
-            actor, op, allowed=True, slot=slot, rights=str(needed),
+            actor,
+            op,
+            allowed=True,
+            slot=slot,
+            rights=str(needed),
             target=ref.label,
         )
         return task, ref
@@ -591,8 +632,11 @@ class CapKernel:
                 continue
             out.append(
                 CapInfo(
-                    slot=slot, kind=obj.kind, label=ref.label or obj.label,
-                    rights=ref.rights.names(), detail=obj.describe(),
+                    slot=slot,
+                    kind=obj.kind,
+                    label=ref.label or obj.label,
+                    rights=ref.rights.names(),
+                    detail=obj.describe(),
                 )
             )
         return out
@@ -601,8 +645,11 @@ class CapKernel:
         _task, ref = self._checked(actor, "cap.info", slot, Rights.INSPECT)
         obj = self.objects[ref.oid]
         return CapInfo(
-            slot=slot, kind=obj.kind, label=ref.label or obj.label,
-            rights=ref.rights.names(), detail=obj.describe(),
+            slot=slot,
+            kind=obj.kind,
+            label=ref.label or obj.label,
+            rights=ref.rights.names(),
+            detail=obj.describe(),
         )
 
     # -- messaging -------------------------------------------------------
@@ -622,8 +669,11 @@ class CapKernel:
         key = self._check_signature(actor, payload, signature)
 
         message = {
-            "from": actor, "payload": payload, "via_slot": slot,
-            "signature": signature, "public_key": key,
+            "from": actor,
+            "payload": payload,
+            "via_slot": slot,
+            "signature": signature,
+            "public_key": key,
         }
         if isinstance(obj, ContainerObject):
             self.hooks.deliver_message(obj.name, message)
@@ -653,7 +703,9 @@ class CapKernel:
             raise CapabilityError(f"{actor} has no signing key registered")
         if not verify_message(key, actor, payload, signature):
             self.audit.record(
-                actor, "msg.send", allowed=False,
+                actor,
+                "msg.send",
+                allowed=False,
                 detail="the signature does not match the message",
             )
             raise CapabilityError(
@@ -692,15 +744,19 @@ class CapKernel:
                 continue
             seen.add(slot)
             try:
-                delivered.append({
-                    "slot": slot,
-                    **self.msg_send(actor, slot, payload, signature=signature),
-                })
+                delivered.append(
+                    {
+                        "slot": slot,
+                        **self.msg_send(actor, slot, payload, signature=signature),
+                    }
+                )
             except CapabilityError as exc:
                 refused.append({"slot": slot, "code": exc.code, "error": str(exc)})
 
         self.audit.record(
-            actor, "msg.broadcast", allowed=bool(delivered),
+            actor,
+            "msg.broadcast",
+            allowed=bool(delivered),
             target=",".join(str(d["delivered_to"]) for d in delivered) or None,
             detail={"delivered": len(delivered), "refused": len(refused)},
         )
@@ -713,7 +769,11 @@ class CapKernel:
     # -- delegation ------------------------------------------------------
 
     def cap_delegate(
-        self, actor: str, target_slot: int, cap_slot: int, rights: str | list[str] | None
+        self,
+        actor: str,
+        target_slot: int,
+        cap_slot: int,
+        rights: str | list[str] | None,
     ) -> dict:
         """Give the holder of `target_slot` a capability from `cap_slot`.
 
@@ -729,7 +789,9 @@ class CapKernel:
 
         target_obj = self.objects[target_ref.oid]
         if not isinstance(target_obj, ContainerObject):
-            raise InsufficientRights("capabilities can only be delegated to a container")
+            raise InsufficientRights(
+                "capabilities can only be delegated to a container"
+            )
         recipient = self.tasks.get(target_obj.name)
         if recipient is None:
             raise NoSuchCapability(f"{target_obj.name} has no capability table")
@@ -740,8 +802,13 @@ class CapKernel:
             node = self.mapdb.map(cap_ref.node, recipient.name, new_slot, requested)
         except CapabilityError as exc:
             self.audit.record(
-                actor, "cap.delegate", allowed=False, target=target_obj.name,
-                slot=cap_slot, rights=str(requested), detail=str(exc),
+                actor,
+                "cap.delegate",
+                allowed=False,
+                target=target_obj.name,
+                slot=cap_slot,
+                rights=str(requested),
+                detail=str(exc),
             )
             raise
         recipient.insert(
@@ -749,8 +816,12 @@ class CapKernel:
         )
 
         self.audit.record(
-            actor, "cap.delegate", allowed=True, target=target_obj.name,
-            slot=cap_slot, rights=str(requested),
+            actor,
+            "cap.delegate",
+            allowed=True,
+            target=target_obj.name,
+            slot=cap_slot,
+            rights=str(requested),
             detail={"recipient_slot": new_slot, "label": cap_ref.label},
         )
         self.hooks.deliver_message(
@@ -759,13 +830,17 @@ class CapKernel:
                 "from": actor,
                 "kind": "capability",
                 "payload": {
-                    "slot": new_slot, "label": cap_ref.label,
+                    "slot": new_slot,
+                    "label": cap_ref.label,
                     "rights": requested.names(),
                 },
             },
         )
-        return {"recipient": target_obj.name, "slot": new_slot,
-                "rights": requested.names()}
+        return {
+            "recipient": target_obj.name,
+            "slot": new_slot,
+            "rights": requested.names(),
+        }
 
     def cap_revoke(self, actor: str, slot: int, include_self: bool = False) -> dict:
         """Withdraw everything derived from a capability the actor holds.
@@ -782,7 +857,11 @@ class CapKernel:
         self._apply_revocations(killed)
 
         self.audit.record(
-            actor, "cap.revoke", allowed=True, slot=slot, target=ref.label,
+            actor,
+            "cap.revoke",
+            allowed=True,
+            slot=slot,
+            target=ref.label,
             detail={"revoked": len(killed), "include_self": include_self},
         )
         return {
@@ -847,9 +926,7 @@ class CapKernel:
         _task, ref = self._checked(actor, "ctr.status", slot, Rights.INSPECT)
         return self.objects[ref.oid].describe()
 
-    def ctr_spawn(
-        self, actor: str, factory_slot: int, config: ContainerConfig
-    ) -> dict:
+    def ctr_spawn(self, actor: str, factory_slot: int, config: ContainerConfig) -> dict:
         """Create a container through a factory capability.
 
         The new container's initial capabilities are delegated from `actor`, so
@@ -861,9 +938,12 @@ class CapKernel:
             raise InsufficientRights(f"slot {factory_slot} does not name a factory")
         if factory.remaining <= 0:
             self.audit.record(
-                actor, "ctr.spawn", allowed=False, slot=factory_slot,
+                actor,
+                "ctr.spawn",
+                allowed=False,
+                slot=factory_slot,
                 detail=f"quota exhausted ({factory.used_containers}/"
-                       f"{factory.quota_containers})",
+                f"{factory.quota_containers})",
             )
             raise QuotaExceeded(
                 f"factory {factory.label!r} has used all "
@@ -883,8 +963,12 @@ class CapKernel:
                 task, obj.oid, factory.child_rights, label=f"child:{obj.name}"
             )
             self.audit.record(
-                actor, "cap.child_handle", allowed=True, target=obj.name,
-                slot=handle, rights=str(factory.child_rights),
+                actor,
+                "cap.child_handle",
+                allowed=True,
+                target=obj.name,
+                slot=handle,
+                rights=str(factory.child_rights),
             )
 
         return {
@@ -931,7 +1015,9 @@ class CapKernel:
         # The recipient also gets a capability on the dataspace, so it can pass
         # it on (if given DELEGATE) and so revoking the mapping removes both the
         # files and the authority in one step.
-        granted = Rights.READ | (Rights.WRITE if Rights.WRITE in ds_ref.rights else Rights.NONE)
+        granted = Rights.READ | (
+            Rights.WRITE if Rights.WRITE in ds_ref.rights else Rights.NONE
+        )
         new_slot = recipient._free_slot()
         node = self.mapdb.map(
             ds_ref.node, recipient.name, new_slot, granted, on_revoke=token
@@ -939,21 +1025,32 @@ class CapKernel:
         recipient.insert(CapRef(ds.oid, granted, node.id, dest_name), new_slot)
 
         self.audit.record(
-            actor, "ds.map", allowed=True, target=target.name, slot=ds_slot,
-            rights=str(granted), detail={"dest": dest_name, "mode": mode},
+            actor,
+            "ds.map",
+            allowed=True,
+            target=target.name,
+            slot=ds_slot,
+            rights=str(granted),
+            detail={"dest": dest_name, "mode": mode},
         )
         self.hooks.deliver_message(
             target.name,
             {
-                "from": actor, "kind": "dataspace",
+                "from": actor,
+                "kind": "dataspace",
                 "payload": {
-                    "slot": new_slot, "path": f"/shared/{dest_name}",
-                    "mode": mode, "rights": granted.names(),
+                    "slot": new_slot,
+                    "path": f"/shared/{dest_name}",
+                    "mode": mode,
+                    "rights": granted.names(),
                 },
             },
         )
-        return {"recipient": target.name, "slot": new_slot,
-                "path": f"/shared/{dest_name}"}
+        return {
+            "recipient": target.name,
+            "slot": new_slot,
+            "path": f"/shared/{dest_name}",
+        }
 
     # -- boards ----------------------------------------------------------
 
@@ -980,7 +1077,8 @@ class CapKernel:
             raise CapabilityError("a board needs a topic")
 
         mine = [
-            obj for obj in self.objects.values()
+            obj
+            for obj in self.objects.values()
             if isinstance(obj, BoardObject) and obj.created_by == actor
         ]
         if len(mine) >= BOARD_LIMIT_PER_CONTAINER:
@@ -990,15 +1088,22 @@ class CapKernel:
 
         board = self.create_board(topic, created_by=actor)
         slot = self._delegate_from_root(
-            task, board.oid, VALID_RIGHTS["board"],
+            task,
+            board.oid,
+            VALID_RIGHTS["board"],
             label=_unique_label(task, f"board:{topic}"),
         )
         self.audit.record(
-            actor, "board.create", allowed=True, target=topic, slot=slot,
+            actor,
+            "board.create",
+            allowed=True,
+            target=topic,
+            slot=slot,
             rights=str(VALID_RIGHTS["board"]),
         )
         return {
-            "board": topic, "slot": slot,
+            "board": topic,
+            "slot": slot,
             "rights": VALID_RIGHTS["board"].names(),
         }
 
@@ -1032,7 +1137,10 @@ class CapKernel:
                 raise CapabilityError(f"{actor} has no signing key registered")
             if not verify_post(key, board.topic, actor, payload, signature):
                 self.audit.record(
-                    actor, "board.post", allowed=False, target=board.topic,
+                    actor,
+                    "board.post",
+                    allowed=False,
+                    target=board.topic,
                     detail="the signature does not match the post",
                 )
                 raise CapabilityError(
@@ -1082,12 +1190,15 @@ class CapKernel:
                 ref = task.slots[slot]
                 if ref.oid != oid:
                     continue
-                out.append({
-                    "container": name, "slot": slot,
-                    "rights": ref.rights.names(),
-                    "may_post": Rights.SEND in ref.rights,
-                    "may_read": Rights.READ in ref.rights,
-                })
+                out.append(
+                    {
+                        "container": name,
+                        "slot": slot,
+                        "rights": ref.rights.names(),
+                        "may_post": Rights.SEND in ref.rights,
+                        "may_read": Rights.READ in ref.rights,
+                    }
+                )
         return out
 
     # -- network ---------------------------------------------------------
@@ -1120,15 +1231,22 @@ class CapKernel:
         for slot, rule in self.net_rules(actor):
             if _matches(rule.pattern, target):
                 self.audit.record(
-                    actor, "net.connect", allowed=True, target=target,
-                    slot=slot, rights=str(Rights.CONNECT),
+                    actor,
+                    "net.connect",
+                    allowed=True,
+                    target=target,
+                    slot=slot,
+                    rights=str(Rights.CONNECT),
                     detail={"rule": rule.rule},
                 )
                 return {"allowed": True, "rule": rule.rule, "slot": slot}
 
         held = [rule.rule for _slot, rule in self.net_rules(actor)]
         self.audit.record(
-            actor, "net.connect", allowed=False, target=target,
+            actor,
+            "net.connect",
+            allowed=False,
+            target=target,
             detail={"held_rules": held},
         )
         return {"allowed": False, "rule": None, "held_rules": held}
@@ -1143,11 +1261,13 @@ class CapKernel:
         channel that must never be revocable by another agent.
         """
         message = {
-            "from": actor, "kind": "question",
+            "from": actor,
+            "kind": "question",
             "payload": {"question": question, "context": context or {}},
         }
-        self.audit.record(actor, "ask", allowed=True, target="operator",
-                          detail=question[:200])
+        self.audit.record(
+            actor, "ask", allowed=True, target="operator", detail=question[:200]
+        )
         self.hooks.deliver_message(self.operator_gate.label, message)
         return {"asked": True}
 
@@ -1171,20 +1291,24 @@ class CapKernel:
         if task is None:
             raise NoSuchCapability(f"unknown container {holder_name!r}")
 
+        # Every branch ends with `obj` holding a KernelObject of the granted
+        # kind, or having raised; the base annotation is what lets the code
+        # after the chain treat them uniformly.
+        obj: KernelObject
         if kind == "container":
-            obj = self.find_container(target)
-            if obj is None:
+            found = self.find_container(target)
+            if found is None:
                 raise NoSuchCapability(f"no such container: {target}")
+            obj = found
             default_label = f"peer:{target}"
         elif kind == "dataspace":
             obj = self.create_dataspace(Path(target))
             default_label = target
         elif kind == "board":
-            obj = next(
-                (b for b in self.boards() if b.topic == target), None
-            )
-            if obj is None:
+            board = next((b for b in self.boards() if b.topic == target), None)
+            if board is None:
                 raise NoSuchCapability(f"no such board: {target}")
+            obj = board
             default_label = f"board:{target}"
         elif kind == "net_rule":
             # `target` carries "name=pattern", so the console can grant a hole
@@ -1198,7 +1322,8 @@ class CapKernel:
             default_label = f"net:{name.strip()}"
         elif kind == "factory":
             obj = self.create_factory(
-                f"{holder_name}-factory", quota,
+                f"{holder_name}-factory",
+                quota,
                 Rights.SEND | Rights.INSPECT,
             )
             default_label = "factory"
@@ -1210,8 +1335,13 @@ class CapKernel:
             task, obj.oid, rights, label=_unique_label(task, label or default_label)
         )
         self.audit.record(
-            ROOT, "cap.operator_grant", allowed=True, target=holder_name,
-            slot=slot, rights=str(rights), detail={"kind": kind, "object": target},
+            ROOT,
+            "cap.operator_grant",
+            allowed=True,
+            target=holder_name,
+            slot=slot,
+            rights=str(rights),
+            detail={"kind": kind, "object": target},
         )
         return {
             "holder": holder_name,
@@ -1248,10 +1378,6 @@ class CapKernel:
     def cap_graph(self) -> dict:
         """Every live mapping, for the operator's capability inspector."""
         return {
-            "objects": {
-                str(oid): obj.describe() for oid, obj in self.objects.items()
-            },
-            "mappings": [
-                n.summary() for n in self.mapdb.all_nodes() if not n.revoked
-            ],
+            "objects": {str(oid): obj.describe() for oid, obj in self.objects.items()},
+            "mappings": [n.summary() for n in self.mapdb.all_nodes() if not n.revoked],
         }

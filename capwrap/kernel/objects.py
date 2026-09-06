@@ -17,9 +17,7 @@ from typing import Any, Literal
 
 from .rights import Rights
 
-ObjectKind = Literal[
-    "container", "dataspace", "factory", "gate", "net_rule", "board"
-]
+ObjectKind = Literal["container", "dataspace", "factory", "gate", "net_rule", "board"]
 
 _next_oid = itertools.count(1)
 

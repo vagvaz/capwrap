@@ -193,12 +193,34 @@ def test_live_mount_into_a_running_container(tmp_path, state_dir, require_sandbo
     (source / "marker.txt").write_text("mounted live\n")
 
     sandbox = subprocess.Popen(
-        [probe.find_bwrap(), "--unshare-user", "--unshare-pid", "--unshare-ipc",
-         "--unshare-uts", "--ro-bind", "/usr", "/usr",
-         "--symlink", "usr/lib", "/lib", "--symlink", "usr/bin", "/bin",
-         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-         "--tmpfs", "/shared", "/bin/sleep", "30"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        [
+            probe.find_bwrap(),
+            "--unshare-user",
+            "--unshare-pid",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/bin",
+            "/bin",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--tmpfs",
+            "/shared",
+            "/bin/sleep",
+            "30",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     try:
         time.sleep(0.8)
@@ -206,26 +228,53 @@ def test_live_mount_into_a_running_container(tmp_path, state_dir, require_sandbo
 
         inner = nsmount.container_pid(sandbox.pid)
         seen = subprocess.run(
-            ["nsenter", "-t", str(inner), "-U", "-m", "--preserve-credentials",
-             "cat", "/shared/payload/marker.txt"],
-            capture_output=True, text=True,
+            [
+                "nsenter",
+                "-t",
+                str(inner),
+                "-U",
+                "-m",
+                "--preserve-credentials",
+                "cat",
+                "/shared/payload/marker.txt",
+            ],
+            capture_output=True,
+            text=True,
         )
         assert seen.stdout == "mounted live\n", seen.stderr
 
         # A real mount aliases: a write on the host is visible inside at once.
         (source / "marker.txt").write_text("changed on the host\n")
         again = subprocess.run(
-            ["nsenter", "-t", str(inner), "-U", "-m", "--preserve-credentials",
-             "cat", "/shared/payload/marker.txt"],
-            capture_output=True, text=True,
+            [
+                "nsenter",
+                "-t",
+                str(inner),
+                "-U",
+                "-m",
+                "--preserve-credentials",
+                "cat",
+                "/shared/payload/marker.txt",
+            ],
+            capture_output=True,
+            text=True,
         )
         assert again.stdout == "changed on the host\n", "not aliased"
 
         nsmount.unmount_from(sandbox.pid, "/shared/payload")
         gone = subprocess.run(
-            ["nsenter", "-t", str(inner), "-U", "-m", "--preserve-credentials",
-             "ls", "/shared/payload"],
-            capture_output=True, text=True,
+            [
+                "nsenter",
+                "-t",
+                str(inner),
+                "-U",
+                "-m",
+                "--preserve-credentials",
+                "ls",
+                "/shared/payload",
+            ],
+            capture_output=True,
+            text=True,
         )
         assert "marker.txt" not in gone.stdout
     finally:

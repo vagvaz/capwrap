@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -54,7 +53,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         config.name = args.name
     config.validate_sources()
 
-    backend = _resolve_backend(args.overlay_backend) if _needs_overlay(config) else "kernel"
+    backend = (
+        _resolve_backend(args.overlay_backend) if _needs_overlay(config) else "kernel"
+    )
 
     bwrap_bin, why_not = probe.find_working_bwrap()
     if not bwrap_bin:
@@ -69,7 +70,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         config.runtime.command = list(args.command)
 
     argv = bwrap_mod.build_argv(
-        config, prepared, paths,
+        config,
+        prepared,
+        paths,
         bwrap=bwrap_bin,
         guest_tools=_guest_tools_dir(),
     )
@@ -93,7 +96,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 0
 
     if not args.quiet:
-        print(f"capwrap: {config.name} -> {' '.join(config.runtime.command)}", file=sys.stderr)
+        print(
+            f"capwrap: {config.name} -> {' '.join(config.runtime.command)}",
+            file=sys.stderr,
+        )
 
     try:
         # execve, not execv: the container's environment is inherited rather
@@ -219,18 +225,24 @@ def cmd_up(args: argparse.Namespace) -> int:
                 await daemon.start(config.name)
 
         app = create_app(daemon)
-        server = uvicorn.Server(uvicorn.Config(
-            app, log_level="warning", access_log=False,
-        ))
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                log_level="warning",
+                access_log=False,
+            )
+        )
 
         label = f"capwrap[{instance_name}]" if instance_name else "capwrap"
         print(f"{label}: {len(configs)} container(s) registered")
         for config in configs:
             print(f"  - {config.name}")
         if args.trace:
-            print("\n  message tracing is ON -- every message between containers "
-                  "is recorded,\n  payloads included. Turn it off in the "
-                  "Messages tab when you are done.")
+            print(
+                "\n  message tracing is ON -- every message between containers "
+                "is recorded,\n  payloads included. Turn it off in the "
+                "Messages tab when you are done."
+            )
         shown = "127.0.0.1" if args.host == "0.0.0.0" else args.host
         print(f"\n  web interface: http://{shown}:{args.port}\n", flush=True)
 
@@ -264,12 +276,16 @@ def cmd_add(args: argparse.Namespace) -> int:
     base = f"http://{args.host}:{args.port}"
     added = []
     for config in configs:
-        payload = json.dumps({
-            "config": json.loads(config.model_dump_json(exclude={"source_dir"})),
-            "start": not args.no_start,
-        }).encode()
+        payload = json.dumps(
+            {
+                "config": json.loads(config.model_dump_json(exclude={"source_dir"})),
+                "start": not args.no_start,
+            }
+        ).encode()
         request = urllib.request.Request(
-            f"{base}/api/containers", data=payload, method="POST",
+            f"{base}/api/containers",
+            data=payload,
+            method="POST",
             headers={"Content-Type": "application/json"},
         )
         try:
@@ -323,17 +339,22 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", help="prepare and enter a container in the foreground")
     p.add_argument("config", help="path to a container .toml")
     p.add_argument("--name", help="override the container name")
-    p.add_argument("--dry-run", action="store_true", help="print the bwrap command and exit")
+    p.add_argument(
+        "--dry-run", action="store_true", help="print the bwrap command and exit"
+    )
     p.add_argument("--quiet", "-q", action="store_true")
     p.add_argument(
-        "--overlay-backend", choices=["auto", "kernel", "fuse"], default="auto",
+        "--overlay-backend",
+        choices=["auto", "kernel", "fuse"],
+        default="auto",
     )
     p.set_defaults(func=cmd_run, command=[])
 
     p = sub.add_parser("show", help="validate a config and show what it resolves to")
     p.add_argument("config")
-    p.add_argument("--no-check", action="store_true",
-                   help="skip checking that source paths exist")
+    p.add_argument(
+        "--no-check", action="store_true", help="skip checking that source paths exist"
+    )
     p.set_defaults(func=cmd_show)
 
     p = sub.add_parser(
@@ -342,16 +363,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("configs", nargs="+", help="one or more container .toml files")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8420)
-    p.add_argument("--no-start", action="store_true",
-                   help="register the containers but do not launch them")
-    p.add_argument("--name", default="",
-                   help="what this capwrap is for, e.g. 'FastPath HashTable'. "
-                        "Shown in the header and the browser tab, so several "
-                        "instances stay tellable apart (env: CAPWRAP_NAME)")
-    p.add_argument("--trace", action="store_true",
-                   help="record every message passed between containers, "
-                        "payloads included, for the Messages tab (also "
-                        "switchable there while running)")
+    p.add_argument(
+        "--no-start",
+        action="store_true",
+        help="register the containers but do not launch them",
+    )
+    p.add_argument(
+        "--name",
+        default="",
+        help="what this capwrap is for, e.g. 'FastPath HashTable'. "
+        "Shown in the header and the browser tab, so several "
+        "instances stay tellable apart (env: CAPWRAP_NAME)",
+    )
+    p.add_argument(
+        "--trace",
+        action="store_true",
+        help="record every message passed between containers, "
+        "payloads included, for the Messages tab (also "
+        "switchable there while running)",
+    )
     p.set_defaults(func=cmd_up)
 
     p = sub.add_parser(
@@ -360,13 +390,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("configs", nargs="+", help="one or more container .toml files")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8420)
-    p.add_argument("--no-start", action="store_true",
-                   help="register it but do not launch it")
+    p.add_argument(
+        "--no-start", action="store_true", help="register it but do not launch it"
+    )
     p.set_defaults(func=cmd_add)
 
-    p = sub.add_parser(
-        "tui", help="the terminal console: approvals, screens, attach"
-    )
+    p = sub.add_parser("tui", help="the terminal console: approvals, screens, attach")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8420)
     p.set_defaults(func=cmd_tui)

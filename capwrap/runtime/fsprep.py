@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from .. import agents
-from ..config import ContainerConfig, FileSpec, MountSpec
+from ..config import ContainerConfig, FileSpec
 from ..errors import SandboxError
 from ..paths import (
     GUEST_GITDIR_ROOT,
@@ -216,8 +216,11 @@ def _prep_overlay(mount, config, paths, prepared, backend) -> None:
     if backend == "kernel":
         prepared.mounts.append(
             ResolvedMount(
-                mount.dest, "overlay",
-                lower=mount.src, upper=upper, work=work,
+                mount.dest,
+                "overlay",
+                lower=mount.src,
+                upper=upper,
+                work=work,
                 origin=f"overlay on {mount.src}",
             )
         )
@@ -230,7 +233,9 @@ def _prep_overlay(mount, config, paths, prepared, backend) -> None:
         prepared.cleanups.append(lambda m=merged: _umount_fuse(m))
         prepared.mounts.append(
             ResolvedMount(
-                mount.dest, "rw", src=merged,
+                mount.dest,
+                "rw",
+                src=merged,
                 origin=f"overlay (fuse) on {mount.src}",
             )
         )
@@ -280,7 +285,9 @@ def _prep_worktree(mount, config, paths, prepared, backend) -> None:
         # under share="objects".  That is the documented cost of the mode.
         prepared.mounts.append(
             ResolvedMount(
-                result.guest_gitdir, "rw", src=result.main_gitdir,
+                result.guest_gitdir,
+                "rw",
+                src=result.main_gitdir,
                 origin=f"shared object store of {mount.src}",
             )
         )
@@ -341,8 +348,12 @@ def _umount_fuse(merged: Path) -> None:
         exe = shutil.which(argv[0])
         if not exe:
             continue
-        if subprocess.run([exe, *argv[1:], str(merged)], capture_output=True,
-                          check=False).returncode == 0:
+        if (
+            subprocess.run(
+                [exe, *argv[1:], str(merged)], capture_output=True, check=False
+            ).returncode
+            == 0
+        ):
             return
 
 

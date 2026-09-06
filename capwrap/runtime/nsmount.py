@@ -109,7 +109,11 @@ def open_tree(path: str, flags: int = OPEN_TREE_CLONE | AT_RECURSIVE) -> int:
 
 def move_mount(tree_fd: int, dest: str) -> None:
     rc = _libc.syscall(
-        _SYS["move_mount"], tree_fd, b"", AT_FDCWD, str(dest).encode(),
+        _SYS["move_mount"],
+        tree_fd,
+        b"",
+        AT_FDCWD,
+        str(dest).encode(),
         MOVE_MOUNT_F_EMPTY_PATH,
     )
     if rc < 0:
@@ -227,7 +231,9 @@ def mount_into(pid: int, source: Path, dest: str, readonly: bool = False) -> Non
 
 def _remount_readonly(dest: str) -> None:  # pragma: no cover - runs post-setns
     MS_BIND, MS_REMOUNT, MS_RDONLY = 4096, 32, 1
-    rc = _libc.mount(None, str(dest).encode(), None, MS_BIND | MS_REMOUNT | MS_RDONLY, None)
+    rc = _libc.mount(
+        None, str(dest).encode(), None, MS_BIND | MS_REMOUNT | MS_RDONLY, None
+    )
     if rc < 0:
         raise _fail(f"remount ro({dest})")
 
@@ -279,12 +285,34 @@ def available(bwrap: str | None = None) -> tuple[bool, str]:
         (source / "marker").write_text("live\n")
 
         sandbox = subprocess.Popen(
-            [bwrap, "--unshare-user", "--unshare-pid", "--unshare-ipc",
-             "--unshare-uts", "--ro-bind", "/usr", "/usr",
-             "--symlink", "usr/lib", "/lib", "--symlink", "usr/bin", "/bin",
-             "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-             "--tmpfs", "/shared", "/bin/sleep", "10"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            [
+                bwrap,
+                "--unshare-user",
+                "--unshare-pid",
+                "--unshare-ipc",
+                "--unshare-uts",
+                "--ro-bind",
+                "/usr",
+                "/usr",
+                "--symlink",
+                "usr/lib",
+                "/lib",
+                "--symlink",
+                "usr/bin",
+                "/bin",
+                "--proc",
+                "/proc",
+                "--dev",
+                "/dev",
+                "--tmpfs",
+                "/tmp",
+                "--tmpfs",
+                "/shared",
+                "/bin/sleep",
+                "10",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         try:
             time.sleep(0.6)

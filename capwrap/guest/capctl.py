@@ -52,7 +52,9 @@ class CapctlError(Exception):
     pass
 
 
-def call(op: str, args: dict[str, Any] | None = None, timeout: float | None = 30.0) -> Any:
+def call(
+    op: str, args: dict[str, Any] | None = None, timeout: float | None = 30.0
+) -> Any:
     """One request, one response, over the container's control socket."""
     path = DEFAULT_SOCKET
     if not os.path.exists(path):
@@ -114,7 +116,8 @@ def resolve_slot(value: str) -> int:
 
     # `beta` should find `peer:beta`, which is what an agent will actually type.
     partial = [
-        c for c in caps
+        c
+        for c in caps
         if c["label"].endswith(f":{value}") or c["label"].startswith(f"{value}:")
     ]
     if len(partial) == 1:
@@ -157,7 +160,8 @@ def container_slots() -> list[dict]:
     """
     me = os.environ.get("CAPWRAP_CONTAINER")
     return [
-        cap for cap in call("cap.list")
+        cap
+        for cap in call("cap.list")
         if cap["kind"] == "container"
         and "send" in cap["rights"]
         and (cap.get("detail") or {}).get("name") != me
@@ -173,21 +177,53 @@ def container_slots() -> list[dict]:
 # Needed to drive another agent's TUI -- a selection prompt is answered with
 # arrows and Enter, and none of those can be expressed as text.
 KEYS = {
-    "up": "\x1b[A", "down": "\x1b[B", "right": "\x1b[C", "left": "\x1b[D",
-    "home": "\x1b[H", "end": "\x1b[F",
-    "pageup": "\x1b[5~", "pagedown": "\x1b[6~",
-    "insert": "\x1b[2~", "delete": "\x1b[3~",
+    "up": "\x1b[A",
+    "down": "\x1b[B",
+    "right": "\x1b[C",
+    "left": "\x1b[D",
+    "home": "\x1b[H",
+    "end": "\x1b[F",
+    "pageup": "\x1b[5~",
+    "pagedown": "\x1b[6~",
+    "insert": "\x1b[2~",
+    "delete": "\x1b[3~",
     # Enter is a carriage return, not a newline. A TTY in raw mode -- which is
     # what any full-screen TUI puts itself in -- receives \r when you press it,
     # and many prompts ignore \n entirely.
-    "enter": "\r", "return": "\r", "cr": "\r", "newline": "\n",
-    "tab": "\t", "backtab": "\x1b[Z", "shift-tab": "\x1b[Z",
-    "space": " ", "backspace": "\x7f", "escape": "\x1b", "esc": "\x1b",
+    "enter": "\r",
+    "return": "\r",
+    "cr": "\r",
+    "newline": "\n",
+    "tab": "\t",
+    "backtab": "\x1b[Z",
+    "shift-tab": "\x1b[Z",
+    "space": " ",
+    "backspace": "\x7f",
+    "escape": "\x1b",
+    "esc": "\x1b",
 }
-KEYS.update({f"f{n}": seq for n, seq in enumerate(
-    ["\x1bOP", "\x1bOQ", "\x1bOR", "\x1bOS",
-     "\x1b[15~", "\x1b[17~", "\x1b[18~", "\x1b[19~",
-     "\x1b[20~", "\x1b[21~", "\x1b[23~", "\x1b[24~"], start=1)})
+KEYS.update(
+    {
+        f"f{n}": seq
+        for n, seq in enumerate(
+            [
+                "\x1bOP",
+                "\x1bOQ",
+                "\x1bOR",
+                "\x1bOS",
+                "\x1b[15~",
+                "\x1b[17~",
+                "\x1b[18~",
+                "\x1b[19~",
+                "\x1b[20~",
+                "\x1b[21~",
+                "\x1b[23~",
+                "\x1b[24~",
+            ],
+            start=1,
+        )
+    }
+)
 
 
 def key_sequence(name: str) -> str:
@@ -199,7 +235,7 @@ def key_sequence(name: str) -> str:
     key = name.strip().lower()
     if key in KEYS:
         return KEYS[key]
-    if key.startswith(("ctrl-", "c-", "^")) :
+    if key.startswith(("ctrl-", "c-", "^")):
         letter = key.split("-", 1)[-1].lstrip("^")
         if len(letter) == 1 and letter.isalpha():
             return chr(ord(letter.lower()) - 96)
@@ -258,8 +294,7 @@ def print_messages(messages: list[dict]) -> None:
         # Verified here, by the reader, rather than reported from the flag the
         # sender's side set -- which is the only version of the claim that means
         # anything.
-        print(f"[{m['id']}] from {m['from']}{_verify_message(m)} "
-              f"({m['kind']}): {body}")
+        print(f"[{m['id']}] from {m['from']}{_verify_message(m)} ({m['kind']}): {body}")
 
 
 # --------------------------------------------------------------------------
@@ -305,8 +340,10 @@ def cmd_send(args):
         if args.json:
             emit(result, True)
         else:
-            print(f"delivered to {result['delivered_to']}"
-                  + (" (signed)" if signature else ""))
+            print(
+                f"delivered to {result['delivered_to']}"
+                + (" (signed)" if signature else "")
+            )
         return
     _deliver(slots, payload, args.json, signature)
 
@@ -362,7 +399,8 @@ def _deliver(
 def cmd_recv(args):
     timeout = None if args.wait and args.timeout is None else (args.timeout or 0)
     messages = call(
-        "msg.recv", {"timeout": timeout, "limit": args.limit},
+        "msg.recv",
+        {"timeout": timeout, "limit": args.limit},
         timeout=None if timeout is None else max(timeout + 5, 30),
     )
     if args.json:
@@ -372,11 +410,14 @@ def cmd_recv(args):
 
 
 def cmd_grant(args):
-    result = call("cap.delegate", {
-        "target_slot": resolve_slot(args.target),
-        "cap_slot": resolve_slot(args.cap),
-        "rights": args.rights.split(",") if args.rights else None,
-    })
+    result = call(
+        "cap.delegate",
+        {
+            "target_slot": resolve_slot(args.target),
+            "cap_slot": resolve_slot(args.cap),
+            "rights": args.rights.split(",") if args.rights else None,
+        },
+    )
     if args.json:
         emit(result, True)
     else:
@@ -387,7 +428,9 @@ def cmd_grant(args):
 
 
 def cmd_revoke(args):
-    result = call("cap.revoke", {"slot": resolve_slot(args.slot), "include_self": args.self_too})
+    result = call(
+        "cap.revoke", {"slot": resolve_slot(args.slot), "include_self": args.self_too}
+    )
     if args.json:
         emit(result, True)
     else:
@@ -400,11 +443,17 @@ def cmd_status(args):
 
 
 def cmd_kill(args):
-    emit(call("ctr.kill", {"slot": resolve_slot(args.slot), "signal": args.signal}), args.json)
+    emit(
+        call("ctr.kill", {"slot": resolve_slot(args.slot), "signal": args.signal}),
+        args.json,
+    )
 
 
 def cmd_interrupt(args):
-    emit(call("ctr.signal", {"slot": resolve_slot(args.slot), "signal": args.signal}), args.json)
+    emit(
+        call("ctr.signal", {"slot": resolve_slot(args.slot), "signal": args.signal}),
+        args.json,
+    )
 
 
 def cmd_type(args):
@@ -452,26 +501,37 @@ def cmd_spawn(args):
             raw = tomllib.loads(text)
     if args.name:
         raw["name"] = args.name
-    result = call("ctr.spawn", {"factory_slot": resolve_slot(args.factory), "config": raw})
+    result = call(
+        "ctr.spawn", {"factory_slot": resolve_slot(args.factory), "config": raw}
+    )
     if args.json:
         emit(result, True)
         return
-    print(f"spawned {result['spawned']} ({result['remaining_quota']} left in the factory)")
+    print(
+        f"spawned {result['spawned']} ({result['remaining_quota']} left in the factory)"
+    )
     if result.get("slot"):
-        print(f"  you hold it in slot {result['slot']} "
-              f"as child:{result['spawned']} with {','.join(result['rights'])}")
+        print(
+            f"  you hold it in slot {result['slot']} "
+            f"as child:{result['spawned']} with {','.join(result['rights'])}"
+        )
     else:
-        print("  note: this factory grants no rights over what it creates, so you "
-              "cannot reach it. Ask the operator with `capctl request`.")
+        print(
+            "  note: this factory grants no rights over what it creates, so you "
+            "cannot reach it. Ask the operator with `capctl request`."
+        )
 
 
 def cmd_map(args):
-    result = call("ds.map", {
-        "target_slot": resolve_slot(args.target),
-        "ds_slot": resolve_slot(args.dataspace),
-        "dest": args.dest,
-        "mode": args.mode,
-    })
+    result = call(
+        "ds.map",
+        {
+            "target_slot": resolve_slot(args.target),
+            "ds_slot": resolve_slot(args.dataspace),
+            "dest": args.dest,
+            "mode": args.mode,
+        },
+    )
     if args.json:
         emit(result, True)
     else:
@@ -496,7 +556,7 @@ def cmd_request(args):
         emit(result, True)
     elif result.get("granted"):
         print(
-            f"granted: slot {result['slot']} \"{result['label']}\" "
+            f'granted: slot {result["slot"]} "{result["label"]}" '
             f"with {','.join(result['rights'])}"
         )
     else:
@@ -515,8 +575,11 @@ SIGNING_KEY = os.environ.get("CAPWRAP_SIGNING_KEY", "/run/capwrap-key")
 def _canonical(tag: bytes, fields: dict) -> bytes:
     """Must match capwrap/kernel/signing.py exactly. Change both or neither."""
     document = json.dumps(
-        fields, sort_keys=True, separators=(",", ":"),
-        ensure_ascii=True, default=str,
+        fields,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
     )
     return tag + b"\n" + document.encode()
 
@@ -590,16 +653,24 @@ def _board_topic(slot: int) -> str:
 def cmd_board(args):
     """Boards: shared, readable by everyone who holds them, consumed by nobody."""
     if args.action == "create":
-        result = call("board.create", {
-            "factory_slot": resolve_slot(args.factory), "topic": args.topic,
-        })
+        result = call(
+            "board.create",
+            {
+                "factory_slot": resolve_slot(args.factory),
+                "topic": args.topic,
+            },
+        )
         if args.json:
             emit(result, True)
         else:
-            print(f"board '{result['board']}' is slot {result['slot']} "
-                  f"({','.join(result['rights'])})")
-            print("  hand it to a worker with: "
-                  f"capctl grant <their-slot> {result['slot']} --rights send,read")
+            print(
+                f"board '{result['board']}' is slot {result['slot']} "
+                f"({','.join(result['rights'])})"
+            )
+            print(
+                "  hand it to a worker with: "
+                f"capctl grant <their-slot> {result['slot']} --rights send,read"
+            )
         return
 
     if args.action == "post":
@@ -622,10 +693,14 @@ def cmd_board(args):
         return
 
     # read
-    result = call("board.read", {
-        "slot": resolve_slot(args.target),
-        "since": args.since, "limit": args.limit,
-    })
+    result = call(
+        "board.read",
+        {
+            "slot": resolve_slot(args.target),
+            "since": args.since,
+            "limit": args.limit,
+        },
+    )
     if args.json:
         emit(result, True)
         return
@@ -651,7 +726,7 @@ def _signature_mark(result: dict, post: dict) -> str:
         return ""
     try:
         import ed25519
-    except ImportError:                                  # pragma: no cover
+    except ImportError:  # pragma: no cover
         return " [signed, unverified]"
     ok = ed25519.verify(
         bytes.fromhex(post.get("public_key", "") or ""),
@@ -680,7 +755,9 @@ def cmd_net(args):
         usable = "connect" in cap["rights"]
         detail = cap.get("detail") or {}
         mark = " " if usable else "  (cannot connect: no `connect` right)"
-        print(f"{cap['slot']:<5} {cap['label']:<{width}}  {detail.get('pattern','')}{mark}")
+        print(
+            f"{cap['slot']:<5} {cap['label']:<{width}}  {detail.get('pattern', '')}{mark}"
+        )
 
 
 def cmd_ask(args):
@@ -731,11 +808,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("send", help="send a message through one or more capabilities")
     p.add_argument("slot", help="slot or label; comma-separated for several at once")
     p.add_argument("message")
-    p.add_argument("--sign", action="store_true",
-                   help="sign it, so the recipient can check it came from here "
-                        "even after it has been forwarded")
-    p.add_argument("--json-payload", action="store_true",
-                   help="parse the message as JSON before sending")
+    p.add_argument(
+        "--sign",
+        action="store_true",
+        help="sign it, so the recipient can check it came from here "
+        "even after it has been forwarded",
+    )
+    p.add_argument(
+        "--json-payload",
+        action="store_true",
+        help="parse the message as JSON before sending",
+    )
     p.set_defaults(func=cmd_send)
 
     p = sub.add_parser(
@@ -743,12 +826,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="send one message to several containers, or to every one you can reach",
     )
     p.add_argument("message")
-    p.add_argument("--to", help="comma-separated slots or labels; "
-                               "omit to reach every container you may send to")
-    p.add_argument("--sign", action="store_true",
-                   help="sign it once, for every recipient")
-    p.add_argument("--json-payload", action="store_true",
-                   help="parse the message as JSON before sending")
+    p.add_argument(
+        "--to",
+        help="comma-separated slots or labels; "
+        "omit to reach every container you may send to",
+    )
+    p.add_argument(
+        "--sign", action="store_true", help="sign it once, for every recipient"
+    )
+    p.add_argument(
+        "--json-payload",
+        action="store_true",
+        help="parse the message as JSON before sending",
+    )
     p.set_defaults(func=cmd_broadcast)
 
     p = sub.add_parser("recv", help="read my mailbox")
@@ -768,8 +858,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="withdraw everything derived from one of my capabilities",
     )
     p.add_argument("slot")
-    p.add_argument("--self-too", action="store_true",
-                   help="also drop my own copy, not just what I delegated")
+    p.add_argument(
+        "--self-too",
+        action="store_true",
+        help="also drop my own copy, not just what I delegated",
+    )
     p.set_defaults(func=cmd_revoke)
 
     p = sub.add_parser("status", help="status of a container I hold a capability on")
@@ -789,8 +882,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("type", help="type text at another container's terminal")
     p.add_argument("slot")
     p.add_argument("data")
-    p.add_argument("--enter", action="store_true",
-                   help="press Enter afterwards (sends CR, as a terminal does)")
+    p.add_argument(
+        "--enter",
+        action="store_true",
+        help="press Enter afterwards (sends CR, as a terminal does)",
+    )
     p.set_defaults(func=cmd_type)
 
     p = sub.add_parser(
@@ -816,8 +912,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("target", help="slot of the receiving container")
     p.add_argument("dataspace", help="slot of the dataspace")
     p.add_argument("dest", help="name it should appear under in their /shared")
-    p.add_argument("--mode", choices=["copy", "map"], default="copy",
-                   help="copy duplicates the bytes; map aliases them")
+    p.add_argument(
+        "--mode",
+        choices=["copy", "map"],
+        default="copy",
+        help="copy duplicates the bytes; map aliases them",
+    )
     p.set_defaults(func=cmd_map)
 
     p = sub.add_parser(
@@ -825,13 +925,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="ask the operator for a capability; approval grants it immediately",
     )
     p.add_argument("kind", choices=["container", "dataspace", "factory", "net_rule"])
-    p.add_argument("target", nargs="?",
-                   help="container name, host path, or for net_rule "
-                        "'name=<host:port regex>'; omit for a factory")
-    p.add_argument("--rights",
-                   help="comma-separated; defaults to what the kind needs")
-    p.add_argument("--quota", type=int, default=1,
-                   help="for a factory: how many containers it may create")
+    p.add_argument(
+        "target",
+        nargs="?",
+        help="container name, host path, or for net_rule "
+        "'name=<host:port regex>'; omit for a factory",
+    )
+    p.add_argument("--rights", help="comma-separated; defaults to what the kind needs")
+    p.add_argument(
+        "--quota",
+        type=int,
+        default=1,
+        help="for a factory: how many containers it may create",
+    )
     p.add_argument("--reason", help="why you need it -- the operator reads this")
     p.add_argument("--timeout", type=float, default=None)
     p.set_defaults(func=cmd_request)
@@ -839,27 +945,32 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "board",
         help="a shared message board: several agents read and write, "
-             "and reading takes nothing away",
+        "and reading takes nothing away",
     )
     board = p.add_subparsers(dest="action", required=True, parser_class=_SubParser)
 
-    b = board.add_parser(
-        "create", help="set up a board (needs a factory capability)"
-    )
+    b = board.add_parser("create", help="set up a board (needs a factory capability)")
     b.add_argument("factory", help="slot of the factory capability")
     b.add_argument("topic", help="what the board is for, e.g. 'standup'")
 
     b = board.add_parser("post", help="put a message on a board")
     b.add_argument("target", help="slot or label of the board")
     b.add_argument("message")
-    b.add_argument("--sign", action="store_true",
-                   help="sign it with this container's key, so a reader can "
-                        "check afterwards that it really came from here")
+    b.add_argument(
+        "--sign",
+        action="store_true",
+        help="sign it with this container's key, so a reader can "
+        "check afterwards that it really came from here",
+    )
 
     b = board.add_parser("read", help="read a board without consuming it")
     b.add_argument("target", help="slot or label of the board")
-    b.add_argument("--since", type=int, default=0,
-                   help="only posts after this id; the last one is printed for you")
+    b.add_argument(
+        "--since",
+        type=int,
+        default=0,
+        help="only posts after this id; the last one is printed for you",
+    )
     b.add_argument("--limit", type=int, default=50)
 
     p.set_defaults(func=cmd_board)
@@ -871,8 +982,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("ask", help="ask the human operator, and wait for an answer")
     p.add_argument("question")
     p.add_argument("--context", help="JSON object of extra context")
-    p.add_argument("--no-wait", action="store_true",
-                   help="queue the question without blocking")
+    p.add_argument(
+        "--no-wait", action="store_true", help="queue the question without blocking"
+    )
     p.add_argument("--timeout", type=float, default=None)
     p.set_defaults(func=cmd_ask)
 

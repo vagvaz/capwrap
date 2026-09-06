@@ -270,7 +270,9 @@ class PolicyDiff:
             out.append(f"permits {rule}, which the parent explicitly denies")
         if self.mode_escalation:
             child, parent = self.mode_escalation
-            out.append(f"requests permission mode {child!r}, above the parent's {parent!r}")
+            out.append(
+                f"requests permission mode {child!r}, above the parent's {parent!r}"
+            )
         return out
 
     def __str__(self) -> str:  # pragma: no cover - display only
@@ -314,7 +316,8 @@ def contains(parent: Policy, child: Policy) -> PolicyDiff:
 
     if mode_rank(child.default_mode) > mode_rank(parent.default_mode):
         diff.mode_escalation = (
-            child.default_mode or "default", parent.default_mode or "default",
+            child.default_mode or "default",
+            parent.default_mode or "default",
         )
 
     return diff

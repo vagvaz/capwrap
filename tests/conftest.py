@@ -7,7 +7,6 @@ explanation rather than failing on a host that cannot sandbox.
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -40,8 +39,11 @@ def git_repo(tmp_path) -> Path:
 
     def git(*args: str) -> str:
         return subprocess.run(
-            ["git", *args], cwd=repo, check=True,
-            capture_output=True, text=True,
+            ["git", *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
     git("init", "--quiet", "--initial-branch=main")
@@ -96,12 +98,15 @@ def run_in_sandbox(require_sandbox):
     def run(config, script: str, timeout: int = 60) -> subprocess.CompletedProcess:
         paths = ContainerPaths(config.name)
         prepared = fsprep.prepare(
-            config, paths,
+            config,
+            paths,
             overlay_backend=require_sandbox.overlay_backend or "kernel",
         )
         config.runtime.command = ["/bin/bash", "-c", script]
         argv = bwrap_mod.build_argv(
-            config, prepared, paths,
+            config,
+            prepared,
+            paths,
             # The one the probe got a namespace out of, which is not always the
             # first bwrap on PATH.
             bwrap=require_sandbox.bwrap or "bwrap",

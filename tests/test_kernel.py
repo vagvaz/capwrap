@@ -77,7 +77,9 @@ def test_you_cannot_act_on_a_container_you_hold_no_capability_for(kernel):
 
 
 def test_rights_are_checked_per_operation_not_per_object(kernel):
-    kernel.register_container(config("a", peers=[{"container": "b", "rights": ["send"]}]))
+    kernel.register_container(
+        config("a", peers=[{"container": "b", "rights": ["send"]}])
+    )
     kernel.register_container(config("b"))
     kernel.link_peers(config("a", peers=[{"container": "b", "rights": ["send"]}]))
 
@@ -89,7 +91,9 @@ def test_rights_are_checked_per_operation_not_per_object(kernel):
 
 
 def test_denials_are_audited(kernel):
-    kernel.register_container(config("a", peers=[{"container": "b", "rights": ["send"]}]))
+    kernel.register_container(
+        config("a", peers=[{"container": "b", "rights": ["send"]}])
+    )
     kernel.register_container(config("b"))
     kernel.link_peers(config("a", peers=[{"container": "b", "rights": ["send"]}]))
 
@@ -109,7 +113,9 @@ def test_denials_are_audited(kernel):
 def test_delegation_may_diminish_rights(kernel):
     peers = [{"container": "b", "rights": ["send", "inspect", "delegate"]}]
     kernel.register_container(config("a", peers=peers))
-    kernel.register_container(config("b", peers=[{"container": "c", "rights": ["send"]}]))
+    kernel.register_container(
+        config("b", peers=[{"container": "c", "rights": ["send"]}])
+    )
     kernel.register_container(config("c"))
     kernel.link_peers(config("a", peers=peers))
 
@@ -156,15 +162,19 @@ def test_authority_cannot_grow_along_a_delegation_chain(kernel):
     a_slot = kernel._delegate_from_root(kernel.tasks["a"], target.oid, full, "target")
 
     a_to_b = kernel._delegate_from_root(
-        kernel.tasks["a"], kernel.find_container("b").oid,
-        Rights.SEND | Rights.DELEGATE, "peer:b",
+        kernel.tasks["a"],
+        kernel.find_container("b").oid,
+        Rights.SEND | Rights.DELEGATE,
+        "peer:b",
     )
     handed = kernel.cap_delegate("a", a_to_b, a_slot, ["send", "inspect", "delegate"])
     b_slot = handed["slot"]
 
     b_to_c = kernel._delegate_from_root(
-        kernel.tasks["b"], kernel.find_container("c").oid,
-        Rights.SEND | Rights.DELEGATE, "peer:c",
+        kernel.tasks["b"],
+        kernel.find_container("c").oid,
+        Rights.SEND | Rights.DELEGATE,
+        "peer:c",
     )
     # B never received KILL, so it cannot give KILL to C even though the
     # capability's root at the operator does carry it.
@@ -184,16 +194,24 @@ def test_revocation_is_recursive_through_the_whole_chain(kernel):
 
     target = kernel.find_container("target")
     shareable = Rights.SEND | Rights.INSPECT | Rights.DELEGATE
-    a_slot = kernel._delegate_from_root(kernel.tasks["a"], target.oid, shareable, "target")
+    a_slot = kernel._delegate_from_root(
+        kernel.tasks["a"], target.oid, shareable, "target"
+    )
 
     a_to_b = kernel._delegate_from_root(
-        kernel.tasks["a"], kernel.find_container("b").oid,
-        Rights.SEND | Rights.DELEGATE, "peer:b")
+        kernel.tasks["a"],
+        kernel.find_container("b").oid,
+        Rights.SEND | Rights.DELEGATE,
+        "peer:b",
+    )
     b_slot = kernel.cap_delegate("a", a_to_b, a_slot, ["send", "delegate"])["slot"]
 
     b_to_c = kernel._delegate_from_root(
-        kernel.tasks["b"], kernel.find_container("c").oid,
-        Rights.SEND | Rights.DELEGATE, "peer:c")
+        kernel.tasks["b"],
+        kernel.find_container("c").oid,
+        Rights.SEND | Rights.DELEGATE,
+        "peer:c",
+    )
     c_slot = kernel.cap_delegate("b", b_to_c, b_slot, ["send"])["slot"]
 
     assert kernel.tasks["b"].slots.get(b_slot) is not None
@@ -202,7 +220,9 @@ def test_revocation_is_recursive_through_the_whole_chain(kernel):
     result = kernel.cap_revoke("a", a_slot)
 
     assert kernel.tasks["b"].slots.get(b_slot) is None, "B kept a revoked capability"
-    assert kernel.tasks["c"].slots.get(c_slot) is None, "C kept a transitively revoked one"
+    assert kernel.tasks["c"].slots.get(c_slot) is None, (
+        "C kept a transitively revoked one"
+    )
     assert kernel.tasks["a"].slots.get(a_slot) is not None, "A should keep its own"
     assert set(result["holders"]) == {"b", "c"}
 
@@ -248,15 +268,20 @@ def test_destroying_a_container_revokes_what_it_passed_on(kernel):
         kernel.register_container(config(name))
     target = kernel.find_container("target")
     a_slot = kernel._delegate_from_root(
-        kernel.tasks["a"], target.oid, Rights.SEND | Rights.DELEGATE, "t")
+        kernel.tasks["a"], target.oid, Rights.SEND | Rights.DELEGATE, "t"
+    )
     a_to_b = kernel._delegate_from_root(
-        kernel.tasks["a"], kernel.find_container("b").oid,
-        Rights.SEND | Rights.DELEGATE, "peer:b")
+        kernel.tasks["a"],
+        kernel.find_container("b").oid,
+        Rights.SEND | Rights.DELEGATE,
+        "peer:b",
+    )
     b_slot = kernel.cap_delegate("a", a_to_b, a_slot, ["send"])["slot"]
 
     kernel.destroy_container("a")
-    assert kernel.tasks["b"].slots.get(b_slot) is None, \
+    assert kernel.tasks["b"].slots.get(b_slot) is None, (
         "a destroyed container must not leave authority behind"
+    )
 
 
 def test_the_operator_can_always_revoke_everything(kernel):
@@ -380,6 +405,7 @@ def test_container_tree_reflects_parentage(kernel):
 
 def spawning_kernel(kernel):
     """Make ctr_spawn actually register the child, as the daemon would."""
+
     class Hooks(type(kernel.hooks)):
         def spawn_container(self, cfg, parent):
             return kernel.register_container(cfg, parent=parent)
@@ -396,9 +422,12 @@ def test_a_parent_receives_a_handle_on_what_it_creates(kernel):
     handing the spawner a handle too.
     """
     spawning_kernel(kernel)
-    kernel.register_container(config(
-        "boss", factory={"rights": ["create"], "quota": {"containers": 2}},
-    ))
+    kernel.register_container(
+        config(
+            "boss",
+            factory={"rights": ["create"], "quota": {"containers": 2}},
+        )
+    )
     slot = slot_labelled(kernel, "boss", "factory")
 
     result = kernel.ctr_spawn("boss", slot, config("kid"))
@@ -414,30 +443,41 @@ def test_a_parent_receives_a_handle_on_what_it_creates(kernel):
 
 def test_child_rights_are_configurable(kernel):
     spawning_kernel(kernel)
-    kernel.register_container(config(
-        "boss",
-        factory={
-            "rights": ["create"], "quota": {"containers": 2},
-            "child_rights": ["send", "inspect", "read_output", "write_input"],
-        },
-    ))
+    kernel.register_container(
+        config(
+            "boss",
+            factory={
+                "rights": ["create"],
+                "quota": {"containers": 2},
+                "child_rights": ["send", "inspect", "read_output", "write_input"],
+            },
+        )
+    )
     slot = slot_labelled(kernel, "boss", "factory")
     kernel.ctr_spawn("boss", slot, config("kid"))
 
     handle = [c for c in kernel.cap_list("boss") if c.label == "child:kid"][0]
     assert sorted(handle.rights) == [
-        "inspect", "read_output", "send", "write_input",
+        "inspect",
+        "read_output",
+        "send",
+        "write_input",
     ], "a supervisor needs to read and drive, and now can be given that"
 
 
 def test_no_child_rights_means_no_handle(kernel):
     """Still expressible: a factory that creates containers it cannot touch."""
     spawning_kernel(kernel)
-    kernel.register_container(config(
-        "boss",
-        factory={"rights": ["create"], "quota": {"containers": 1},
-                 "child_rights": []},
-    ))
+    kernel.register_container(
+        config(
+            "boss",
+            factory={
+                "rights": ["create"],
+                "quota": {"containers": 1},
+                "child_rights": [],
+            },
+        )
+    )
     slot = slot_labelled(kernel, "boss", "factory")
     result = kernel.ctr_spawn("boss", slot, config("kid"))
 
@@ -447,9 +487,12 @@ def test_no_child_rights_means_no_handle(kernel):
 
 def test_each_child_gets_its_own_labelled_slot(kernel):
     spawning_kernel(kernel)
-    kernel.register_container(config(
-        "boss", factory={"rights": ["create"], "quota": {"containers": 3}},
-    ))
+    kernel.register_container(
+        config(
+            "boss",
+            factory={"rights": ["create"], "quota": {"containers": 3}},
+        )
+    )
     slot = slot_labelled(kernel, "boss", "factory")
     kernel.ctr_spawn("boss", slot, config("first"))
     kernel.ctr_spawn("boss", slot, config("second"))
@@ -470,14 +513,22 @@ def test_a_spawned_factory_cannot_exceed_its_parents_quota(kernel):
     100 and spawn through that instead.
     """
     spawning_kernel(kernel)
-    kernel.register_container(config(
-        "boss", factory={"rights": ["create"], "quota": {"containers": 1}},
-    ))
+    kernel.register_container(
+        config(
+            "boss",
+            factory={"rights": ["create"], "quota": {"containers": 1}},
+        )
+    )
     slot = slot_labelled(kernel, "boss", "factory")
 
-    kernel.ctr_spawn("boss", slot, config(
-        "kid", factory={"rights": ["create"], "quota": {"containers": 100}},
-    ))
+    kernel.ctr_spawn(
+        "boss",
+        slot,
+        config(
+            "kid",
+            factory={"rights": ["create"], "quota": {"containers": 100}},
+        ),
+    )
 
     kid_factory = [c for c in kernel.cap_list("kid") if c.kind == "factory"][0]
     assert kid_factory.detail["quota_containers"] <= 1
@@ -488,27 +539,45 @@ def test_a_spawned_factory_cannot_exceed_its_parents_quota(kernel):
 def test_a_spawned_factory_cannot_exceed_its_parents_child_rights(kernel):
     """Nor may it grant stronger authority over grandchildren than it holds."""
     spawning_kernel(kernel)
-    kernel.register_container(config(
-        "boss",
-        factory={"rights": ["create"], "quota": {"containers": 3},
-                 "child_rights": ["send", "inspect"]},
-    ))
+    kernel.register_container(
+        config(
+            "boss",
+            factory={
+                "rights": ["create"],
+                "quota": {"containers": 3},
+                "child_rights": ["send", "inspect"],
+            },
+        )
+    )
     slot = slot_labelled(kernel, "boss", "factory")
 
     with pytest.raises(RightsNotMonotonic, match="kill"):
-        kernel.ctr_spawn("boss", slot, config(
-            "kid",
-            factory={"rights": ["create"], "quota": {"containers": 1},
-                     "child_rights": ["send", "inspect", "kill"]},
-        ))
+        kernel.ctr_spawn(
+            "boss",
+            slot,
+            config(
+                "kid",
+                factory={
+                    "rights": ["create"],
+                    "quota": {"containers": 1},
+                    "child_rights": ["send", "inspect", "kill"],
+                },
+            ),
+        )
 
 
 def test_an_operator_launched_container_is_not_clamped(kernel):
     """The operator's own configs set the ceiling; they are not below one."""
-    kernel.register_container(config(
-        "top", factory={"rights": ["create"], "quota": {"containers": 50},
-                        "child_rights": ["send", "inspect", "kill"]},
-    ))
+    kernel.register_container(
+        config(
+            "top",
+            factory={
+                "rights": ["create"],
+                "quota": {"containers": 50},
+                "child_rights": ["send", "inspect", "kill"],
+            },
+        )
+    )
     factory = [c for c in kernel.cap_list("top") if c.kind == "factory"][0]
     assert factory.detail["quota_containers"] == 50
     assert "kill" in factory.detail["child_rights"]
@@ -533,9 +602,11 @@ def test_broadcast_is_the_same_messages_sent_together(kernel):
     kernel.hooks = Recording()
     for name in ("b", "c", "d"):
         kernel.register_container(config(name))
-    kernel.register_container(config("a", peers=[
-        {"container": n, "rights": ["send"]} for n in ("b", "c", "d")
-    ]))
+    kernel.register_container(
+        config(
+            "a", peers=[{"container": n, "rights": ["send"]} for n in ("b", "c", "d")]
+        )
+    )
 
     slots = [slot_labelled(kernel, "a", f"peer:{n}") for n in ("b", "c", "d")]
     result = kernel.msg_broadcast("a", slots, "stand up")
@@ -554,10 +625,15 @@ def test_broadcast_grants_no_reach_it_did_not_already_have(kernel):
     """
     kernel.register_container(config("b"))
     kernel.register_container(config("c"))
-    kernel.register_container(config("a", peers=[
-        {"container": "b", "rights": ["send"]},
-        {"container": "c", "rights": ["inspect"]},   # no send
-    ]))
+    kernel.register_container(
+        config(
+            "a",
+            peers=[
+                {"container": "b", "rights": ["send"]},
+                {"container": "c", "rights": ["inspect"]},  # no send
+            ],
+        )
+    )
 
     good = slot_labelled(kernel, "a", "peer:b")
     weak = slot_labelled(kernel, "a", "peer:c")
@@ -572,7 +648,9 @@ def test_broadcast_grants_no_reach_it_did_not_already_have(kernel):
 def test_one_refusal_does_not_cancel_the_rest_of_a_broadcast(kernel):
     """A partial broadcast is a real outcome, not a failure to be rolled back."""
     kernel.register_container(config("b"))
-    kernel.register_container(config("a", peers=[{"container": "b", "rights": ["send"]}]))
+    kernel.register_container(
+        config("a", peers=[{"container": "b", "rights": ["send"]}])
+    )
     result = kernel.msg_broadcast(
         "a", [91, slot_labelled(kernel, "a", "peer:b")], "still went"
     )
@@ -581,7 +659,9 @@ def test_one_refusal_does_not_cancel_the_rest_of_a_broadcast(kernel):
 
 def test_naming_a_slot_twice_delivers_once(kernel):
     kernel.register_container(config("b"))
-    kernel.register_container(config("a", peers=[{"container": "b", "rights": ["send"]}]))
+    kernel.register_container(
+        config("a", peers=[{"container": "b", "rights": ["send"]}])
+    )
     slot = slot_labelled(kernel, "a", "peer:b")
     result = kernel.msg_broadcast("a", [slot, slot, slot], "once please")
     assert len(result["delivered"]) == 1
@@ -605,9 +685,9 @@ def test_a_board_needs_a_factory_to_create(kernel):
 
 
 def test_the_creator_of_a_board_holds_all_of_it(kernel):
-    kernel.register_container(config(
-        "boss", factory={"rights": ["create"], "quota": {"containers": 1}}
-    ))
+    kernel.register_container(
+        config("boss", factory={"rights": ["create"], "quota": {"containers": 1}})
+    )
     factory = slot_labelled(kernel, "boss", "factory")
     result = kernel.board_create("boss", factory, "standup")
 
@@ -622,9 +702,9 @@ def test_reading_a_board_takes_nothing_off_it(kernel):
     cannot both see the same message. Several agents coordinating need the
     opposite, and a late arrival needs to be able to catch up.
     """
-    kernel.register_container(config(
-        "boss", factory={"rights": ["create"], "quota": {"containers": 1}}
-    ))
+    kernel.register_container(
+        config("boss", factory={"rights": ["create"], "quota": {"containers": 1}})
+    )
     slot = kernel.board_create(
         "boss", slot_labelled(kernel, "boss", "factory"), "standup"
     )["slot"]
@@ -639,9 +719,9 @@ def test_reading_a_board_takes_nothing_off_it(kernel):
 
 
 def test_each_reader_keeps_its_own_place(kernel):
-    kernel.register_container(config(
-        "boss", factory={"rights": ["create"], "quota": {"containers": 1}}
-    ))
+    kernel.register_container(
+        config("boss", factory={"rights": ["create"], "quota": {"containers": 1}})
+    )
     slot = kernel.board_create(
         "boss", slot_labelled(kernel, "boss", "factory"), "standup"
     )["slot"]
@@ -662,14 +742,16 @@ def test_posting_and_reading_a_board_are_separate_rights(kernel):
     """
     kernel.register_container(config("reader"))
     kernel.register_container(config("writer"))
-    kernel.register_container(config(
-        "boss",
-        factory={"rights": ["create"], "quota": {"containers": 1}},
-        peers=[
-            {"container": "reader", "rights": ["send"]},
-            {"container": "writer", "rights": ["send"]},
-        ],
-    ))
+    kernel.register_container(
+        config(
+            "boss",
+            factory={"rights": ["create"], "quota": {"containers": 1}},
+            peers=[
+                {"container": "reader", "rights": ["send"]},
+                {"container": "writer", "rights": ["send"]},
+            ],
+        )
+    )
     board_slot = kernel.board_create(
         "boss", slot_labelled(kernel, "boss", "factory"), "standup"
     )["slot"]
@@ -697,11 +779,13 @@ def test_posting_and_reading_a_board_are_separate_rights(kernel):
 def test_a_board_capability_cannot_be_widened_on_the_way_out(kernel):
     """The usual monotonicity rule, on the newest object kind."""
     kernel.register_container(config("worker"))
-    kernel.register_container(config(
-        "boss",
-        factory={"rights": ["create"], "quota": {"containers": 1}},
-        peers=[{"container": "worker", "rights": ["send"]}],
-    ))
+    kernel.register_container(
+        config(
+            "boss",
+            factory={"rights": ["create"], "quota": {"containers": 1}},
+            peers=[{"container": "worker", "rights": ["send"]}],
+        )
+    )
     board_slot = kernel.board_create(
         "boss", slot_labelled(kernel, "boss", "factory"), "standup"
     )["slot"]
@@ -718,11 +802,13 @@ def test_a_board_capability_cannot_be_widened_on_the_way_out(kernel):
 
 def test_revoking_a_board_removes_it_from_everyone_derived_from_you(kernel):
     kernel.register_container(config("worker"))
-    kernel.register_container(config(
-        "boss",
-        factory={"rights": ["create"], "quota": {"containers": 1}},
-        peers=[{"container": "worker", "rights": ["send"]}],
-    ))
+    kernel.register_container(
+        config(
+            "boss",
+            factory={"rights": ["create"], "quota": {"containers": 1}},
+            peers=[{"container": "worker", "rights": ["send"]}],
+        )
+    )
     board_slot = kernel.board_create(
         "boss", slot_labelled(kernel, "boss", "factory"), "standup"
     )["slot"]
@@ -739,9 +825,9 @@ def test_a_board_keeps_a_bounded_history(kernel):
     """A board is somewhere to coordinate, not a durable log; audit is that."""
     from capwrap.kernel.objects import BOARD_HISTORY
 
-    kernel.register_container(config(
-        "boss", factory={"rights": ["create"], "quota": {"containers": 1}}
-    ))
+    kernel.register_container(
+        config("boss", factory={"rights": ["create"], "quota": {"containers": 1}})
+    )
     slot = kernel.board_create(
         "boss", slot_labelled(kernel, "boss", "factory"), "chatty"
     )["slot"]
@@ -755,11 +841,13 @@ def test_a_board_keeps_a_bounded_history(kernel):
 
 def test_the_operator_can_see_who_may_post_and_who_may_only_read(kernel):
     kernel.register_container(config("reader"))
-    kernel.register_container(config(
-        "boss",
-        factory={"rights": ["create"], "quota": {"containers": 1}},
-        peers=[{"container": "reader", "rights": ["send"]}],
-    ))
+    kernel.register_container(
+        config(
+            "boss",
+            factory={"rights": ["create"], "quota": {"containers": 1}},
+            peers=[{"container": "reader", "rights": ["send"]}],
+        )
+    )
     board_slot = kernel.board_create(
         "boss", slot_labelled(kernel, "boss", "factory"), "standup"
     )["slot"]
@@ -767,8 +855,6 @@ def test_the_operator_can_see_who_may_post_and_who_may_only_read(kernel):
         "boss", slot_labelled(kernel, "boss", "peer:reader"), board_slot, ["read"]
     )
 
-    holders = {
-        h["container"]: h for h in kernel.board_holders(kernel.boards()[0].oid)
-    }
+    holders = {h["container"]: h for h in kernel.board_holders(kernel.boards()[0].oid)}
     assert holders["boss"]["may_post"] and holders["boss"]["may_read"]
     assert holders["reader"]["may_read"] and not holders["reader"]["may_post"]

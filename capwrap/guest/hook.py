@@ -30,7 +30,7 @@ import json
 import os
 import socket
 import sys
-from typing import Any
+from typing import Any, NoReturn
 
 SOCKET = os.environ.get("CAPWRAP_SOCKET", "/run/capwrap.sock")
 POLICY = os.environ.get("CAPWRAP_POLICY", "/opt/capwrap/policy.json")
@@ -40,7 +40,8 @@ POLICY = os.environ.get("CAPWRAP_POLICY", "/opt/capwrap/policy.json")
 ASK_TIMEOUT = float(os.environ.get("CAPWRAP_ASK_TIMEOUT", "3600"))
 
 
-def respond(decision: str, reason: str = "") -> None:
+def respond(decision: str, reason: str = "") -> NoReturn:
+    """Emit the hook's verdict and exit -- the only way this function returns."""
     json.dump(
         {
             "hookSpecificOutput": {
@@ -104,14 +105,24 @@ def describe(tool: str, tool_input: dict) -> str:
         questions = tool_input.get("questions") or []
         asked = [
             str(q.get("question", "")).strip()
-            for q in questions if isinstance(q, dict) and q.get("question")
+            for q in questions
+            if isinstance(q, dict) and q.get("question")
         ]
         if asked:
             first = _short(asked[0])
             extra = f" (+{len(asked) - 1} more)" if len(asked) > 1 else ""
             return first + extra
-    for key in ("file_path", "path", "url", "pattern", "notebook_path",
-                "command", "name", "query", "prompt"):
+    for key in (
+        "file_path",
+        "path",
+        "url",
+        "pattern",
+        "notebook_path",
+        "command",
+        "name",
+        "query",
+        "prompt",
+    ):
         if key in tool_input:
             return _short(tool_input[key])
 
@@ -133,16 +144,21 @@ def ask_operator(question: str, context: dict) -> dict:
     sock.settimeout(ASK_TIMEOUT)
     try:
         sock.connect(SOCKET)
-        sock.sendall(json.dumps({
-            "id": 1,
-            "op": "ask",
-            "args": {
-                "question": question,
-                "context": context,
-                "block": True,
-                "timeout": ASK_TIMEOUT,
-            },
-        }).encode() + b"\n")
+        sock.sendall(
+            json.dumps(
+                {
+                    "id": 1,
+                    "op": "ask",
+                    "args": {
+                        "question": question,
+                        "context": context,
+                        "block": True,
+                        "timeout": ASK_TIMEOUT,
+                    },
+                }
+            ).encode()
+            + b"\n"
+        )
 
         buffer = b""
         while b"\n" not in buffer:
@@ -175,14 +191,17 @@ def _questions(tool_input: dict) -> list[dict]:
                 "label": str(o.get("label", "")),
                 "description": str(o.get("description", "")),
             }
-            for o in (raw.get("options") or []) if isinstance(o, dict)
+            for o in (raw.get("options") or [])
+            if isinstance(o, dict)
         ]
-        out.append({
-            "header": str(raw.get("header", "")),
-            "question": str(raw.get("question", "")),
-            "multi_select": bool(raw.get("multiSelect")),
-            "options": options,
-        })
+        out.append(
+            {
+                "header": str(raw.get("header", "")),
+                "question": str(raw.get("question", "")),
+                "multi_select": bool(raw.get("multiSelect")),
+                "options": options,
+            }
+        )
     return out
 
 

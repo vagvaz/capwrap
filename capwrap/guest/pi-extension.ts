@@ -116,7 +116,11 @@ function globToRegExp(pattern: string): RegExp {
  * `Bash(git *)` is the shape people actually want: allow git, keep asking
  * about everything else the same tool could do.
  */
-function matches(rules: string[] | undefined, tool: string, summary: string): boolean {
+function matches(
+  rules: string[] | undefined,
+  tool: string,
+  summary: string,
+): boolean {
   // Rules arrive pre-normalised from the policy file: lowercase tool names,
   // glob patterns (see agents._normalize_rule).  The tool name is lowercased
   // once at the entry point below, so the comparison here is plain.
@@ -144,8 +148,17 @@ function describe(tool: string, input: Record<string, unknown>): string {
   if (tool.toLowerCase() === "bash") {
     return short(String(input.command ?? "").trim());
   }
-  for (const key of ["file_path", "path", "url", "pattern", "notebook_path",
-    "command", "name", "query", "prompt"]) {
+  for (const key of [
+    "file_path",
+    "path",
+    "url",
+    "pattern",
+    "notebook_path",
+    "command",
+    "name",
+    "query",
+    "prompt",
+  ]) {
     if (key in input) return short(input[key]);
   }
   const parts = Object.keys(input)
@@ -213,7 +226,9 @@ function askDaemon(
     const onError = (err: Error) => fail(err);
     const onClose = () => fail(new Error("the daemon closed the connection"));
     const onTimeout = () =>
-      fail(new Error(`timed out waiting for the capwrap daemon (${ASK_TIMEOUT}s)`));
+      fail(
+        new Error(`timed out waiting for the capwrap daemon (${ASK_TIMEOUT}s)`),
+      );
 
     sock.on("data", onData);
     sock.on("error", onError);
@@ -243,7 +258,9 @@ function askDaemon(
 function timeout(ms: number): Promise<never> {
   return new Promise((_, reject) => {
     const timer = setTimeout(() => {
-      reject(new Error(`timed out after ${ms}ms waiting for the capwrap daemon`));
+      reject(
+        new Error(`timed out after ${ms}ms waiting for the capwrap daemon`),
+      );
     }, ms);
     if (typeof (timer as any)?.unref === "function") (timer as any).unref();
   });
@@ -283,7 +300,10 @@ export default function (pi: any) {
       const reason = result.reason ?? "";
       if (result.decision === "allow") return undefined;
       if (result.decision === "deny") {
-        return { block: true, reason: reason || "denied in the capwrap console" };
+        return {
+          block: true,
+          reason: reason || "denied in the capwrap console",
+        };
       }
       return { block: true, reason: reason || "no answer from the operator" };
     } catch (err) {

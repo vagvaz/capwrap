@@ -38,7 +38,14 @@ ROLES: dict[str, dict] = {
     # -- decide, do not implement -------------------------------------
     "architect": {
         "summary": "decides the shape; writes notes, not code",
-        "allow": ["Read", "Glob", "Grep", "Write", "Bash(git log:*)", "Bash(git diff:*)"],
+        "allow": [
+            "Read",
+            "Glob",
+            "Grep",
+            "Write",
+            "Bash(git log:*)",
+            "Bash(git diff:*)",
+        ],
         "deny": ["Edit", "Bash(sudo *)"],
         "work": "worktree",
     },
@@ -56,7 +63,14 @@ ROLES: dict[str, dict] = {
     },
     "api-owner": {
         "summary": "owns the public surface; writes a decision log",
-        "allow": ["Read", "Glob", "Grep", "Write", "Bash(git log:*)", "Bash(git diff:*)"],
+        "allow": [
+            "Read",
+            "Glob",
+            "Grep",
+            "Write",
+            "Bash(git log:*)",
+            "Bash(git diff:*)",
+        ],
         "deny": ["Edit", "Bash(sudo *)"],
         "work": "worktree",
     },
@@ -66,12 +80,17 @@ ROLES: dict[str, dict] = {
         "deny": ["Edit", "Bash(sudo *)"],
         "work": "none",
     },
-
     # -- read, report, change nothing ---------------------------------
     "reviewer": {
         "summary": "reviews a diff; cannot write, by construction",
-        "allow": ["Read", "Glob", "Grep", "Bash(git log:*)", "Bash(git diff:*)",
-                  "Bash(git show:*)"],
+        "allow": [
+            "Read",
+            "Glob",
+            "Grep",
+            "Bash(git log:*)",
+            "Bash(git diff:*)",
+            "Bash(git show:*)",
+        ],
         "deny": ["Write", "Edit", "Bash(sudo *)"],
         "work": "worktree",
     },
@@ -90,8 +109,15 @@ ROLES: dict[str, dict] = {
     },
     "archaeologist": {
         "summary": "works out why the code is the way it is; writes nothing",
-        "allow": ["Read", "Glob", "Grep", "Bash(git log:*)", "Bash(git blame:*)",
-                  "Bash(git show:*)", "Bash(git diff:*)"],
+        "allow": [
+            "Read",
+            "Glob",
+            "Grep",
+            "Bash(git log:*)",
+            "Bash(git blame:*)",
+            "Bash(git show:*)",
+            "Bash(git diff:*)",
+        ],
         "deny": ["Write", "Edit", "Bash(sudo *)"],
         "work": "worktree",
     },
@@ -101,7 +127,6 @@ ROLES: dict[str, dict] = {
         "deny": ["Write", "Edit", "Glob", "Grep", "Bash(sudo *)"],
         "work": "none",
     },
-
     # -- write code ----------------------------------------------------
     "implementer": {
         "summary": "makes it work, in the smallest change that does",
@@ -145,7 +170,6 @@ ROLES: dict[str, dict] = {
         "deny": ["Edit", "Bash(sudo *)"],
         "work": "worktree",
     },
-
     # -- tests ---------------------------------------------------------
     "test-writer": {
         "summary": "writes tests, not fixes",
@@ -159,24 +183,26 @@ ROLES: dict[str, dict] = {
         "deny": ["Write", "Edit", "Bash(sudo *)"],
         "work": "worktree",
     },
-
     # -- hold a factory ------------------------------------------------
     "manager": {
         "summary": "decides what is worked on and by whom; writes no code",
         "allow": ["Read", "Glob", "Grep", "Write", "TodoWrite"],
         "deny": ["Edit", "Bash(sudo *)"],
         "work": "worktree",
-        "factory": {"containers": 3,
-                    "child_rights": ["send", "inspect", "read_output"]},
+        "factory": {
+            "containers": 3,
+            "child_rights": ["send", "inspect", "read_output"],
+        },
     },
     "tech-lead": {
         "summary": "accountable for the code, and writes it; can steer its agents",
         "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
-        "factory": {"containers": 3,
-                    "child_rights": ["send", "inspect", "read_output",
-                                     "write_input", "signal"]},
+        "factory": {
+            "containers": 3,
+            "child_rights": ["send", "inspect", "read_output", "write_input", "signal"],
+        },
     },
     "orchestrator": {
         "summary": "splits the task; may spawn another orchestrator for a big piece",
@@ -189,9 +215,10 @@ ROLES: dict[str, dict] = {
         # children anything that is not in here, and its quota is capped at
         # whatever remains of this one. Recursion is bounded by the kernel, not
         # by the orchestrator behaving itself.
-        "factory": {"containers": 4,
-                    "child_rights": ["send", "inspect", "read_output",
-                                     "write_input", "signal"]},
+        "factory": {
+            "containers": 4,
+            "child_rights": ["send", "inspect", "read_output", "write_input", "signal"],
+        },
     },
 }
 
@@ -250,7 +277,7 @@ AGENT_SETUP: dict[str, dict] = {
             ("~/.claude", "/home/agent/.claude", "copy"),
         ],
         "env": ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"],
-        "files": True,   # house rules land at /work/CLAUDE.md
+        "files": True,  # house rules land at /work/CLAUDE.md
     },
     "opencode": {
         "mounts": [
@@ -272,8 +299,11 @@ AGENT_SETUP: dict[str, dict] = {
     },
     "pi": {
         "mounts": [
-            ("~/.local/lib/node_modules/@earendil-works/pi-coding-agent",
-             "/opt/pi/pi-agent", "ro"),
+            (
+                "~/.local/lib/node_modules/@earendil-works/pi-coding-agent",
+                "/opt/pi/pi-agent",
+                "ro",
+            ),
             ("~/.pi/agent", "/home/agent/.pi/agent", "copy"),
         ],
         "env": ["OPENCODE_API_KEY"],
@@ -325,7 +355,9 @@ def compose(role: str, persona: str, agent: str = "claude") -> pathlib.Path:
     # The agent is part of the generated name so the same role-persona pair
     # can be built for several agents without the worktree branches (which
     # carry the name) colliding.
-    fname = name = f"{role}-{persona}" if agent == "claude" else f"{agent}-{role}-{persona}"
+    fname = name = (
+        f"{role}-{persona}" if agent == "claude" else f"{agent}-{role}-{persona}"
+    )
     BUILT.mkdir(exist_ok=True)
 
     # One prompt file, both halves, clearly separated. capwrap binds it at
@@ -338,9 +370,9 @@ def compose(role: str, persona: str, agent: str = "claude") -> pathlib.Path:
         + (HERE / "personas" / f"{persona}.md").read_text().rstrip()
         + "\n\n---\n\n"
         + "Your role is the job you are accountable for and is enforced by the\n"
-          "capabilities you hold. Your persona is how you go about it. Where they\n"
-          "pull against each other, the role wins: a reviewer with a lazy\n"
-          "disposition still reviews, it just does not gold-plate the write-up.\n"
+        "capabilities you hold. Your persona is how you go about it. Where they\n"
+        "pull against each other, the role wins: a reviewer with a lazy\n"
+        "disposition still reviews, it just does not gold-plate the write-up.\n"
     )
     (BUILT / f"{fname}.md").write_text(prompt)
     # Copied rather than referenced with `..`, so that `built/` can be moved or
@@ -348,26 +380,37 @@ def compose(role: str, persona: str, agent: str = "claude") -> pathlib.Path:
     (BUILT / "house.md").write_text((HERE / "house.md").read_text())
 
     mounts = "".join(
-        f"\n[[mounts]]\nsrc  = \"{src}\"\ndest = \"{dest}\"\nmode = \"{mode}\"\n"
+        f'\n[[mounts]]\nsrc  = "{src}"\ndest = "{dest}"\nmode = "{mode}"\n'
         for src, dest, mode in setup["mounts"]
     )
     files = (
-        "\n[[files]]\ndest = \"/work/CLAUDE.md\"\nsrc  = \"house.md\"\n\n"
-        if setup["files"] else ""
+        '\n[[files]]\ndest = "/work/CLAUDE.md"\nsrc  = "house.md"\n\n'
+        if setup["files"]
+        else ""
     )
 
     factory = spec.get("factory")
     config = TEMPLATE.format(
-        role=role, persona=persona, fname=fname, agent=agent,
+        role=role,
+        persona=persona,
+        fname=fname,
+        agent=agent,
         summary=spec["summary"],
         env=quote(setup["env"]),
-        allow=quote(spec["allow"]), deny=quote(spec["deny"]),
+        allow=quote(spec["allow"]),
+        deny=quote(spec["deny"]),
         network=str(spec.get("network", True)).lower(),
-        mounts=mounts, files=files,
+        mounts=mounts,
+        files=files,
         work=(WORKTREE.format(name=name) if spec["work"] == "worktree" else NO_REPO),
-        caps=(FACTORY.format(containers=factory["containers"],
-                             child_rights=quote(factory["child_rights"]))
-              if factory else ""),
+        caps=(
+            FACTORY.format(
+                containers=factory["containers"],
+                child_rights=quote(factory["child_rights"]),
+            )
+            if factory
+            else ""
+        ),
     )
     path = BUILT / f"{fname}.toml"
     path.write_text(config)
@@ -380,12 +423,18 @@ def main() -> int:
         epilog="example: ./compose.py architect:idealist architect:pragmatist",
     )
     parser.add_argument("pairs", nargs="*", metavar="ROLE:PERSONA")
-    parser.add_argument("--list", action="store_true",
-                        help="show every role and persona")
-    parser.add_argument("--all-personas", metavar="ROLE",
-                        help="build one role against every persona")
-    parser.add_argument("--agent", default="claude", choices=sorted(AGENT_SETUP),
-                        help="which agent the generated configs run (default: claude)")
+    parser.add_argument(
+        "--list", action="store_true", help="show every role and persona"
+    )
+    parser.add_argument(
+        "--all-personas", metavar="ROLE", help="build one role against every persona"
+    )
+    parser.add_argument(
+        "--agent",
+        default="claude",
+        choices=sorted(AGENT_SETUP),
+        help="which agent the generated configs run (default: claude)",
+    )
     args = parser.parse_args()
 
     if args.list:

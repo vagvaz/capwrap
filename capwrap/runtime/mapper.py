@@ -42,6 +42,18 @@ class MapTarget(Protocol):
     def pid(self) -> int | None: ...
 
 
+class Mapper(Protocol):
+    """What the daemon needs from a mapping backend."""
+
+    name: str
+
+    def materialise(
+        self, target: MapTarget, source: Path, dest_name: str, mode: str
+    ) -> str: ...
+
+    def unmaterialise(self, target: MapTarget, token: str) -> None: ...
+
+
 def _safe_name(dest_name: str) -> str:
     """A single path component, so a mapping cannot escape /shared."""
     name = dest_name.strip("/").replace("..", "_").replace("/", "_")
@@ -56,8 +68,9 @@ class SharedDirMapper:
     name = "shared"
     supports_live_mount = False
 
-    def materialise(self, target: MapTarget, source: Path, dest_name: str,
-                    mode: str) -> str:
+    def materialise(
+        self, target: MapTarget, source: Path, dest_name: str, mode: str
+    ) -> str:
         safe = _safe_name(dest_name)
         destination = target.shared_dir / safe
         _clear(destination)
@@ -88,8 +101,9 @@ class NsMountMapper:
     def __init__(self) -> None:
         self._fallback = SharedDirMapper()
 
-    def materialise(self, target: MapTarget, source: Path, dest_name: str,
-                    mode: str) -> str:
+    def materialise(
+        self, target: MapTarget, source: Path, dest_name: str, mode: str
+    ) -> str:
         # A copy has no aliasing to preserve, so there is nothing a mount buys
         # it -- and a copy keeps working after the container restarts, which a
         # mount does not.
@@ -105,7 +119,10 @@ class NsMountMapper:
         safe = _safe_name(dest_name)
         guest_path = f"/shared/{safe}"
         nsmount.mount_into(
-            target.pid, source, guest_path, readonly=(mode == "ro"),
+            target.pid,
+            source,
+            guest_path,
+            readonly=(mode == "ro"),
         )
         return f"{self.name}:{target.name}:{safe}"
 
@@ -128,7 +145,7 @@ def _clear(path: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def select(requested: str = "auto") -> tuple[object, str]:
+def select(requested: str = "auto") -> tuple[Mapper, str]:
     """Choose a mapper. Returns it and a one-line reason.
 
     "auto" prefers live mounting and falls back, so an unprivileged daemon keeps

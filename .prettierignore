@@ -1,0 +1,6 @@
+# Vendored third-party code — never reformat
+capwrap/web/static/vendor/
+
+# Build/venv noise
+.venv/
+capwrap.egg-info/

@@ -20,28 +20,30 @@ from ..errors import CapabilityError, CapwrapError
 
 #: Ops an agent may invoke. Anything else is rejected before it reaches the
 #: kernel, so a typo cannot accidentally reach an internal method.
-AGENT_OPS = frozenset({
-    "whoami",
-    "cap.list",
-    "cap.info",
-    "cap.delegate",
-    "cap.revoke",
-    "cap.request",
-    "msg.send",
-    "msg.broadcast",
-    "msg.recv",
-    "board.create",
-    "board.post",
-    "board.read",
-    "ctr.status",
-    "ctr.kill",
-    "ctr.signal",
-    "ctr.input",
-    "ctr.output",
-    "ctr.spawn",
-    "ds.map",
-    "ask",
-})
+AGENT_OPS = frozenset(
+    {
+        "whoami",
+        "cap.list",
+        "cap.info",
+        "cap.delegate",
+        "cap.revoke",
+        "cap.request",
+        "msg.send",
+        "msg.broadcast",
+        "msg.recv",
+        "board.create",
+        "board.post",
+        "board.read",
+        "ctr.status",
+        "ctr.kill",
+        "ctr.signal",
+        "ctr.input",
+        "ctr.output",
+        "ctr.spawn",
+        "ds.map",
+        "ask",
+    }
+)
 
 
 @dataclass
@@ -67,7 +69,10 @@ class Request:
         return cls(op=op, args=args, id=int(raw.get("id") or 0))
 
     def encode(self) -> bytes:
-        return json.dumps({"id": self.id, "op": self.op, "args": self.args}).encode() + b"\n"
+        return (
+            json.dumps({"id": self.id, "op": self.op, "args": self.args}).encode()
+            + b"\n"
+        )
 
 
 @dataclass
@@ -97,8 +102,12 @@ class Response:
             return cls(id=req_id, ok=False, code="protocol_error", message=str(exc))
         if isinstance(exc, CapwrapError):
             return cls(id=req_id, ok=False, code="capwrap_error", message=str(exc))
-        return cls(id=req_id, ok=False, code="internal_error",
-                   message="the daemon failed to handle this request")
+        return cls(
+            id=req_id,
+            ok=False,
+            code="internal_error",
+            message="the daemon failed to handle this request",
+        )
 
     def encode(self) -> bytes:
         payload: dict[str, Any] = {"id": self.id, "ok": self.ok}
@@ -115,8 +124,10 @@ class Response:
             return cls(id=raw.get("id", 0), ok=True, result=raw.get("result"))
         err = raw.get("error") or {}
         return cls(
-            id=raw.get("id", 0), ok=False,
-            code=err.get("code"), message=err.get("message"),
+            id=raw.get("id", 0),
+            ok=False,
+            code=err.get("code"),
+            message=err.get("message"),
         )
 
 

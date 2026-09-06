@@ -106,7 +106,9 @@ def branch_exists(src: Path, branch: str) -> bool:
     exe = shutil.which("git") or "git"
     proc = subprocess.run(
         [exe, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
-        cwd=str(src), capture_output=True, check=False,
+        cwd=str(src),
+        capture_output=True,
+        check=False,
     )
     return proc.returncode == 0
 
@@ -132,8 +134,15 @@ def prepare_worktree(
     if share == "none":
         return _prepare_clone(src, target, branch=branch, base=base)
     return _prepare_linked_worktree(
-        src, target, guest_dest, guest_gitdir_root, slug, staging,
-        branch=branch, base=base, detach=detach,
+        src,
+        target,
+        guest_dest,
+        guest_gitdir_root,
+        slug,
+        staging,
+        branch=branch,
+        base=base,
+        detach=detach,
     )
 
 

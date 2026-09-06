@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import shutil
 import time
 from collections import deque
 from pathlib import Path
@@ -175,7 +174,9 @@ class Container:
 
     @property
     def pid(self) -> int | None:
-        return self.session.pid if self.running else None
+        # A local, so mypy can narrow: `self.running` (a property) can't.
+        session = self.session
+        return session.pid if session is not None and session.running else None
 
     def status(self) -> dict:
         return {
@@ -322,7 +323,8 @@ class Daemon:
         # The container's environment, not the daemon's: handed to bwrap as its
         # own environ so that tokens never appear in argv.
         session = PtySession(
-            name=name, argv=argv,
+            name=name,
+            argv=argv,
             env=bwrap_mod.build_env(container.config),
         )
         session.start()
@@ -331,8 +333,13 @@ class Daemon:
         container.obj.pid = session.pid
         container.obj.exit_code = None
 
-        self.audit.record(ROOT, "container.start", allowed=True, target=name,
-                          detail={"pid": session.pid})
+        self.audit.record(
+            ROOT,
+            "container.start",
+            allowed=True,
+            target=name,
+            detail={"pid": session.pid},
+        )
         self._emit("container.started", {"container": name, "pid": session.pid})
 
         asyncio.ensure_future(self._watch_exit(container))
@@ -345,8 +352,13 @@ class Daemon:
         container.obj.exit_code = code
         container.obj.pid = None
         self.abandon_approvals(container.name, "the container exited")
-        self.audit.record(ROOT, "container.exit", allowed=True, target=container.name,
-                          detail={"exit_code": code})
+        self.audit.record(
+            ROOT,
+            "container.exit",
+            allowed=True,
+            target=container.name,
+            detail={"exit_code": code},
+        )
         self._emit("container.exited", {"container": container.name, "exit_code": code})
 
     async def stop(self, name: str, grace: float = 5.0) -> int | None:
@@ -399,9 +411,7 @@ class Daemon:
 
     def dismissable(self) -> list[str]:
         """Containers that have finished and could be cleared away."""
-        return sorted(
-            name for name, c in self.containers.items() if not c.running
-        )
+        return sorted(name for name, c in self.containers.items() if not c.running)
 
     def _get(self, name: str) -> Container:
         container = self.containers.get(name)
@@ -444,7 +454,9 @@ class Daemon:
             return
         proxy = NetProxy(
             container.name,
-            decide=lambda name, host, port: self.kernel.net_allows(name, host, port),
+            decide=lambda container, host, port: self.kernel.net_allows(
+                container, host, port
+            ),
             on_event=lambda record: self._emit("net.request", record),
         )
         await proxy.start(container.paths.proxy_socket)
@@ -459,34 +471,42 @@ class Daemon:
                 try:
                     line = await framed.readline()
                 except _RequestTooLong:
-                    await self._reply(writer, Response(
-                        id=0, ok=False, code="protocol_error",
-                        message="request exceeds the maximum size",
-                    ))
+                    await self._reply(
+                        writer,
+                        Response(
+                            id=0,
+                            ok=False,
+                            code="protocol_error",
+                            message="request exceeds the maximum size",
+                        ),
+                    )
                     return
                 if line is None:
                     return
                 if not line.strip():
                     continue
                 if len(line) > MAX_REQUEST_BYTES:
-                    await self._reply(writer, Response(
-                        id=0, ok=False, code="protocol_error",
-                        message="request exceeds the maximum size",
-                    ))
+                    await self._reply(
+                        writer,
+                        Response(
+                            id=0,
+                            ok=False,
+                            code="protocol_error",
+                            message="request exceeds the maximum size",
+                        ),
+                    )
                     return
 
                 response = await self._serve(actor, line, framed)
                 if response is None:
-                    return          # the caller hung up mid-request
+                    return  # the caller hung up mid-request
                 await self._reply(writer, response)
         finally:
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
 
-    async def _serve(
-        self, actor: str, line: bytes, framed: _Framed
-    ) -> Response | None:
+    async def _serve(self, actor: str, line: bytes, framed: _Framed) -> Response | None:
         """Handle one request, giving it up if the caller disappears.
 
         The requests that take real time are the blocking ones -- `ask` and
@@ -500,9 +520,7 @@ class Daemon:
         dispatch = asyncio.ensure_future(self._dispatch(actor, line))
         hung_up = asyncio.ensure_future(framed.wait_closed())
         try:
-            await asyncio.wait(
-                {dispatch, hung_up}, return_when=asyncio.FIRST_COMPLETED
-            )
+            await asyncio.wait({dispatch, hung_up}, return_when=asyncio.FIRST_COMPLETED)
             if dispatch.done():
                 # `_dispatch` turns every failure into a Response, so the only
                 # way it ends without one is cancellation.
@@ -564,7 +582,9 @@ class Daemon:
             return k.cap_info(actor, int(args["slot"])).to_dict()
         if op == "cap.delegate":
             return k.cap_delegate(
-                actor, int(args["target_slot"]), int(args["cap_slot"]),
+                actor,
+                int(args["target_slot"]),
+                int(args["cap_slot"]),
                 args.get("rights"),
             )
         if op == "cap.revoke":
@@ -573,7 +593,9 @@ class Daemon:
             )
         if op == "msg.send":
             return k.msg_send(
-                actor, int(args["slot"]), args.get("payload"),
+                actor,
+                int(args["slot"]),
+                args.get("payload"),
                 signature=str(args.get("signature") or ""),
             )
         if op == "msg.broadcast":
@@ -581,7 +603,9 @@ class Daemon:
             if not isinstance(slots, list) or not slots:
                 raise ProtocolError("'slots' must be a non-empty list")
             return k.msg_broadcast(
-                actor, [int(s) for s in slots], args.get("payload"),
+                actor,
+                [int(s) for s in slots],
+                args.get("payload"),
                 signature=str(args.get("signature") or ""),
             )
         if op == "board.create":
@@ -590,13 +614,17 @@ class Daemon:
             )
         if op == "board.post":
             return k.board_post(
-                actor, int(args["slot"]), args.get("payload"),
+                actor,
+                int(args["slot"]),
+                args.get("payload"),
                 signature=str(args.get("signature") or ""),
             )
         if op == "board.read":
             return k.board_read(
-                actor, int(args["slot"]),
-                since=int(args.get("since", 0)), limit=int(args.get("limit", 50)),
+                actor,
+                int(args["slot"]),
+                since=int(args.get("since", 0)),
+                limit=int(args.get("limit", 50)),
             )
         if op == "msg.recv":
             box = self.mailboxes.get(actor)
@@ -622,8 +650,11 @@ class Daemon:
             return k.ctr_spawn(actor, int(args["factory_slot"]), config)
         if op == "ds.map":
             return k.ds_map(
-                actor, int(args["target_slot"]), int(args["ds_slot"]),
-                str(args["dest"]), str(args.get("mode", "copy")),
+                actor,
+                int(args["target_slot"]),
+                int(args["ds_slot"]),
+                str(args["dest"]),
+                str(args.get("mode", "copy")),
             )
         if op == "cap.request":
             return await self.request_capability(
@@ -637,7 +668,9 @@ class Daemon:
             )
         if op == "ask":
             return await self.ask_operator(
-                actor, str(args["question"]), args.get("context") or {},
+                actor,
+                str(args["question"]),
+                args.get("context") or {},
                 blocking=bool(args.get("block", True)),
                 timeout=args.get("timeout"),
             )
@@ -653,7 +686,9 @@ class Daemon:
         """
         if not isinstance(raw, dict):
             raise ProtocolError("'config' must be an object")
-        config = load_config_data(dict(raw), base_dir=Path.cwd(), origin=f"{actor}:spawn")
+        config = load_config_data(
+            dict(raw), base_dir=Path.cwd(), origin=f"{actor}:spawn"
+        )
 
         parent = self.containers.get(actor)
         if parent is not None and not parent.config.sandbox.network:
@@ -695,14 +730,20 @@ class Daemon:
         diff = policy_contains(envelope, child_policy)
         if diff.ok:
             self.audit.record(
-                actor, "policy.check", allowed=True, target=config.name,
+                actor,
+                "policy.check",
+                allowed=True,
+                target=config.name,
                 detail="child policy is within the parent's envelope",
             )
             return
 
         reasons = diff.reasons()
         self.audit.record(
-            actor, "policy.escalation", allowed=False, target=config.name,
+            actor,
+            "policy.escalation",
+            allowed=False,
+            target=config.name,
             detail={"reasons": reasons},
         )
 
@@ -724,7 +765,10 @@ class Daemon:
                 + ". The operator declined the escalation."
             )
         self.audit.record(
-            OPERATOR, "policy.escalation", allowed=True, target=config.name,
+            OPERATOR,
+            "policy.escalation",
+            allowed=True,
+            target=config.name,
             detail={"approved_for": actor},
         )
 
@@ -799,7 +843,9 @@ class Daemon:
         enabled = bool(enabled)
         if enabled != self.trace_messages:
             self.audit.record(
-                OPERATOR, "trace.messages", allowed=True,
+                OPERATOR,
+                "trace.messages",
+                allowed=True,
                 detail={"enabled": enabled},
             )
         self.trace_messages = enabled
@@ -809,7 +855,7 @@ class Daemon:
         return self.trace_state()
 
     def traced_messages(self, limit: int = 200) -> list[dict]:
-        return list(self.message_trace)[-max(1, limit):]
+        return list(self.message_trace)[-max(1, limit) :]
 
     def board_posted(self, topic: str, entry: dict) -> None:
         """A board gained a post.
@@ -868,8 +914,11 @@ class Daemon:
                 os.environ.get("CAPWRAP_MAPPING_BACKEND", "auto")
             )
             self.audit.record(
-                ROOT, "mapper.select", allowed=True,
-                target=self._mapper.name, detail=self.mapper_detail,
+                ROOT,
+                "mapper.select",
+                allowed=True,
+                target=self._mapper.name,
+                detail=self.mapper_detail,
             )
         return self._mapper
 
@@ -919,10 +968,13 @@ class Daemon:
         self.kernel.audit.record(
             container, "ask", allowed=True, target=OPERATOR, detail=question[:200]
         )
-        message = self.mailboxes.get(OPERATOR).post({
-            "from": container, "kind": "question",
-            "payload": {"id": pending.id, "question": question, "context": context},
-        })
+        message = self.mailboxes.get(OPERATOR).post(
+            {
+                "from": container,
+                "kind": "question",
+                "payload": {"id": pending.id, "question": question, "context": context},
+            }
+        )
         self._question_messages[pending.id] = message
         # Posted straight to the mailbox rather than through `deliver_message`,
         # since the operator is not a container -- so the event that a browser
@@ -991,12 +1043,16 @@ class Daemon:
             raise CapabilityError(
                 "a net_rule request names the rule and its pattern, as "
                 "'name=<host:port regex>' -- for example "
-                "\"pypi=(pypi\\.org|files\\.pythonhosted\\.org):443\""
+                '"pypi=(pypi\\.org|files\\.pythonhosted\\.org):443"'
             )
 
         self.audit.record(
-            actor, "cap.request", allowed=True, target=target,
-            rights=str(requested), detail={"kind": kind, "reason": reason},
+            actor,
+            "cap.request",
+            allowed=True,
+            target=target,
+            rights=str(requested),
+            detail={"kind": kind, "reason": reason},
         )
 
         decision = await self.ask_operator(
@@ -1022,7 +1078,10 @@ class Daemon:
 
         if decision.get("decision") != "allow":
             self.audit.record(
-                actor, "cap.request", allowed=False, target=target,
+                actor,
+                "cap.request",
+                allowed=False,
+                target=target,
                 detail=decision.get("reason") or "declined",
             )
             return {
@@ -1032,10 +1091,10 @@ class Daemon:
             }
 
         # The operator can hand back a narrower set than was asked for.
-        granted = parse_rights(decision["rights"]) if decision.get("rights") else requested
-        result = self.kernel.operator_grant(
-            actor, kind, target, granted, quota=quota
+        granted = (
+            parse_rights(decision["rights"]) if decision.get("rights") else requested
         )
+        result = self.kernel.operator_grant(actor, kind, target, granted, quota=quota)
         self._emit("cap.granted", {"container": actor, **result})
         return {"granted": True, "decision": "allow", **result}
 
@@ -1059,16 +1118,17 @@ class Daemon:
         )
         self._close_question(pending, decision, reason)
         self.kernel.audit.record(
-            OPERATOR, "approval.resolve", allowed=(decision == "allow"),
-            target=pending.container, detail={"decision": decision, "reason": reason},
+            OPERATOR,
+            "approval.resolve",
+            allowed=(decision == "allow"),
+            target=pending.container,
+            detail={"decision": decision, "reason": reason},
         )
         self._emit("approval.resolved", {"id": approval_id, "decision": decision})
         return True
 
     def pending_approvals(self) -> list[dict]:
-        return [
-            p.to_dict() for p in self.approvals.values() if not p.future.done()
-        ]
+        return [p.to_dict() for p in self.approvals.values() if not p.future.done()]
 
     def _close_question(
         self, pending: PendingApproval, decision: str, reason: str
@@ -1110,7 +1170,10 @@ class Daemon:
         if not pending.future.done():
             pending.future.set_result({"decision": decision, "reason": reason})
         self.audit.record(
-            ROOT, "approval.abandon", allowed=False, target=pending.container,
+            ROOT,
+            "approval.abandon",
+            allowed=False,
+            target=pending.container,
             detail={"decision": decision, "reason": reason},
         )
         self._emit("approval.resolved", {"id": pending.id, "decision": decision})
@@ -1124,7 +1187,8 @@ class Daemon:
         future that nothing is waiting on.
         """
         stale = [
-            p for p in list(self.approvals.values())
+            p
+            for p in list(self.approvals.values())
             if p.container == container and not p.closed
         ]
         for pending in stale:

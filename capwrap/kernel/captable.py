@@ -78,7 +78,9 @@ class Task:
         try:
             return self.slots[slot]
         except KeyError:
-            raise NoSuchCapability(f"{self.name}: no capability in slot {slot}") from None
+            raise NoSuchCapability(
+                f"{self.name}: no capability in slot {slot}"
+            ) from None
 
     def require(self, slot: int, needed: Rights) -> CapRef:
         """Look up `slot` and check it carries `needed`.

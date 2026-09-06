@@ -115,7 +115,7 @@ class Console:
     # ------------------------------------------------------------------
 
     def handle(self, key: int) -> None:
-        if key in (ord("q"), 27):                     # q, Esc
+        if key in (ord("q"), 27):  # q, Esc
             self.running = False
         elif key == ord("\t"):
             self.view = VIEWS[(VIEWS.index(self.view) + 1) % len(VIEWS)]
@@ -136,7 +136,9 @@ class Console:
     def _move(self, delta: int) -> None:
         if self.view == "approvals":
             if self.approvals:
-                self.approval_index = (self.approval_index + delta) % len(self.approvals)
+                self.approval_index = (self.approval_index + delta) % len(
+                    self.approvals
+                )
         elif self.containers:
             self.selected = (self.selected + delta) % len(self.containers)
 
@@ -215,7 +217,7 @@ class Console:
     # drawing
     # ------------------------------------------------------------------
 
-    def draw(self, stdscr: "curses._CursesWindow") -> None:
+    def draw(self, stdscr: "curses.window") -> None:
         stdscr.erase()
         height, width = stdscr.getmaxyx()
         if height < 8 or width < 40:
@@ -268,36 +270,44 @@ class Console:
             if running:
                 attr |= _colour(2)
             exit_code = container.get("exit_code")
-            tail = f"exit {exit_code}" if exit_code is not None else (
-                "running" if running else container.get("state", "")
+            tail = (
+                f"exit {exit_code}"
+                if exit_code is not None
+                else ("running" if running else container.get("state", ""))
             )
             line = f"{mark} {container['name']}"[: list_width - 2]
             _put(stdscr, top + index, 0, line.ljust(list_width - 1), list_width, attr)
-            _put(stdscr, top + index, list_width - len(tail) - 1, tail,
-                 len(tail) + 1, curses.A_DIM)
+            _put(
+                stdscr,
+                top + index,
+                list_width - len(tail) - 1,
+                tail,
+                len(tail) + 1,
+                curses.A_DIM,
+            )
 
         if not self.containers:
             _put(stdscr, top, 0, "no containers", width, curses.A_DIM)
             return
 
-        # The selected agent's screen, live.
-        container = self.current
-        assert container is not None
+        # The selected agent's screen, live. (`selected`, not `container`: the
+        # loop above already bound that name to each listed container.)
+        selected = self.current
+        assert selected is not None
         pane_left = list_width + 1
         pane_width = width - pane_left
         for row in range(height):
             _put(stdscr, top + row, list_width, "│", 1, curses.A_DIM)
 
-        title = f"{container['name']} — Enter to attach"
+        title = f"{selected['name']} — Enter to attach"
         _put(stdscr, top, pane_left, title[:pane_width], pane_width, curses.A_BOLD)
 
-        lines = self.screens.get(container["name"], [])
+        lines = self.screens.get(selected["name"], [])
         if not lines:
-            note = ("not running" if not container.get("running")
-                    else "(no output yet)")
+            note = "not running" if not selected.get("running") else "(no output yet)"
             _put(stdscr, top + 2, pane_left, note, pane_width, curses.A_DIM)
             return
-        for row, line in enumerate(lines[-(height - 2):], start=top + 2):
+        for row, line in enumerate(lines[-(height - 2) :], start=top + 2):
             _put(stdscr, row, pane_left, line.rstrip()[:pane_width], pane_width)
 
     def _draw_approvals(self, stdscr, top: int, height: int, width: int) -> None:
@@ -323,38 +333,53 @@ class Console:
             _put(stdscr, row, 0, heading, width, attr | _colour(3))
             row += 1
 
-            for line in textwrap.wrap(
-                pending.get("question", ""), max(20, width - 4)
-            )[:3]:
+            for line in textwrap.wrap(pending.get("question", ""), max(20, width - 4))[
+                :3
+            ]:
                 if row >= top + height - 1:
                     break
                 _put(stdscr, row, 4, line, width - 4, attr)
                 row += 1
 
             if kind == "user_question" and selected:
-                _put(stdscr, row, 4,
-                     "a question, not a permission — g goes to its terminal",
-                     width - 4, curses.A_DIM)
+                _put(
+                    stdscr,
+                    row,
+                    4,
+                    "a question, not a permission — g goes to its terminal",
+                    width - 4,
+                    curses.A_DIM,
+                )
                 row += 1
             row += 1
 
     def _draw_boards(self, stdscr, top: int, height: int, width: int) -> None:
         if not self.boards:
-            _put(stdscr, top, 0,
-                 "No boards. An agent with a factory makes one: "
-                 "capctl board create <slot> <topic>", width, curses.A_DIM)
+            _put(
+                stdscr,
+                top,
+                0,
+                "No boards. An agent with a factory makes one: "
+                "capctl board create <slot> <topic>",
+                width,
+                curses.A_DIM,
+            )
             return
         row = top
         for board in self.boards:
             if row >= top + height:
                 break
-            _put(stdscr, row, 0, f"{board['topic']}", width,
-                 curses.A_BOLD | _colour(4))
+            _put(stdscr, row, 0, f"{board['topic']}", width, curses.A_BOLD | _colour(4))
             holders = ", ".join(
                 f"{h['container']}:"
-                + ("+".join(x for x, y in
-                            (("post", h["may_post"]), ("read", h["may_read"])) if y)
-                   or "none")
+                + (
+                    "+".join(
+                        x
+                        for x, y in (("post", h["may_post"]), ("read", h["may_read"]))
+                        if y
+                    )
+                    or "none"
+                )
                 for h in board.get("holders", [])
             )
             row += 1
@@ -365,8 +390,13 @@ class Console:
                     break
                 payload = post["payload"]
                 body = payload if isinstance(payload, str) else json.dumps(payload)
-                _put(stdscr, row, 2,
-                     f"#{post['id']} {post['from']}: {body}"[: width - 2], width - 2)
+                _put(
+                    stdscr,
+                    row,
+                    2,
+                    f"#{post['id']} {post['from']}: {body}"[: width - 2],
+                    width - 2,
+                )
                 row += 1
             row += 1
 
@@ -382,16 +412,34 @@ class Console:
                 f"{when} {verdict} {entry.get('actor', ''):<10} "
                 f"{entry.get('op', ''):<18} {entry.get('target') or ''}"
             )
-            _put(stdscr, row, 0, line[:width], width,
-                 curses.A_NORMAL if allowed else _colour(1) | curses.A_BOLD)
+            _put(
+                stdscr,
+                row,
+                0,
+                line[:width],
+                width,
+                curses.A_NORMAL if allowed else _colour(1) | curses.A_BOLD,
+            )
 
     def _draw_footer(self, stdscr, height: int, width: int) -> None:
         if self.error:
-            _put(stdscr, height - 2, 0, self.error[:width].ljust(width), width,
-                 _colour(1) | curses.A_BOLD)
+            _put(
+                stdscr,
+                height - 2,
+                0,
+                self.error[:width].ljust(width),
+                width,
+                _colour(1) | curses.A_BOLD,
+            )
         elif self.status and time.monotonic() < self.status_until:
-            _put(stdscr, height - 2, 0, self.status[:width].ljust(width), width,
-                 _colour(2))
+            _put(
+                stdscr,
+                height - 2,
+                0,
+                self.status[:width].ljust(width),
+                width,
+                _colour(2),
+            )
 
         # Only the keys that do something in this view: offering "Enter attach"
         # on the audit log invites a keypress that goes nowhere.
@@ -437,8 +485,12 @@ def _init_colours() -> None:
         curses.start_color()
         curses.use_default_colors()
         for index, colour in enumerate(
-            (curses.COLOR_RED, curses.COLOR_GREEN,
-             curses.COLOR_YELLOW, curses.COLOR_CYAN),
+            (
+                curses.COLOR_RED,
+                curses.COLOR_GREEN,
+                curses.COLOR_YELLOW,
+                curses.COLOR_CYAN,
+            ),
             start=1,
         ):
             curses.init_pair(index, colour, -1)
@@ -493,21 +545,29 @@ def attach(client: Client, name: str) -> str:
                 if DETACH_KEY in data:
                     before = data.split(DETACH_KEY, 1)[0]
                     if before:
-                        ws.send_text(json.dumps(
-                            {"type": "input", "data": before.decode(
-                                "utf-8", "replace")}))
+                        ws.send_text(
+                            json.dumps(
+                                {
+                                    "type": "input",
+                                    "data": before.decode("utf-8", "replace"),
+                                }
+                            )
+                        )
                     break
-                ws.send_text(json.dumps(
-                    {"type": "input", "data": data.decode("utf-8", "replace")}))
+                ws.send_text(
+                    json.dumps(
+                        {"type": "input", "data": data.decode("utf-8", "replace")}
+                    )
+                )
 
             if ws.sock in readable:
                 for opcode, payload in ws.receive():
-                    if opcode == 0x8:                      # close
+                    if opcode == 0x8:  # close
                         return f"{name} closed the connection"
-                    if opcode == 0x2:                      # binary: terminal output
+                    if opcode == 0x2:  # binary: terminal output
                         sys.stdout.buffer.write(payload)
                         sys.stdout.buffer.flush()
-                    elif opcode == 0x1:                    # text: control JSON
+                    elif opcode == 0x1:  # text: control JSON
                         with _quiet():
                             note = json.loads(payload.decode())
                             if note.get("type") == "error":
@@ -528,8 +588,9 @@ def _send_resize(ws) -> None:
         size = os.get_terminal_size()
     except OSError:
         return
-    ws.send_text(json.dumps(
-        {"type": "resize", "cols": size.columns, "rows": size.lines}))
+    ws.send_text(
+        json.dumps({"type": "resize", "cols": size.columns, "rows": size.lines})
+    )
 
 
 class _quiet:

@@ -43,26 +43,37 @@ def slot_labelled(kernel: CapKernel, actor: str, label: str) -> int:
 @pytest.fixture
 def kernel():
     k = CapKernel()
-    k.register_container(config("a", [
-        {"name": "pypi", "pattern": r"(pypi\.org|files\.pythonhosted\.org):443"},
-        {"name": "docs", "pattern": r"docs\.example\.com:443"},
-    ]))
+    k.register_container(
+        config(
+            "a",
+            [
+                {
+                    "name": "pypi",
+                    "pattern": r"(pypi\.org|files\.pythonhosted\.org):443",
+                },
+                {"name": "docs", "pattern": r"docs\.example\.com:443"},
+            ],
+        )
+    )
     return k
 
 
-@pytest.mark.parametrize("host,port,allowed", [
-    ("pypi.org", 443, True),
-    ("files.pythonhosted.org", 443, True),
-    ("docs.example.com", 443, True),
-    # Same host, different port: 443 and 22 are not the same authority.
-    ("pypi.org", 22, False),
-    ("pypi.org", 8443, False),
-    # A prefix or suffix must not be enough, or every rule is a wildcard.
-    ("evil-pypi.org", 443, False),
-    ("pypi.org.attacker.example", 443, False),
-    ("notdocs.example.com", 443, False),
-    ("github.com", 443, False),
-])
+@pytest.mark.parametrize(
+    "host,port,allowed",
+    [
+        ("pypi.org", 443, True),
+        ("files.pythonhosted.org", 443, True),
+        ("docs.example.com", 443, True),
+        # Same host, different port: 443 and 22 are not the same authority.
+        ("pypi.org", 22, False),
+        ("pypi.org", 8443, False),
+        # A prefix or suffix must not be enough, or every rule is a wildcard.
+        ("evil-pypi.org", 443, False),
+        ("pypi.org.attacker.example", 443, False),
+        ("notdocs.example.com", 443, False),
+        ("github.com", 443, False),
+    ],
+)
 def test_a_rule_matches_the_whole_authority_and_nothing_more(
     kernel, host, port, allowed
 ):
@@ -94,9 +105,14 @@ def test_both_decisions_are_audited(kernel):
 
 def test_a_rule_without_connect_cannot_be_used(kernel):
     """`inspect` on a rule says it exists; it does not open anything."""
-    kernel.register_container(config("looker", [
-        {"name": "pypi", "pattern": r"pypi\.org:443", "rights": ["inspect"]},
-    ]))
+    kernel.register_container(
+        config(
+            "looker",
+            [
+                {"name": "pypi", "pattern": r"pypi\.org:443", "rights": ["inspect"]},
+            ],
+        )
+    )
     assert kernel.net_allows("looker", "pypi.org", 443)["allowed"] is False
 
 
@@ -114,17 +130,27 @@ def test_a_child_can_be_given_some_of_a_parents_reach_but_never_more(kernel):
     decidable; asking whether one regex is contained in another is not, and a
     security model should not rest on a question nobody can answer.
     """
-    kernel.register_container(load_config_data({"name": "child"}, base_dir=Path("/tmp")))
-    kernel.register_container(config(
-        "boss",
-        [
-            {"name": "pypi", "pattern": r"pypi\.org:443",
-             "rights": ["connect", "delegate"]},
-            {"name": "docs", "pattern": r"docs\.example\.com:443",
-             "rights": ["connect", "delegate"]},
-        ],
-        caps={"peers": [{"container": "child", "rights": ["send"]}]},
-    ))
+    kernel.register_container(
+        load_config_data({"name": "child"}, base_dir=Path("/tmp"))
+    )
+    kernel.register_container(
+        config(
+            "boss",
+            [
+                {
+                    "name": "pypi",
+                    "pattern": r"pypi\.org:443",
+                    "rights": ["connect", "delegate"],
+                },
+                {
+                    "name": "docs",
+                    "pattern": r"docs\.example\.com:443",
+                    "rights": ["connect", "delegate"],
+                },
+            ],
+            caps={"peers": [{"container": "child", "rights": ["send"]}]},
+        )
+    )
 
     child_slot = slot_labelled(kernel, "boss", "peer:child")
     pypi_slot = next(s for s, rule in kernel.net_rules("boss") if rule.rule == "pypi")
@@ -141,11 +167,13 @@ def test_a_child_cannot_be_handed_a_rule_its_parent_may_not_pass_on(kernel):
     from capwrap.errors import InsufficientRights
 
     kernel.register_container(load_config_data({"name": "kid"}, base_dir=Path("/tmp")))
-    kernel.register_container(config(
-        "keeper",
-        [{"name": "pypi", "pattern": r"pypi\.org:443", "rights": ["connect"]}],
-        caps={"peers": [{"container": "kid", "rights": ["send"]}]},
-    ))
+    kernel.register_container(
+        config(
+            "keeper",
+            [{"name": "pypi", "pattern": r"pypi\.org:443", "rights": ["connect"]}],
+            caps={"peers": [{"container": "kid", "rights": ["send"]}]},
+        )
+    )
 
     kid_slot = slot_labelled(kernel, "keeper", "peer:kid")
     pypi_slot = next(s for s, rule in kernel.net_rules("keeper") if rule.rule == "pypi")
@@ -182,7 +210,6 @@ def test_a_rule_that_is_not_a_regex_is_rejected_where_it_is_written():
 
 
 def test_the_sandbox_gets_a_proxy_it_can_name():
-    from capwrap.paths import ContainerPaths
     from capwrap.runtime import bwrap as bwrap_mod
 
     cfg = config("n", [{"name": "x", "pattern": "example.com:443"}])
@@ -212,16 +239,19 @@ def test_a_container_without_rules_gets_no_proxy_at_all():
 # ==========================================================================
 
 
-@pytest.mark.parametrize("method,target,expected", [
-    ("CONNECT", "pypi.org:443", ("pypi.org", 443)),
-    ("CONNECT", "pypi.org", ("pypi.org", 443)),
-    ("CONNECT", "[::1]:8080", ("::1", 8080)),
-    ("GET", "http://example.com/a/b?c=d", ("example.com", 80)),
-    ("GET", "http://example.com:8080/", ("example.com", 8080)),
-    ("GET", "https://example.com/", ("example.com", 443)),
-    # Userinfo is not the destination. `pypi.org@evil.example` reaches evil.
-    ("GET", "http://pypi.org@evil.example/", ("evil.example", 80)),
-])
+@pytest.mark.parametrize(
+    "method,target,expected",
+    [
+        ("CONNECT", "pypi.org:443", ("pypi.org", 443)),
+        ("CONNECT", "pypi.org", ("pypi.org", 443)),
+        ("CONNECT", "[::1]:8080", ("::1", 8080)),
+        ("GET", "http://example.com/a/b?c=d", ("example.com", 80)),
+        ("GET", "http://example.com:8080/", ("example.com", 8080)),
+        ("GET", "https://example.com/", ("example.com", 443)),
+        # Userinfo is not the destination. `pypi.org@evil.example` reaches evil.
+        ("GET", "http://pypi.org@evil.example/", ("evil.example", 80)),
+    ],
+)
 def test_the_destination_is_read_the_way_the_client_meant_it(method, target, expected):
     assert target_of(method, target) == expected
 
@@ -294,7 +324,9 @@ async def test_the_proxy_tunnels_a_destination_it_is_allowed(tmp_path):
 
         writer.write(b"through the tunnel")
         await writer.drain()
-        assert await asyncio.wait_for(reader.read(64), timeout=5) == b"through the tunnel"
+        assert (
+            await asyncio.wait_for(reader.read(64), timeout=5) == b"through the tunnel"
+        )
         writer.close()
     finally:
         await proxy.stop()
@@ -320,14 +352,19 @@ async def test_the_decision_is_taken_per_request_not_per_connection(tmp_path):
     client cannot send a second absolute-URI request for a different host down a
     connection that has already been decided.
     """
-    assert "Connection: close" in proxy_mod._origin_form(
-        "GET", "http://example.com/", "HTTP/1.1", ["Host: example.com"]
-    ).decode()
+    assert (
+        "Connection: close"
+        in proxy_mod._origin_form(
+            "GET", "http://example.com/", "HTTP/1.1", ["Host: example.com"]
+        ).decode()
+    )
 
 
 def test_hop_by_hop_headers_do_not_reach_the_origin():
     out = proxy_mod._origin_form(
-        "GET", "http://example.com/x", "HTTP/1.1",
+        "GET",
+        "http://example.com/x",
+        "HTTP/1.1",
         ["Host: example.com", "Proxy-Authorization: secret", "Accept: */*"],
     ).decode()
     assert "Proxy-Authorization" not in out

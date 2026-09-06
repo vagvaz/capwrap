@@ -1,169 +1,201 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>capwrap</title>
-  <link rel="stylesheet" href="/static/vendor/xterm.css">
-  <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo">▣</span>
-      <strong id="instance-name">capwrap</strong>
-      <span class="muted" id="instance-tag">capability-governed agent containers</span>
-    </div>
-    <div class="topbar-right">
-      <span id="conn" class="pill pill-warn">connecting…</span>
-      <button id="layout-reset" class="ghost" title="Put the panels back where they started">⊞</button>
-      <button id="theme-toggle" class="ghost" title="Toggle theme">◐</button>
-    </div>
-  </header>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>capwrap</title>
+    <link rel="stylesheet" href="/static/vendor/xterm.css" />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">▣</span>
+        <strong id="instance-name">capwrap</strong>
+        <span class="muted" id="instance-tag"
+          >capability-governed agent containers</span
+        >
+      </div>
+      <div class="topbar-right">
+        <span id="conn" class="pill pill-warn">connecting…</span>
+        <button
+          id="layout-reset"
+          class="ghost"
+          title="Put the panels back where they started"
+        >
+          ⊞
+        </button>
+        <button id="theme-toggle" class="ghost" title="Toggle theme">◐</button>
+      </div>
+    </header>
 
-  <!-- The two side panels are moved into edge docks by app.js; the order they
+    <!-- The two side panels are moved into edge docks by app.js; the order they
        appear in here is only what a browser sees before that runs. -->
-  <main class="layout" id="layout">
+    <main class="layout" id="layout">
+      <!-- ---------------------------------------------------------- -->
+      <aside
+        class="panel"
+        id="panel-containers"
+        data-panel="containers"
+        data-title="Containers"
+      >
+        <div id="tree" class="tree"></div>
+        <button id="dismiss-finished" class="ghost small" hidden></button>
 
-    <!-- ---------------------------------------------------------- -->
-    <aside class="panel" id="panel-containers"
-           data-panel="containers" data-title="Containers">
-      <div id="tree" class="tree"></div>
-      <button id="dismiss-finished" class="ghost small" hidden></button>
-
-      <h2>Send a message</h2>
-      <form id="compose" class="compose">
-        <div id="compose-targets" class="targets"></div>
-        <textarea id="compose-body" rows="3"
-                  placeholder="Message, delivered to each agent's mailbox…"></textarea>
-        <button type="submit" id="compose-send">Send as operator</button>
-      </form>
-    </aside>
-
-    <!-- ---------------------------------------------------------- -->
-    <section class="content" id="content">
-      <nav class="tabs">
-        <button data-tab="terminal" class="active">Terminal</button>
-        <button data-tab="grid">All agents</button>
-        <button data-tab="caps">Capabilities</button>
-        <button data-tab="boards">Boards</button>
-        <button data-tab="messages">Messages</button>
-        <button data-tab="audit">Audit</button>
-      </nav>
-
-      <div id="tab-terminal" class="tab-panel active">
-        <div class="panel-head">
-          <span id="term-title" class="mono">no container selected</span>
-          <span class="spacer"></span>
-          <button id="btn-start" class="ghost">Start</button>
-          <button id="btn-interrupt" class="ghost">Interrupt</button>
-          <button id="btn-stop" class="ghost danger">Stop</button>
-        </div>
-        <div id="terminal" class="terminal-host"></div>
-      </div>
-
-      <div id="tab-grid" class="tab-panel">
-        <p class="muted pad">
-          Every agent at once. Click a tile to open it full size.
-        </p>
-        <div id="grid" class="grid"></div>
-      </div>
-
-      <div id="tab-caps" class="tab-panel">
-        <div class="panel-head">
-          <span id="caps-title" class="mono">capabilities</span>
-          <span class="spacer"></span>
-          <button id="btn-grant" class="ghost">Grant a capability…</button>
-        </div>
-
-        <form id="grant-form" class="grant" hidden>
-          <p class="muted small">
-            Hand this container authority over another one, right now. The
-            operator holds a root capability on everything, so this is an
-            ordinary delegation — and it is audited like any other.
-          </p>
-          <div class="grant-row">
-            <label>Give <strong id="grant-holder" class="mono">?</strong>
-              a capability on</label>
-            <select id="grant-target" required></select>
-          </div>
-          <div class="grant-row">
-            <label>with rights</label>
-            <div id="grant-rights" class="rights-picker"></div>
-          </div>
-          <div class="grant-row">
-            <button type="submit" class="primary">Grant</button>
-            <button type="button" id="grant-cancel" class="ghost">Cancel</button>
-          </div>
+        <h2>Send a message</h2>
+        <form id="compose" class="compose">
+          <div id="compose-targets" class="targets"></div>
+          <textarea
+            id="compose-body"
+            rows="3"
+            placeholder="Message, delivered to each agent's mailbox…"
+          ></textarea>
+          <button type="submit" id="compose-send">Send as operator</button>
         </form>
+      </aside>
 
-        <div id="caps" class="caps"></div>
-      </div>
+      <!-- ---------------------------------------------------------- -->
+      <section class="content" id="content">
+        <nav class="tabs">
+          <button data-tab="terminal" class="active">Terminal</button>
+          <button data-tab="grid">All agents</button>
+          <button data-tab="caps">Capabilities</button>
+          <button data-tab="boards">Boards</button>
+          <button data-tab="messages">Messages</button>
+          <button data-tab="audit">Audit</button>
+        </nav>
 
-      <!-- Shared boards: where several agents coordinate, rather than one
+        <div id="tab-terminal" class="tab-panel active">
+          <div class="panel-head">
+            <span id="term-title" class="mono">no container selected</span>
+            <span class="spacer"></span>
+            <button id="btn-start" class="ghost">Start</button>
+            <button id="btn-interrupt" class="ghost">Interrupt</button>
+            <button id="btn-stop" class="ghost danger">Stop</button>
+          </div>
+          <div id="terminal" class="terminal-host"></div>
+        </div>
+
+        <div id="tab-grid" class="tab-panel">
+          <p class="muted pad">
+            Every agent at once. Click a tile to open it full size.
+          </p>
+          <div id="grid" class="grid"></div>
+        </div>
+
+        <div id="tab-caps" class="tab-panel">
+          <div class="panel-head">
+            <span id="caps-title" class="mono">capabilities</span>
+            <span class="spacer"></span>
+            <button id="btn-grant" class="ghost">Grant a capability…</button>
+          </div>
+
+          <form id="grant-form" class="grant" hidden>
+            <p class="muted small">
+              Hand this container authority over another one, right now. The
+              operator holds a root capability on everything, so this is an
+              ordinary delegation — and it is audited like any other.
+            </p>
+            <div class="grant-row">
+              <label
+                >Give <strong id="grant-holder" class="mono">?</strong> a
+                capability on</label
+              >
+              <select id="grant-target" required></select>
+            </div>
+            <div class="grant-row">
+              <label>with rights</label>
+              <div id="grant-rights" class="rights-picker"></div>
+            </div>
+            <div class="grant-row">
+              <button type="submit" class="primary">Grant</button>
+              <button type="button" id="grant-cancel" class="ghost">
+                Cancel
+              </button>
+            </div>
+          </form>
+
+          <div id="caps" class="caps"></div>
+        </div>
+
+        <!-- Shared boards: where several agents coordinate, rather than one
            being handed work. -->
-      <div id="tab-boards" class="tab-panel">
-        <div class="panel-head">
-          <span class="mono">boards</span>
-          <span id="boards-count" class="muted small"></span>
-          <span class="spacer"></span>
-          <button id="boards-refresh" class="ghost">Refresh</button>
+        <div id="tab-boards" class="tab-panel">
+          <div class="panel-head">
+            <span class="mono">boards</span>
+            <span id="boards-count" class="muted small"></span>
+            <span class="spacer"></span>
+            <button id="boards-refresh" class="ghost">Refresh</button>
+          </div>
+          <div id="boards" class="caps"></div>
         </div>
-        <div id="boards" class="caps"></div>
-      </div>
 
-      <!-- Every message the kernel delivered between containers, payload and
+        <!-- Every message the kernel delivered between containers, payload and
            all. Off by default, because that is the agents' working content. -->
-      <div id="tab-messages" class="tab-panel">
-        <div class="panel-head">
-          <label class="check" title="Records the contents of every message, not just that one was sent">
-            <input type="checkbox" id="trace-toggle">
-            record messages between containers
-          </label>
-          <span id="trace-state" class="muted small"></span>
-          <span class="spacer"></span>
-          <label class="check">from
-            <select id="trace-from"><option value="">anyone</option></select>
-          </label>
-          <label class="check">to
-            <select id="trace-to"><option value="">anyone</option></select>
-          </label>
-          <button id="trace-clear" class="ghost">Clear</button>
+        <div id="tab-messages" class="tab-panel">
+          <div class="panel-head">
+            <label
+              class="check"
+              title="Records the contents of every message, not just that one was sent"
+            >
+              <input type="checkbox" id="trace-toggle" />
+              record messages between containers
+            </label>
+            <span id="trace-state" class="muted small"></span>
+            <span class="spacer"></span>
+            <label class="check"
+              >from
+              <select id="trace-from">
+                <option value="">anyone</option>
+              </select>
+            </label>
+            <label class="check"
+              >to
+              <select id="trace-to">
+                <option value="">anyone</option>
+              </select>
+            </label>
+            <button id="trace-clear" class="ghost">Clear</button>
+          </div>
+          <div id="trace" class="audit"></div>
         </div>
-        <div id="trace" class="audit"></div>
-      </div>
 
-      <div id="tab-audit" class="tab-panel">
-        <div class="panel-head">
-          <label class="check">
-            <input type="checkbox" id="audit-denied"> denials only
-          </label>
-          <span class="spacer"></span>
-          <button id="audit-refresh" class="ghost">Refresh</button>
+        <div id="tab-audit" class="tab-panel">
+          <div class="panel-head">
+            <label class="check">
+              <input type="checkbox" id="audit-denied" /> denials only
+            </label>
+            <span class="spacer"></span>
+            <button id="audit-refresh" class="ghost">Refresh</button>
+          </div>
+          <div id="audit" class="audit"></div>
         </div>
-        <div id="audit" class="audit"></div>
-      </div>
-    </section>
+      </section>
 
-    <!-- ---------------------------------------------------------- -->
-    <aside class="panel" id="panel-inbox" data-panel="inbox" data-title="Approvals">
-      <span id="approval-count" class="pill pill-quiet">0</span>
-      <p class="muted small">
-        Every agent's permission requests land here, so you never have to go
-        looking through terminals for a blocked prompt.
-      </p>
-      <div id="approvals" class="approvals"></div>
+      <!-- ---------------------------------------------------------- -->
+      <aside
+        class="panel"
+        id="panel-inbox"
+        data-panel="inbox"
+        data-title="Approvals"
+      >
+        <span id="approval-count" class="pill pill-quiet">0</span>
+        <p class="muted small">
+          Every agent's permission requests land here, so you never have to go
+          looking through terminals for a blocked prompt.
+        </p>
+        <div id="approvals" class="approvals"></div>
 
-      <h2>
-        Operator inbox
-        <button id="inbox-history" class="ghost small" hidden></button>
-      </h2>
-      <div id="messages" class="messages"></div>
-    </aside>
-  </main>
+        <h2>
+          Operator inbox
+          <button id="inbox-history" class="ghost small" hidden></button>
+        </h2>
+        <div id="messages" class="messages"></div>
+      </aside>
+    </main>
 
-  <script src="/static/vendor/xterm.js"></script>
-  <script src="/static/vendor/addon-fit.js"></script>
-  <script src="/static/app.js"></script>
-</body>
+    <script src="/static/vendor/xterm.js"></script>
+    <script src="/static/vendor/addon-fit.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
 </html>

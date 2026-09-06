@@ -75,7 +75,9 @@ async def test_a_request_cannot_smuggle_in_an_actor(daemon, tmp_path):
     # There is no field for it, and adding one changes nothing.
     reader, writer = await asyncio.open_unix_connection(str(container.paths.socket))
     writer.write(
-        json.dumps({"id": 1, "op": "whoami", "actor": "root", "container": "beta"}).encode()
+        json.dumps(
+            {"id": 1, "op": "whoami", "actor": "root", "container": "beta"}
+        ).encode()
         + b"\n"
     )
     await writer.drain()
@@ -158,7 +160,8 @@ async def test_messages_flow_between_containers(daemon, tmp_path):
 
     sent = await request(
         daemon.containers["alpha"].paths.socket,
-        "msg.send", {"slot": peer_slot, "payload": "the build is green"},
+        "msg.send",
+        {"slot": peer_slot, "payload": "the build is green"},
     )
     assert sent.ok and sent.result["delivered_to"] == "beta"
 
@@ -178,7 +181,8 @@ async def test_sending_without_a_capability_is_denied_and_audited(daemon, tmp_pa
         c.server = await daemon._serve_container(c)
 
     reply = await request(
-        daemon.containers["alpha"].paths.socket, "msg.send",
+        daemon.containers["alpha"].paths.socket,
+        "msg.send",
         {"slot": 77, "payload": "hello?"},
     )
     assert not reply.ok
@@ -203,7 +207,8 @@ async def test_messages_are_mirrored_into_shared_inbox(daemon, tmp_path):
     slot = [c["slot"] for c in caps if c["label"] == "peer:beta"][0]
     await request(
         daemon.containers["alpha"].paths.socket,
-        "msg.send", {"slot": slot, "payload": "check your inbox"},
+        "msg.send",
+        {"slot": slot, "payload": "check your inbox"},
     )
 
     inbox = daemon.containers["beta"].paths.shared / "inbox"
@@ -213,9 +218,13 @@ async def test_messages_are_mirrored_into_shared_inbox(daemon, tmp_path):
 
 
 async def test_delegation_over_the_wire_notifies_the_recipient(daemon, tmp_path):
-    peers = {"caps": {"peers": [
-        {"container": "beta", "rights": ["send", "inspect", "delegate"]},
-    ]}}
+    peers = {
+        "caps": {
+            "peers": [
+                {"container": "beta", "rights": ["send", "inspect", "delegate"]},
+            ]
+        }
+    }
     daemon.register(config("alpha", tmp_path, **peers))
     daemon.register(config("beta", tmp_path))
     daemon.link_all_peers()
@@ -227,18 +236,23 @@ async def test_delegation_over_the_wire_notifies_the_recipient(daemon, tmp_path)
     slot = [c["slot"] for c in caps if c["label"] == "peer:beta"][0]
 
     reply = await request(
-        daemon.containers["alpha"].paths.socket, "cap.delegate",
+        daemon.containers["alpha"].paths.socket,
+        "cap.delegate",
         {"target_slot": slot, "cap_slot": slot, "rights": ["send"]},
     )
     assert reply.ok
 
-    beta_caps = (await request(daemon.containers["beta"].paths.socket, "cap.list")).result
+    beta_caps = (
+        await request(daemon.containers["beta"].paths.socket, "cap.list")
+    ).result
     handed = [c for c in beta_caps if c["slot"] == reply.result["slot"]][0]
     assert handed["rights"] == ["send"]
 
-    mail = (await request(
-        daemon.containers["beta"].paths.socket, "msg.recv", {"timeout": 0}
-    )).result
+    mail = (
+        await request(
+            daemon.containers["beta"].paths.socket, "msg.recv", {"timeout": 0}
+        )
+    ).result
     assert any(m["kind"] == "capability" for m in mail)
 
 
@@ -254,10 +268,14 @@ async def test_mapping_a_dataspace_materialises_it_and_revoking_removes_it(
     source.mkdir()
     (source / "finding.md").write_text("the bug is in the parser\n")
 
-    alpha_caps = {"caps": {
-        "peers": [{"container": "beta", "rights": ["send"]}],
-        "dataspaces": [{"path": str(source), "rights": ["read", "copy", "delegate"]}],
-    }}
+    alpha_caps = {
+        "caps": {
+            "peers": [{"container": "beta", "rights": ["send"]}],
+            "dataspaces": [
+                {"path": str(source), "rights": ["read", "copy", "delegate"]}
+            ],
+        }
+    }
     daemon.register(config("alpha", tmp_path, **alpha_caps))
     daemon.register(config("beta", tmp_path))
     daemon.link_all_peers()
@@ -271,7 +289,8 @@ async def test_mapping_a_dataspace_materialises_it_and_revoking_removes_it(
     ds_slot = [c["slot"] for c in caps if c["kind"] == "dataspace"][0]
 
     reply = await request(
-        daemon.containers["alpha"].paths.socket, "ds.map",
+        daemon.containers["alpha"].paths.socket,
+        "ds.map",
         {"target_slot": peer_slot, "ds_slot": ds_slot, "dest": "notes", "mode": "copy"},
     )
     assert reply.ok
@@ -291,11 +310,13 @@ async def test_mapping_a_dataspace_materialises_it_and_revoking_removes_it(
 async def test_map_mode_requires_the_stronger_right(daemon, tmp_path):
     source = tmp_path / "notes"
     source.mkdir()
-    alpha_caps = {"caps": {
-        "peers": [{"container": "beta", "rights": ["send"]}],
-        # copy but not map
-        "dataspaces": [{"path": str(source), "rights": ["read", "copy"]}],
-    }}
+    alpha_caps = {
+        "caps": {
+            "peers": [{"container": "beta", "rights": ["send"]}],
+            # copy but not map
+            "dataspaces": [{"path": str(source), "rights": ["read", "copy"]}],
+        }
+    }
     daemon.register(config("alpha", tmp_path, **alpha_caps))
     daemon.register(config("beta", tmp_path))
     daemon.link_all_peers()
@@ -309,7 +330,8 @@ async def test_map_mode_requires_the_stronger_right(daemon, tmp_path):
     ds_slot = [c["slot"] for c in caps if c["kind"] == "dataspace"][0]
 
     reply = await request(
-        daemon.containers["alpha"].paths.socket, "ds.map",
+        daemon.containers["alpha"].paths.socket,
+        "ds.map",
         {"target_slot": peer_slot, "ds_slot": ds_slot, "dest": "n", "mode": "map"},
     )
     assert not reply.ok and reply.code == "insufficient_rights"
@@ -360,12 +382,17 @@ async def test_ask_times_out_rather_than_hanging_forever(daemon, tmp_path):
 async def test_a_running_container_can_use_capctl(daemon, tmp_path, require_sandbox):
     """The whole stack: sandbox, socket, guest CLI, kernel, mailbox."""
     peers = {"caps": {"peers": [{"container": "beta", "rights": ["send"]}]}}
-    daemon.register(config(
-        "alpha", tmp_path,
-        runtime={"command": ["/bin/bash", "-c", "capctl caps && capctl whoami"],
-                 "tty": True},
-        **peers,
-    ))
+    daemon.register(
+        config(
+            "alpha",
+            tmp_path,
+            runtime={
+                "command": ["/bin/bash", "-c", "capctl caps && capctl whoami"],
+                "tty": True,
+            },
+            **peers,
+        )
+    )
     daemon.register(config("beta", tmp_path))
     daemon.link_all_peers()
 
@@ -386,17 +413,28 @@ async def test_a_running_container_can_use_capctl(daemon, tmp_path, require_sand
 @pytest.mark.sandbox
 async def test_two_live_agents_message_each_other(daemon, tmp_path, require_sandbox):
     peers = {"caps": {"peers": [{"container": "beta", "rights": ["send"]}]}}
-    daemon.register(config(
-        "beta", tmp_path,
-        runtime={"command": ["/bin/bash", "-c", "capctl recv --wait --timeout 30"]},
-    ))
-    daemon.register(config(
-        "alpha", tmp_path,
-        # Addressed by label rather than slot number -- the way an agent would.
-        runtime={"command": ["/bin/bash", "-c",
-                             "sleep 0.5; capctl send peer:beta 'hello from alpha'"]},
-        **peers,
-    ))
+    daemon.register(
+        config(
+            "beta",
+            tmp_path,
+            runtime={"command": ["/bin/bash", "-c", "capctl recv --wait --timeout 30"]},
+        )
+    )
+    daemon.register(
+        config(
+            "alpha",
+            tmp_path,
+            # Addressed by label rather than slot number -- the way an agent would.
+            runtime={
+                "command": [
+                    "/bin/bash",
+                    "-c",
+                    "sleep 0.5; capctl send peer:beta 'hello from alpha'",
+                ]
+            },
+            **peers,
+        )
+    )
     daemon.link_all_peers()
 
     beta = await daemon.start("beta")
@@ -433,14 +471,17 @@ async def test_hook_routes_a_tool_prompt_to_the_operator(
     This is the feature that stops five agents meaning five terminals to watch:
     the agent is stuck inside the hook until someone answers here.
     """
-    daemon.register(config(
-        "hooked", tmp_path,
-        runtime={
-            "approvals": "capwrap",
-            "auto_allow": ["Read"],
-            "command": hook_command("Bash", '{"command":"rm -rf /work"}'),
-        },
-    ))
+    daemon.register(
+        config(
+            "hooked",
+            tmp_path,
+            runtime={
+                "approvals": "capwrap",
+                "auto_allow": ["Read"],
+                "command": hook_command("Bash", '{"command":"rm -rf /work"}'),
+            },
+        )
+    )
     container = await daemon.start("hooked")
 
     for _ in range(200):
@@ -467,14 +508,17 @@ async def test_hook_auto_allows_without_troubling_the_operator(
     daemon, tmp_path, require_sandbox
 ):
     """Nobody wants to approve every Read; the policy decides those locally."""
-    daemon.register(config(
-        "quiet", tmp_path,
-        runtime={
-            "approvals": "capwrap",
-            "auto_allow": ["Read"],
-            "command": hook_command("Read", '{"file_path":"/work/a.py"}'),
-        },
-    ))
+    daemon.register(
+        config(
+            "quiet",
+            tmp_path,
+            runtime={
+                "approvals": "capwrap",
+                "auto_allow": ["Read"],
+                "command": hook_command("Read", '{"file_path":"/work/a.py"}'),
+            },
+        )
+    )
     container = await daemon.start("quiet")
     await asyncio.wait_for(container.session.wait(), timeout=30)
 
@@ -490,16 +534,22 @@ async def test_hook_policy_is_read_only_to_the_agent(daemon, tmp_path, require_s
     It has a shell, so if the policy file were writable the entire approval
     mechanism would be advisory.
     """
-    daemon.register(config(
-        "sneaky", tmp_path,
-        runtime={
-            "approvals": "capwrap",
-            "auto_deny": ["Bash(sudo *)"],
-            "command": ["/bin/bash", "-c",
-                        "echo '{\"allow\":[\"*\"]}' > $CAPWRAP_POLICY 2>&1; "
-                        "cat $CAPWRAP_POLICY"],
-        },
-    ))
+    daemon.register(
+        config(
+            "sneaky",
+            tmp_path,
+            runtime={
+                "approvals": "capwrap",
+                "auto_deny": ["Bash(sudo *)"],
+                "command": [
+                    "/bin/bash",
+                    "-c",
+                    'echo \'{"allow":["*"]}\' > $CAPWRAP_POLICY 2>&1; '
+                    "cat $CAPWRAP_POLICY",
+                ],
+            },
+        )
+    )
     container = await daemon.start("sneaky")
     await asyncio.wait_for(container.session.wait(), timeout=30)
 
@@ -545,14 +595,22 @@ async def test_stopping_a_container_kills_everything_it_started(
     namespace when pid 1 exits.
     """
     before = set(live_sleepers())
-    daemon.register(config(
-        "victim", tmp_path,
-        runtime={"command": ["/bin/bash", "-c",
-                             "sleep 9999 & "
-                             "nohup sleep 9998 >/dev/null 2>&1 & "
-                             "setsid sleep 9997 >/dev/null 2>&1 </dev/null & "
-                             "sleep 9996"]},
-    ))
+    daemon.register(
+        config(
+            "victim",
+            tmp_path,
+            runtime={
+                "command": [
+                    "/bin/bash",
+                    "-c",
+                    "sleep 9999 & "
+                    "nohup sleep 9998 >/dev/null 2>&1 & "
+                    "setsid sleep 9997 >/dev/null 2>&1 </dev/null & "
+                    "sleep 9996",
+                ]
+            },
+        )
+    )
     await daemon.start("victim")
     await asyncio.sleep(2)
 
@@ -593,11 +651,14 @@ async def parent_with_factory(daemon, tmp_path, *, permissions, envelope=None):
     runtime = {"permissions": permissions}
     if envelope is not None:
         runtime["permission_envelope"] = envelope
-    daemon.register(config(
-        "boss", tmp_path,
-        runtime=runtime,
-        caps={"factory": {"rights": ["create"], "quota": {"containers": 5}}},
-    ))
+    daemon.register(
+        config(
+            "boss",
+            tmp_path,
+            runtime=runtime,
+            caps={"factory": {"rights": ["create"], "quota": {"containers": 5}}},
+        )
+    )
     container = daemon.containers["boss"]
     container.server = await daemon._serve_container(container)
     # Spawning must not actually launch a sandbox in these tests.
@@ -607,12 +668,18 @@ async def parent_with_factory(daemon, tmp_path, *, permissions, envelope=None):
 
 async def test_a_narrower_child_spawns_without_asking_anyone(daemon, tmp_path):
     container = await parent_with_factory(
-        daemon, tmp_path,
+        daemon,
+        tmp_path,
         permissions={"allow": ["Read", "Bash(git *)"], "deny": ["Bash(sudo *)"]},
     )
-    reply = await request(container.paths.socket, "ctr.spawn", spawn_request(
-        "child", {"allow": ["Read"], "deny": ["Bash(sudo *)"]},
-    ))
+    reply = await request(
+        container.paths.socket,
+        "ctr.spawn",
+        spawn_request(
+            "child",
+            {"allow": ["Read"], "deny": ["Bash(sudo *)"]},
+        ),
+    )
     assert reply.ok, reply.message
     assert not daemon.pending_approvals(), "narrowing must never reach the operator"
 
@@ -623,9 +690,14 @@ async def test_a_child_inherits_the_parents_permissions_when_it_asks_for_none(
     permissions = {"allow": ["Read"], "deny": ["Bash(sudo *)"]}
     container = await parent_with_factory(daemon, tmp_path, permissions=permissions)
 
-    reply = await request(container.paths.socket, "ctr.spawn", {
-        "factory_slot": 3, "config": {"name": "child"},
-    })
+    reply = await request(
+        container.paths.socket,
+        "ctr.spawn",
+        {
+            "factory_slot": 3,
+            "config": {"name": "child"},
+        },
+    )
     assert reply.ok, reply.message
     child = daemon.containers["child"]
     assert child.config.runtime.permissions.allow == ["Read"]
@@ -640,14 +712,20 @@ async def test_a_wider_child_is_blocked_until_the_operator_agrees(daemon, tmp_pa
     nothing about tool permissions, so without this check the spawn succeeds.
     """
     container = await parent_with_factory(
-        daemon, tmp_path, permissions={"allow": ["Read"], "deny": ["Bash(sudo *)"]},
+        daemon,
+        tmp_path,
+        permissions={"allow": ["Read"], "deny": ["Bash(sudo *)"]},
     )
 
-    spawning = asyncio.ensure_future(request(
-        container.paths.socket, "ctr.spawn",
-        spawn_request("overreach", {"allow": ["Read", "Bash(*)"],
-                                    "deny": ["Bash(sudo *)"]}),
-    ))
+    spawning = asyncio.ensure_future(
+        request(
+            container.paths.socket,
+            "ctr.spawn",
+            spawn_request(
+                "overreach", {"allow": ["Read", "Bash(*)"], "deny": ["Bash(sudo *)"]}
+            ),
+        )
+    )
     await asyncio.sleep(0.1)
 
     pending = daemon.pending_approvals()
@@ -665,12 +743,17 @@ async def test_a_wider_child_is_blocked_until_the_operator_agrees(daemon, tmp_pa
 
 async def test_the_operator_can_approve_an_escalation(daemon, tmp_path):
     container = await parent_with_factory(
-        daemon, tmp_path, permissions={"allow": ["Read"]},
+        daemon,
+        tmp_path,
+        permissions={"allow": ["Read"]},
     )
-    spawning = asyncio.ensure_future(request(
-        container.paths.socket, "ctr.spawn",
-        spawn_request("wider", {"allow": ["Read", "Write"]}),
-    ))
+    spawning = asyncio.ensure_future(
+        request(
+            container.paths.socket,
+            "ctr.spawn",
+            spawn_request("wider", {"allow": ["Read", "Write"]}),
+        )
+    )
     await asyncio.sleep(0.1)
 
     pending = daemon.pending_approvals()
@@ -684,23 +767,32 @@ async def test_the_operator_can_approve_an_escalation(daemon, tmp_path):
 async def test_an_envelope_pre_authorises_a_range(daemon, tmp_path):
     """The less human-invasive route: decide once in the config, not per spawn."""
     container = await parent_with_factory(
-        daemon, tmp_path,
+        daemon,
+        tmp_path,
         permissions={"allow": ["Read"], "deny": ["Bash(sudo *)"]},
         envelope={"allow": ["Read", "Bash(git *)"], "deny": ["Bash(sudo *)"]},
     )
 
     # Inside the envelope, though beyond the parent's own policy: no prompt.
-    reply = await request(container.paths.socket, "ctr.spawn", spawn_request(
-        "helper", {"allow": ["Read", "Bash(git status)"], "deny": ["Bash(sudo *)"]},
-    ))
+    reply = await request(
+        container.paths.socket,
+        "ctr.spawn",
+        spawn_request(
+            "helper",
+            {"allow": ["Read", "Bash(git status)"], "deny": ["Bash(sudo *)"]},
+        ),
+    )
     assert reply.ok, reply.message
     assert not daemon.pending_approvals()
 
     # Beyond the envelope: still stops.
-    spawning = asyncio.ensure_future(request(
-        container.paths.socket, "ctr.spawn",
-        spawn_request("greedy", {"allow": ["Bash(*)"], "deny": ["Bash(sudo *)"]}),
-    ))
+    spawning = asyncio.ensure_future(
+        request(
+            container.paths.socket,
+            "ctr.spawn",
+            spawn_request("greedy", {"allow": ["Bash(*)"], "deny": ["Bash(sudo *)"]}),
+        )
+    )
     await asyncio.sleep(0.1)
     assert daemon.pending_approvals()
     daemon.resolve_approval(daemon.pending_approvals()[0]["id"], "deny", "")
@@ -709,12 +801,17 @@ async def test_an_envelope_pre_authorises_a_range(daemon, tmp_path):
 
 async def test_escalation_attempts_are_audited(daemon, tmp_path):
     container = await parent_with_factory(
-        daemon, tmp_path, permissions={"allow": ["Read"]},
+        daemon,
+        tmp_path,
+        permissions={"allow": ["Read"]},
     )
-    spawning = asyncio.ensure_future(request(
-        container.paths.socket, "ctr.spawn",
-        spawn_request("nope", {"allow": ["Bash"]}),
-    ))
+    spawning = asyncio.ensure_future(
+        request(
+            container.paths.socket,
+            "ctr.spawn",
+            spawn_request("nope", {"allow": ["Bash"]}),
+        )
+    )
     await asyncio.sleep(0.1)
     daemon.resolve_approval(daemon.pending_approvals()[0]["id"], "deny", "")
     await asyncio.wait_for(spawning, timeout=5)
@@ -747,8 +844,9 @@ async def test_ask_alone_grants_nothing(daemon, tmp_path):
     reply = await asyncio.wait_for(asking, timeout=5)
 
     assert reply.result["decision"] == "allow"
-    assert len(daemon.kernel.tasks["solo"]) == before, \
+    assert len(daemon.kernel.tasks["solo"]) == before, (
         "ask must not change the capability table"
+    )
 
 
 async def test_a_granted_request_lands_in_the_cap_table(daemon, tmp_path):
@@ -757,10 +855,18 @@ async def test_a_granted_request_lands_in_the_cap_table(daemon, tmp_path):
     c = daemon.containers["solo"]
     c.server = await daemon._serve_container(c)
 
-    asking = asyncio.ensure_future(request(c.paths.socket, "cap.request", {
-        "kind": "container", "target": "peer",
-        "rights": ["send", "inspect"], "reason": "need to report results",
-    }))
+    asking = asyncio.ensure_future(
+        request(
+            c.paths.socket,
+            "cap.request",
+            {
+                "kind": "container",
+                "target": "peer",
+                "rights": ["send", "inspect"],
+                "reason": "need to report results",
+            },
+        )
+    )
     await asyncio.sleep(0.05)
 
     pending = daemon.pending_approvals()[0]
@@ -780,8 +886,7 @@ async def test_a_granted_request_lands_in_the_cap_table(daemon, tmp_path):
     assert granted["label"] == "peer:peer"
     assert sorted(granted["rights"]) == ["inspect", "send"]
 
-    sent = await request(c.paths.socket, "msg.send",
-                         {"slot": slot, "payload": "hello"})
+    sent = await request(c.paths.socket, "msg.send", {"slot": slot, "payload": "hello"})
     assert sent.ok
 
 
@@ -792,13 +897,23 @@ async def test_the_operator_can_grant_less_than_was_asked_for(daemon, tmp_path):
     c = daemon.containers["solo"]
     c.server = await daemon._serve_container(c)
 
-    asking = asyncio.ensure_future(request(c.paths.socket, "cap.request", {
-        "kind": "container", "target": "peer",
-        "rights": ["send", "inspect", "kill"],
-    }))
+    asking = asyncio.ensure_future(
+        request(
+            c.paths.socket,
+            "cap.request",
+            {
+                "kind": "container",
+                "target": "peer",
+                "rights": ["send", "inspect", "kill"],
+            },
+        )
+    )
     await asyncio.sleep(0.05)
     daemon.resolve_approval(
-        daemon.pending_approvals()[0]["id"], "allow", "", rights=["send"],
+        daemon.pending_approvals()[0]["id"],
+        "allow",
+        "",
+        rights=["send"],
     )
     reply = await asyncio.wait_for(asking, timeout=5)
 
@@ -814,9 +929,17 @@ async def test_a_denied_request_grants_nothing(daemon, tmp_path):
     c.server = await daemon._serve_container(c)
     before = len(daemon.kernel.tasks["solo"])
 
-    asking = asyncio.ensure_future(request(c.paths.socket, "cap.request", {
-        "kind": "container", "target": "peer", "rights": ["send"],
-    }))
+    asking = asyncio.ensure_future(
+        request(
+            c.paths.socket,
+            "cap.request",
+            {
+                "kind": "container",
+                "target": "peer",
+                "rights": ["send"],
+            },
+        )
+    )
     await asyncio.sleep(0.05)
     daemon.resolve_approval(daemon.pending_approvals()[0]["id"], "deny", "no")
     reply = await asyncio.wait_for(asking, timeout=5)
@@ -834,20 +957,34 @@ async def test_requesting_a_factory_makes_spawning_work(daemon, tmp_path):
 
     assert not any(x.kind == "factory" for x in daemon.kernel.cap_list("solo"))
 
-    asking = asyncio.ensure_future(request(c.paths.socket, "cap.request", {
-        "kind": "factory", "rights": ["create"], "quota": 2,
-        "reason": "I need a helper to run the test suite",
-    }))
+    asking = asyncio.ensure_future(
+        request(
+            c.paths.socket,
+            "cap.request",
+            {
+                "kind": "factory",
+                "rights": ["create"],
+                "quota": 2,
+                "reason": "I need a helper to run the test suite",
+            },
+        )
+    )
     await asyncio.sleep(0.05)
-    daemon.resolve_approval(daemon.pending_approvals()[0]["id"], "allow",
-                            rights=["create"])
+    daemon.resolve_approval(
+        daemon.pending_approvals()[0]["id"], "allow", rights=["create"]
+    )
     reply = await asyncio.wait_for(asking, timeout=5)
     assert reply.result["granted"]
 
     factory_slot = reply.result["slot"]
-    spawned = await request(c.paths.socket, "ctr.spawn", {
-        "factory_slot": factory_slot, "config": {"name": "helper"},
-    })
+    spawned = await request(
+        c.paths.socket,
+        "ctr.spawn",
+        {
+            "factory_slot": factory_slot,
+            "config": {"name": "helper"},
+        },
+    )
     assert spawned.ok, spawned.message
     assert "helper" in daemon.containers
 
@@ -859,9 +996,17 @@ async def test_a_requested_capability_is_still_revocable(daemon, tmp_path):
     c = daemon.containers["solo"]
     c.server = await daemon._serve_container(c)
 
-    asking = asyncio.ensure_future(request(c.paths.socket, "cap.request", {
-        "kind": "container", "target": "peer", "rights": ["send"],
-    }))
+    asking = asyncio.ensure_future(
+        request(
+            c.paths.socket,
+            "cap.request",
+            {
+                "kind": "container",
+                "target": "peer",
+                "rights": ["send"],
+            },
+        )
+    )
     await asyncio.sleep(0.05)
     daemon.resolve_approval(daemon.pending_approvals()[0]["id"], "allow")
     slot = (await asyncio.wait_for(asking, timeout=5)).result["slot"]
@@ -876,8 +1021,9 @@ async def test_an_unknown_request_kind_is_refused(daemon, tmp_path):
     c = daemon.containers["solo"]
     c.server = await daemon._serve_container(c)
 
-    reply = await request(c.paths.socket, "cap.request",
-                          {"kind": "root", "target": "everything"})
+    reply = await request(
+        c.paths.socket, "cap.request", {"kind": "root", "target": "everything"}
+    )
     assert not reply.ok
     assert not daemon.pending_approvals(), "a bad kind must not reach the operator"
 
@@ -951,9 +1097,7 @@ async def test_dismissing_revokes_capabilities_others_held_on_it(daemon, tmp_pat
     await daemon.destroy("doomed")
 
     assert slot not in daemon.kernel.tasks["watcher"].slots
-    assert not any(
-        c.label == "peer:doomed" for c in daemon.kernel.cap_list("watcher")
-    )
+    assert not any(c.label == "peer:doomed" for c in daemon.kernel.cap_list("watcher"))
 
 
 async def test_dismissing_a_parent_does_not_hide_its_children(daemon, tmp_path):
@@ -962,10 +1106,13 @@ async def test_dismissing_a_parent_does_not_hide_its_children(daemon, tmp_path):
     A child whose parent has been removed would be unreachable -- it would
     vanish from the UI while still being a real container.
     """
-    daemon.register(config(
-        "boss", tmp_path,
-        caps={"factory": {"rights": ["create"], "quota": {"containers": 2}}},
-    ))
+    daemon.register(
+        config(
+            "boss",
+            tmp_path,
+            caps={"factory": {"rights": ["create"], "quota": {"containers": 2}}},
+        )
+    )
     daemon.register(config("worker", tmp_path), parent="boss")
     assert {"boss", "worker"} <= tree_names(daemon)
 
@@ -985,8 +1132,9 @@ async def test_dismissing_keeps_host_state_by_default(daemon, tmp_path, state_di
     daemon.kernel.find_container("keeper").state = "exited"
 
     await daemon.destroy("keeper")
-    assert (container.paths.root / "evidence.txt").exists(), \
+    assert (container.paths.root / "evidence.txt").exists(), (
         "dismissing must not throw away the work the container produced"
+    )
 
 
 async def test_dismissing_can_also_remove_state_when_asked(daemon, tmp_path, state_dir):
@@ -1020,13 +1168,20 @@ async def test_dismissing_an_unknown_container_is_an_error(daemon, tmp_path):
 
 async def linked_pair(daemon, tmp_path, rights, child_command):
     """A driver holding `rights` on a child that is running `child_command`."""
-    daemon.register(config(
-        "driver", tmp_path,
-        caps={"peers": [{"container": "child", "rights": rights}]},
-    ))
-    daemon.register(config(
-        "child", tmp_path, runtime={"command": child_command, "tty": True},
-    ))
+    daemon.register(
+        config(
+            "driver",
+            tmp_path,
+            caps={"peers": [{"container": "child", "rights": rights}]},
+        )
+    )
+    daemon.register(
+        config(
+            "child",
+            tmp_path,
+            runtime={"command": child_command, "tty": True},
+        )
+    )
     daemon.link_all_peers()
     for name in ("driver", "child"):
         c = daemon.containers[name]
@@ -1047,7 +1202,8 @@ async def test_reading_output_needs_its_own_right(daemon, tmp_path):
     has been told.
     """
     driver, _ = await linked_pair(
-        daemon, tmp_path, ["send", "inspect"], ["/bin/sleep", "5"])
+        daemon, tmp_path, ["send", "inspect"], ["/bin/sleep", "5"]
+    )
     slot = await peer_slot(driver)
 
     status = await request(driver.paths.socket, "ctr.status", {"slot": slot})
@@ -1060,11 +1216,13 @@ async def test_reading_output_needs_its_own_right(daemon, tmp_path):
 
 async def test_typing_needs_its_own_right(daemon, tmp_path):
     driver, _ = await linked_pair(
-        daemon, tmp_path, ["send", "inspect", "read_output"], ["/bin/sleep", "5"])
+        daemon, tmp_path, ["send", "inspect", "read_output"], ["/bin/sleep", "5"]
+    )
     slot = await peer_slot(driver)
 
     denied = await request(
-        driver.paths.socket, "ctr.input", {"slot": slot, "data": "x"})
+        driver.paths.socket, "ctr.input", {"slot": slot, "data": "x"}
+    )
     assert not denied.ok
     assert denied.code == "insufficient_rights"
 
@@ -1105,7 +1263,8 @@ async def test_an_agent_can_read_and_drive_another_agents_terminal(
         done
     """
     driver, child = await linked_pair(
-        daemon, tmp_path,
+        daemon,
+        tmp_path,
         ["send", "inspect", "read_output", "write_input"],
         ["/bin/bash", "-c", script],
     )
@@ -1115,7 +1274,8 @@ async def test_an_agent_can_read_and_drive_another_agents_terminal(
 
     # 1. Read the child's screen through the capability.
     screen = await request(
-        driver.paths.socket, "ctr.output", {"slot": slot, "rows": 10})
+        driver.paths.socket, "ctr.output", {"slot": slot, "rows": 10}
+    )
     assert screen.ok, screen.message
     rendered = "\n".join(screen.result["lines"])
     assert "Pick one:" in rendered
@@ -1123,20 +1283,19 @@ async def test_an_agent_can_read_and_drive_another_agents_terminal(
 
     # 2. Answer it with keystrokes that are not text at all.
     down = await request(
-        driver.paths.socket, "ctr.input", {"slot": slot, "data": "\x1b[B"})
+        driver.paths.socket, "ctr.input", {"slot": slot, "data": "\x1b[B"}
+    )
     assert down.ok, down.message
     await asyncio.sleep(0.8)
 
-    moved = await request(
-        driver.paths.socket, "ctr.output", {"slot": slot, "rows": 10})
+    moved = await request(driver.paths.socket, "ctr.output", {"slot": slot, "rows": 10})
     assert "> beta" in "\n".join(moved.result["lines"]), moved.result["lines"]
 
     # 3. Enter is a carriage return; a newline would not be seen.
     await request(driver.paths.socket, "ctr.input", {"slot": slot, "data": "\r"})
     await asyncio.sleep(1.0)
 
-    final = await request(
-        driver.paths.socket, "ctr.output", {"slot": slot, "rows": 10})
+    final = await request(driver.paths.socket, "ctr.output", {"slot": slot, "rows": 10})
     assert "CHOSE-BETA" in "\n".join(final.result["lines"]), final.result["lines"]
 
 
@@ -1163,8 +1322,9 @@ async def test_an_answered_question_is_not_replayed_as_open(daemon, tmp_path):
     await asyncio.wait_for(asking, timeout=5)
 
     assert not daemon.pending_approvals(), "the queue must be empty"
-    replayed = [m for m in daemon.overview()["operator_inbox"]
-                if m["kind"] == "question"][-1]
+    replayed = [
+        m for m in daemon.overview()["operator_inbox"] if m["kind"] == "question"
+    ][-1]
     assert replayed["payload"]["decision"] == "deny"
     assert replayed["payload"]["reason"] == "not yet"
 
@@ -1191,15 +1351,23 @@ async def test_reconnecting_restores_the_programs_terminal_modes(
     after an agent has been working for a while.
     """
     monkeypatch.setattr(supervisor, "SCROLLBACK_BYTES", 64 * 1024)
-    daemon.register(config(
-        "tui", tmp_path,
-        runtime={"command": ["/bin/bash", "-c",
-                             # enter alt screen + mouse reporting, then emit
-                             # more than the ring buffer holds
-                             "printf '\\033[?1049h\\033[?1000h\\033[?1006h'; "
-                             "head -c 200000 /dev/zero | tr '\\0' 'x'; "
-                             "printf '\\033[H\\033[2Jready'; sleep 20"]},
-    ))
+    daemon.register(
+        config(
+            "tui",
+            tmp_path,
+            runtime={
+                "command": [
+                    "/bin/bash",
+                    "-c",
+                    # enter alt screen + mouse reporting, then emit
+                    # more than the ring buffer holds
+                    "printf '\\033[?1049h\\033[?1000h\\033[?1006h'; "
+                    "head -c 200000 /dev/zero | tr '\\0' 'x'; "
+                    "printf '\\033[H\\033[2Jready'; sleep 20",
+                ]
+            },
+        )
+    )
     container = await daemon.start("tui")
     await asyncio.sleep(2.5)
     session = container.session
@@ -1252,26 +1420,35 @@ async def test_a_question_dies_with_the_agent_that_asked_it(daemon, tmp_path):
     c = await _serve(daemon, "alpha", tmp_path)
 
     reader, writer = await asyncio.open_unix_connection(str(c.paths.socket))
-    writer.write(Request(op="ask", id=1, args={
-        "question": "may I install curl?", "block": True, "timeout": 60,
-    }).encode())
+    writer.write(
+        Request(
+            op="ask",
+            id=1,
+            args={
+                "question": "may I install curl?",
+                "block": True,
+                "timeout": 60,
+            },
+        ).encode()
+    )
     await writer.drain()
 
     pending = await _wait_for_approval(daemon)
     assert pending["container"] == "alpha"
 
-    writer.close()                       # the agent goes away, still blocked
+    writer.close()  # the agent goes away, still blocked
     with contextlib.suppress(Exception):
         await writer.wait_closed()
 
     deadline = asyncio.get_running_loop().time() + 5
     while daemon.pending_approvals():
-        assert asyncio.get_running_loop().time() < deadline, "question was never retired"
+        assert asyncio.get_running_loop().time() < deadline, (
+            "question was never retired"
+        )
         await asyncio.sleep(0.01)
 
     answered = [
-        m for m in daemon.mailboxes.get("operator").recent(10)
-        if m.kind == "question"
+        m for m in daemon.mailboxes.get("operator").recent(10) if m.kind == "question"
     ]
     assert answered[-1].payload["decision"] == "abandoned"
     reader.feed_eof()
@@ -1282,9 +1459,17 @@ async def test_a_question_dies_with_its_container(daemon, tmp_path):
     c = await _serve(daemon, "alpha", tmp_path)
 
     reader, writer = await asyncio.open_unix_connection(str(c.paths.socket))
-    writer.write(Request(op="ask", id=1, args={
-        "question": "shall I push?", "block": True, "timeout": 60,
-    }).encode())
+    writer.write(
+        Request(
+            op="ask",
+            id=1,
+            args={
+                "question": "shall I push?",
+                "block": True,
+                "timeout": 60,
+            },
+        ).encode()
+    )
     await writer.drain()
     await _wait_for_approval(daemon)
 
@@ -1301,9 +1486,17 @@ async def test_answering_a_question_still_reaches_the_agent(daemon, tmp_path):
     c = await _serve(daemon, "alpha", tmp_path)
 
     reader, writer = await asyncio.open_unix_connection(str(c.paths.socket))
-    writer.write(Request(op="ask", id=1, args={
-        "question": "may I write bench.c?", "block": True, "timeout": 60,
-    }).encode())
+    writer.write(
+        Request(
+            op="ask",
+            id=1,
+            args={
+                "question": "may I write bench.c?",
+                "block": True,
+                "timeout": 60,
+            },
+        ).encode()
+    )
     await writer.drain()
 
     pending = await _wait_for_approval(daemon)
@@ -1326,8 +1519,9 @@ async def test_a_second_request_on_the_same_connection_still_works(daemon, tmp_p
     reader, writer = await asyncio.open_unix_connection(str(c.paths.socket))
     try:
         # Both at once, so the second is already buffered while the first runs.
-        writer.write(Request(op="whoami", id=1).encode()
-                     + Request(op="cap.list", id=2).encode())
+        writer.write(
+            Request(op="whoami", id=1).encode() + Request(op="cap.list", id=2).encode()
+        )
         await writer.drain()
 
         first = Response.parse(await asyncio.wait_for(reader.readuntil(b"\n"), 5))
@@ -1344,10 +1538,14 @@ async def test_a_second_request_on_the_same_connection_still_works(daemon, tmp_p
 
 
 async def test_an_agent_can_broadcast_to_several_peers_at_once(daemon, tmp_path):
-    peers = {"caps": {"peers": [
-        {"container": "beta", "rights": ["send"]},
-        {"container": "gamma", "rights": ["send"]},
-    ]}}
+    peers = {
+        "caps": {
+            "peers": [
+                {"container": "beta", "rights": ["send"]},
+                {"container": "gamma", "rights": ["send"]},
+            ]
+        }
+    }
     await _serve(daemon, "alpha", tmp_path, **peers)
     await _serve(daemon, "beta", tmp_path)
     await _serve(daemon, "gamma", tmp_path)
@@ -1358,14 +1556,16 @@ async def test_an_agent_can_broadcast_to_several_peers_at_once(daemon, tmp_path)
 
     sent = await request(
         daemon.containers["alpha"].paths.socket,
-        "msg.broadcast", {"slots": slots, "payload": "build is green"},
+        "msg.broadcast",
+        {"slots": slots, "payload": "build is green"},
     )
     assert sent.ok
     assert sorted(sent.result["recipients"]) == ["beta", "gamma"]
 
     for name in ("beta", "gamma"):
-        got = await request(daemon.containers[name].paths.socket, "msg.recv",
-                            {"timeout": 0})
+        got = await request(
+            daemon.containers[name].paths.socket, "msg.recv", {"timeout": 0}
+        )
         assert got.result[0]["payload"] == "build is green"
 
 
@@ -1412,8 +1612,9 @@ async def test_message_payloads_are_only_recorded_when_asked_for(daemon, tmp_pat
 
 async def test_the_instance_can_be_named(state_dir, tmp_path):
     """Several capwraps run at once; the name is how their tabs stay tellable apart."""
-    d = Daemon(audit_path=Path(state_dir) / "audit.db",
-               instance_name="  FastPath HashTable  ")
+    d = Daemon(
+        audit_path=Path(state_dir) / "audit.db", instance_name="  FastPath HashTable  "
+    )
     try:
         assert d.instance_name == "FastPath HashTable"
         assert d.overview()["instance"] == "FastPath HashTable"
@@ -1438,11 +1639,19 @@ async def test_a_container_can_be_added_while_others_are_running(daemon, tmp_pat
     daemon.register(config("alpha", tmp_path))
     client = TestClient(create_app(daemon))
 
-    late = config("late", tmp_path, caps={"peers": [
-        {"container": "alpha", "rights": ["send"]},
-    ]})
-    body = {"config": json.loads(late.model_dump_json(exclude={"source_dir"})),
-            "start": False}
+    late = config(
+        "late",
+        tmp_path,
+        caps={
+            "peers": [
+                {"container": "alpha", "rights": ["send"]},
+            ]
+        },
+    )
+    body = {
+        "config": json.loads(late.model_dump_json(exclude={"source_dir"})),
+        "start": False,
+    }
 
     response = client.post("/api/containers", json=body)
     assert response.status_code == 200, response.text
@@ -1468,17 +1677,28 @@ async def test_a_container_added_late_is_reachable_from_the_ones_already_there(
     from capwrap.web.app import create_app
     from fastapi.testclient import TestClient
 
-    daemon.register(config("dev", tmp_path, caps={"peers": [
-        {"container": "reviewer", "rights": ["send"]},
-    ]}))
+    daemon.register(
+        config(
+            "dev",
+            tmp_path,
+            caps={
+                "peers": [
+                    {"container": "reviewer", "rights": ["send"]},
+                ]
+            },
+        )
+    )
     assert "peer:reviewer" not in {c.label for c in daemon.kernel.cap_list("dev")}
 
     client = TestClient(create_app(daemon))
     reviewer = config("reviewer", tmp_path)
-    client.post("/api/containers", json={
-        "config": json.loads(reviewer.model_dump_json(exclude={"source_dir"})),
-        "start": False,
-    })
+    client.post(
+        "/api/containers",
+        json={
+            "config": json.loads(reviewer.model_dump_json(exclude={"source_dir"})),
+            "start": False,
+        },
+    )
 
     assert "peer:reviewer" in {c.label for c in daemon.kernel.cap_list("dev")}
 
@@ -1497,12 +1717,19 @@ async def test_the_whole_session_is_replayed_to_a_browser_that_connects(
     from capwrap.web.app import create_app
     from fastapi.testclient import TestClient
 
-    daemon.register(config(
-        "chatty", tmp_path,
-        runtime={"command": ["/bin/bash", "-c",
-                             "for i in $(seq 1 400); do echo \"line $i\"; done; "
-                             "sleep 20"]},
-    ))
+    daemon.register(
+        config(
+            "chatty",
+            tmp_path,
+            runtime={
+                "command": [
+                    "/bin/bash",
+                    "-c",
+                    'for i in $(seq 1 400); do echo "line $i"; done; sleep 20',
+                ]
+            },
+        )
+    )
     await daemon.start("chatty")
     await asyncio.sleep(2.0)
 
@@ -1529,11 +1756,19 @@ async def test_a_replay_that_lost_its_head_says_so(
     """Silently showing a partial session as if it were the whole one is worse
     than showing less: the operator draws conclusions from what is not there."""
     monkeypatch.setattr(supervisor, "SCROLLBACK_BYTES", 8 * 1024)
-    daemon.register(config(
-        "noisy", tmp_path,
-        runtime={"command": ["/bin/bash", "-c",
-                             "head -c 60000 /dev/zero | tr '\\0' 'y'; sleep 20"]},
-    ))
+    daemon.register(
+        config(
+            "noisy",
+            tmp_path,
+            runtime={
+                "command": [
+                    "/bin/bash",
+                    "-c",
+                    "head -c 60000 /dev/zero | tr '\\0' 'y'; sleep 20",
+                ]
+            },
+        )
+    )
     container = await daemon.start("noisy")
     await asyncio.sleep(2.0)
     assert container.session.truncated

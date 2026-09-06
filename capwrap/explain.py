@@ -105,8 +105,12 @@ def build_prompt(approval: dict, container: dict | None = None) -> str:
             )
             parts.append(f"What it can see: {described}")
         parts.append(
-            "Network: " + ("the host's, unrestricted" if runtime.get("network")
-                           else "none, or only what its capabilities allow")
+            "Network: "
+            + (
+                "the host's, unrestricted"
+                if runtime.get("network")
+                else "none, or only what its capabilities allow"
+            )
         )
 
     parts.append(f"Tool it wants to use: {tool or 'unknown'}")
@@ -144,9 +148,7 @@ class Explainer:
     def forget(self, approval_id: int) -> dict | None:
         return self._cache.pop(approval_id, None)
 
-    async def explain(
-        self, approval: dict, container: dict | None = None
-    ) -> dict:
+    async def explain(self, approval: dict, container: dict | None = None) -> dict:
         approval_id = int(approval.get("id", 0))
         if (hit := self._cache.get(approval_id)) is not None:
             return {**hit, "cached": True}
@@ -175,12 +177,13 @@ class Explainer:
         # The system prompt rides inside the message: the harnesses disagree
         # about system-prompt flags, and the fencing works as the first thing
         # the model reads either way.
-        argv = agents.fill_explain_argv(
-            profile, f"{SYSTEM_PROMPT}\n\n{prompt}", model
-        )
+        argv = agents.fill_explain_argv(profile, f"{SYSTEM_PROMPT}\n\n{prompt}", model)
         try:
             run = subprocess.run(
-                argv, capture_output=True, text=True, timeout=self.timeout,
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
                 cwd="/tmp",  # a scratch dir: no project for a curious model to index
             )
         except FileNotFoundError:
