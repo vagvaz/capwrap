@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.util
 import json
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from ..config import load_config_data
+from ..config import load_config, load_config_data
 from ..daemon import OPERATOR, Daemon
 from ..errors import CapabilityError, CapwrapError
 from ..explain import ExplainError
@@ -36,6 +37,25 @@ from ..kernel.kernel import ROOT
 from ..kernel.rights import parse_rights
 
 STATIC = Path(__file__).resolve().parent / "static"
+
+#: The repo root, which is where examples/roles-and-personas/compose.py lives.
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+COMPOSE_PATH = REPO_ROOT / "examples" / "roles-and-personas" / "compose.py"
+
+
+def _load_compose():
+    """Import examples/roles-and-personas/compose.py without running its CLI.
+
+    The module is a script with a `main()` that calls `sys.exit()` on bad input,
+    so the web layer validates against its tables *before* calling `compose()`,
+    which is the only function that writes files.
+    """
+    spec = importlib.util.spec_from_file_location("capwrap_compose", COMPOSE_PATH)
+    if spec is None or spec.loader is None:
+        raise HTTPException(500, "compose.py could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 # --------------------------------------------------------------------------
@@ -105,6 +125,14 @@ class InputBody(BaseModel):
     data: str
 
 
+class SpawnBody(BaseModel):
+    """A role×persona×agent to build and run, as the operator."""
+
+    role: str
+    persona: str
+    agent: str = "claude"
+
+
 class ResizeBody(BaseModel):
     cols: int
     rows: int
@@ -135,7 +163,13 @@ def create_app(daemon: Daemon) -> FastAPI:
 
     @app.get("/api/containers")
     async def containers() -> list[dict]:
-        return [c.status() for c in daemon.containers.values()]
+        return [
+            {
+                **c.status(),
+                "pending_mail": daemon.mailboxes.get(c.name).pending,
+            }
+            for c in daemon.containers.values()
+        ]
 
     @app.get("/api/containers/{name}")
     async def container(name: str) -> dict:
@@ -160,6 +194,7 @@ def create_app(daemon: Daemon) -> FastAPI:
             },
             "caps": [cap.to_dict() for cap in daemon.kernel.cap_list(name)],
             "mailbox": [m.to_dict() for m in daemon.mailboxes.get(name).recent(50)],
+            "queued": [m.to_dict() for m in daemon.mailboxes.get(name).queued()],
             # The screen snapshot, not the byte log: the overview tiles need
             # what a TUI currently *shows*, which a replayed byte stream cannot
             # give you without a terminal emulator on the client side.
@@ -221,6 +256,10 @@ def create_app(daemon: Daemon) -> FastAPI:
                     **board.describe(),
                     "holders": daemon.kernel.board_holders(board.oid),
                     "recent": board.posts[-max(1, limit) :],
+                    # No per-operator "last seen" state exists, so unread is
+                    # pragmatically the whole topic: a dot that says "there is
+                    # something here you have not necessarily read".
+                    "unread": len(board.posts),
                 }
                 for board in daemon.kernel.boards()
             ],
@@ -278,6 +317,89 @@ def create_app(daemon: Daemon) -> FastAPI:
             await daemon.start(config.name)
         return {**container.status(), "started": body.start}
 
+    # ------------------------------------------------------------------
+    # compose & spawn -- build a role×persona config and run it
+    # ------------------------------------------------------------------
+
+    def _compose_options(module: Any) -> dict:
+        """The role/persona/agent choices compose.py knows about."""
+        return {
+            "roles": sorted(module.ROLES),
+            "personas": list(module.PERSONAS),
+            "agents": sorted(module.AGENT_SETUP),
+        }
+
+    def _validate_compose(module: Any, role: str, persona: str, agent: str) -> None:
+        """Check inputs against compose.py's tables before calling into it.
+
+        compose.compose() calls sys.exit() on bad input, which would take the
+        whole web process down with it, so the web layer validates first and
+        returns a clean 400 instead.
+        """
+        if role not in module.ROLES:
+            raise HTTPException(
+                400,
+                f"unknown role {role!r}; choose from {', '.join(sorted(module.ROLES))}",
+            )
+        if persona not in module.PERSONAS:
+            raise HTTPException(
+                400,
+                f"unknown persona {persona!r}; choose from {', '.join(module.PERSONAS)}",
+            )
+        if agent not in module.AGENT_SETUP:
+            raise HTTPException(
+                400,
+                f"unknown agent {agent!r}; choose from {', '.join(sorted(module.AGENT_SETUP))}",
+            )
+
+    @app.get("/api/compose/options")
+    async def compose_options() -> dict:
+        """What the spawn dialog can offer: every role, persona and agent."""
+        return _compose_options(_load_compose())
+
+    @app.get("/api/compose/preview")
+    async def compose_preview(role: str, persona: str, agent: str = "claude") -> dict:
+        """The TOML compose.py would generate, without starting anything.
+
+        compose() writes the config into examples/roles-and-personas/built/
+        (gitignored) and returns the path to it; we read that back for preview.
+        """
+        module = _load_compose()
+        _validate_compose(module, role, persona, agent)
+        path = module.compose(role, persona, agent)
+        return {
+            "role": role,
+            "persona": persona,
+            "agent": agent,
+            "name": path.stem,
+            "toml": path.read_text(),
+        }
+
+    @app.post("/api/spawn")
+    async def spawn(body: SpawnBody) -> dict:
+        """Build a role×persona config and run it, as the operator.
+
+        This is the same operator path as POST /api/containers -- an authority
+        grant from the human, not a kernel factory spawn -- so the newcomer is
+        registered under the operator and started like any other container.
+        """
+        module = _load_compose()
+        _validate_compose(module, body.role, body.persona, body.agent)
+        path = module.compose(body.role, body.persona, body.agent)
+
+        config = load_config(path)
+        if config.name in daemon.containers:
+            raise HTTPException(
+                409,
+                f"a container named {config.name} already exists; "
+                "dismiss it or pick a different role/persona/agent",
+            )
+
+        container = daemon.register(config)
+        daemon.link_all_peers()
+        await daemon.start(config.name)
+        return {**container.status(), "started": True}
+
     @app.post("/api/containers/{name}/start")
     async def start(name: str) -> dict:
         container = await daemon.start(name)
@@ -320,6 +442,18 @@ def create_app(daemon: Daemon) -> FastAPI:
     async def write_input(name: str, body: InputBody) -> dict:
         daemon.write_input(name, body.data)
         return {"wrote": len(body.data)}
+
+    @app.post("/api/containers/{name}/mailbox/{message_id}/discard")
+    async def discard_mail(name: str, message_id: int) -> dict:
+        """Drop one queued message without delivering it.
+
+        The operator's console offers this next to "nudge": a message posted by
+        mistake, or already handled out of band, should not keep sitting in the
+        agent's queue.
+        """
+        if not daemon.discard_mail(name, message_id):
+            raise HTTPException(404, f"no queued message {message_id} for {name}")
+        return {"container": name, "discarded": message_id}
 
     @app.post("/api/send")
     async def send(body: SendBody) -> dict:

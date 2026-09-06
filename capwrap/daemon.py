@@ -883,6 +883,18 @@ class Daemon:
             raise CapwrapError(f"{name} is not running")
         container.session.write(data)
 
+    def discard_mail(self, name: str, message_id: int) -> bool:
+        """Drop one queued message from a container's mailbox, undelivered.
+
+        The operator's console offers this alongside "nudge": a message that was
+        posted by mistake, or that the operator has already handled out of band,
+        should not keep sitting in the agent's queue. Returns whether a message
+        with that id was actually still waiting.
+        """
+        if name not in self.containers:
+            raise CapwrapError(f"no such container: {name}")
+        return self.mailboxes.get(name).discard(message_id)
+
     def read_output(self, name: str, rows: int) -> dict:
         """The target's current screen, as the capability kernel authorised.
 

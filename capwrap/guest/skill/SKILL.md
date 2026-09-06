@@ -53,7 +53,8 @@ capctl ask "May I add a dependency on requests?"
 Blocks until the operator answers in their console, then exits 0 for allow and
 non-zero for deny — so `capctl ask "..." && do-the-thing` does the right thing.
 Keep these rare and batched: one ask carrying several sub-questions beats five
-interrupts.
+interrupts. Batch multiple questions into a single ask rather than asking one
+at a time.
 
 ## Asking for a capability you do not have
 

@@ -116,6 +116,40 @@ class Mailbox:
     def recent(self, limit: int = 50) -> list[Message]:
         return list(self.history)[-limit:]
 
+    def queued(self) -> list[Message]:
+        """The messages still waiting to be received, in arrival order.
+
+        Distinct from `recent`, which is the *history* (delivered messages
+        included). The console's mailbox section shows what is still queued, so
+        the operator can nudge or discard exactly those.
+        """
+        out: list[Message] = []
+        while not self.queue.empty():
+            out.append(self.queue.get_nowait())
+        for message in out:
+            self.queue.put_nowait(message)
+        return out
+
+    def discard(self, message_id: int) -> bool:
+        """Remove a queued message without delivering it.
+
+        The operator's console offers this so a message that was posted by
+        mistake -- or that the operator has already dealt with out of band --
+        can be dropped rather than left to nag the agent. Only messages still
+        waiting in the queue are affected; one already received is gone.
+        """
+        removed = False
+        kept: list[Message] = []
+        while not self.queue.empty():
+            message = self.queue.get_nowait()
+            if message.id == message_id:
+                removed = True
+            else:
+                kept.append(message)
+        for message in kept:
+            self.queue.put_nowait(message)
+        return removed
+
     @property
     def pending(self) -> int:
         return self.queue.qsize()
