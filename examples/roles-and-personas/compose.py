@@ -23,11 +23,19 @@ pretending otherwise would be the whole mistake this example exists to avoid.
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
+import re
 import sys
+import urllib.parse
 
 HERE = pathlib.Path(__file__).resolve().parent
 BUILT = HERE / "built"
+
+#: The opencode config that decides which provider endpoints an agent actually
+#: calls. `network = "auto"` reads this to derive the exact holes to punch in
+#: an otherwise closed network, instead of handing over the host's whole stack.
+OPCODE_CONFIG_DIR = pathlib.Path("~/.config/opencode").expanduser()
 
 #: What a role may do, as capwrap and Claude both enforce it.
 #:
@@ -133,36 +141,42 @@ ROLES: dict[str, dict] = {
         "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
+        "network": "auto",
     },
     "refactorer": {
         "summary": "changes how it is written, not what it does",
         "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
+        "network": "auto",
     },
     "debugger": {
         "summary": "finds out why; may watch and drive another agent's terminal",
         "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
+        "network": "auto",
     },
     "performance-engineer": {
         "summary": "measures first; every claim has a before and an after",
         "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
+        "network": "auto",
     },
     "integrator": {
         "summary": "merges branches and keeps main working",
         "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
+        "network": "auto",
     },
     "build-engineer": {
         "summary": "owns the toolchain; needs the network, so says what it pulled in",
         "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
+        "network": "auto",
     },
     "technical-writer": {
         "summary": "writes the documentation; reads the source, changes none of it",
@@ -176,12 +190,14 @@ ROLES: dict[str, dict] = {
         "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
+        "network": "auto",
     },
     "tester": {
         "summary": "runs it and tries to break it; changes no source",
         "allow": ["Read", "Glob", "Grep", "Bash"],
         "deny": ["Write", "Edit", "Bash(sudo *)"],
         "work": "worktree",
+        "network": "auto",
     },
     # -- hold a factory ------------------------------------------------
     "manager": {
@@ -189,6 +205,7 @@ ROLES: dict[str, dict] = {
         "allow": ["Read", "Glob", "Grep", "Write", "TodoWrite"],
         "deny": ["Edit", "Bash(sudo *)"],
         "work": "worktree",
+        "network": "auto",
         "factory": {
             "containers": 3,
             "child_rights": ["send", "inspect", "read_output"],
@@ -199,6 +216,7 @@ ROLES: dict[str, dict] = {
         "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
+        "network": "auto",
         "factory": {
             "containers": 3,
             "child_rights": ["send", "inspect", "read_output", "write_input", "signal"],
@@ -209,6 +227,7 @@ ROLES: dict[str, dict] = {
         "allow": ["Read", "Glob", "Grep", "Write", "TodoWrite"],
         "deny": ["Edit", "Bash(sudo *)"],
         "work": "worktree",
+        "network": "auto",
         # Generous child_rights on purpose. A child's factory may only hand on
         # rights contained in its parent's, so this list is the ceiling for the
         # whole tree below this agent -- a sub-orchestrator cannot give its own
@@ -281,14 +300,42 @@ deny  = [{deny}]
 #: read-only-ness deny the mutating verbs outright.
 SHELL_DENYLIST = ["sudo *", "curl *", "wget *", "rm -rf *"]
 SHELL_READONLY = [
-    "ls*", "find*", "cat*", "grep*", "rg*", "head*", "tail*", "wc*", "sort*",
-    "uniq*", "diff*", "stat*", "file*", "tree*", "which*", "pwd", "echo*",
-    "cd*", "mkdir*", "node *",
+    "ls*",
+    "find*",
+    "cat*",
+    "grep*",
+    "rg*",
+    "head*",
+    "tail*",
+    "wc*",
+    "sort*",
+    "uniq*",
+    "diff*",
+    "stat*",
+    "file*",
+    "tree*",
+    "which*",
+    "pwd",
+    "echo*",
+    "cd*",
+    "mkdir*",
+    "node *",
 ]
-GIT_READONLY = ["git status*", "git log*", "git diff*", "git show*", "git branch --list*"]
+GIT_READONLY = [
+    "git status*",
+    "git log*",
+    "git diff*",
+    "git show*",
+    "git branch --list*",
+]
 GIT_MUTATING = [
-    "git commit*", "git push*", "git reset*", "git clean*", "git checkout*",
-    "git rebase*", "git merge*",
+    "git commit*",
+    "git push*",
+    "git reset*",
+    "git clean*",
+    "git checkout*",
+    "git rebase*",
+    "git merge*",
 ]
 CAPCTL_COMMS = ["capctl recv*", "capctl send*", "capctl ask*"]
 AMBIENT_SHELL = SHELL_READONLY + GIT_READONLY + CAPCTL_COMMS
@@ -347,15 +394,18 @@ AGENT_SETUP: dict[str, dict] = {
         "files": False,
     },
     "pi": {
-        "command": ["node", "/opt/pi/pi-agent/dist/cli.js", "--thinking", "high"],
+        # The system install (/usr/bin/pi), not ~/.local: a stale user-level
+        # copy left containers running an old pi that nagged about updates.
+        # /usr is already bound read-only into every sandbox.
+        "command": [
+            "node",
+            "/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+            "--thinking",
+            "high",
+        ],
         "native_permissions": False,
         "bash_tool": "bash",
         "mounts": [
-            (
-                "~/.local/lib/node_modules/@earendil-works/pi-coding-agent",
-                "/opt/pi/pi-agent",
-                "ro",
-            ),
             ("~/.pi/agent", "/home/agent/.pi/agent", "copy"),
         ],
         "env": ["OPENCODE_API_KEY"],
@@ -388,6 +438,170 @@ rights       = ["create"]
 quota        = {{ containers = {containers} }}
 child_rights = [{child_rights}]
 """
+
+
+def _strip_comments(text: str) -> str:
+    """Remove // and /* */ comments from JSONC, leaving strings intact."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_string = False
+    escape = False
+    while i < n:
+        ch = text[i]
+        if escape:
+            out.append(ch)
+            escape = False
+            i += 1
+            continue
+        if in_string:
+            out.append(ch)
+            if ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def parse_jsonc(text: str) -> dict:
+    """Parse JSONC (JSON with // and /* */ comments and trailing commas).
+
+    Tolerant on purpose: opencode configs are hand-edited and routinely carry
+    comments and trailing commas that strict JSON rejects. No new dependency --
+    comments are stripped and trailing commas removed before the stdlib parser
+    runs.
+    """
+    text = _strip_comments(text)
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    return json.loads(text)
+
+
+def _base_urls_from(data: dict) -> list[str]:
+    """Pull every provider entry's ``options.baseURL`` out of a parsed config."""
+    urls: list[str] = []
+    providers = data.get("provider")
+    if not isinstance(providers, dict):
+        return urls
+    for entry in providers.values():
+        if not isinstance(entry, dict):
+            continue
+        options = entry.get("options")
+        if not isinstance(options, dict):
+            continue
+        base = options.get("baseURL")
+        if isinstance(base, str) and base:
+            urls.append(base)
+    return urls
+
+
+def _referenced_presets(data: dict) -> list[str]:
+    """Names of config presets the main config points at (e.g. the ``plugin``
+    array), so their provider endpoints are folded in too."""
+    refs: list[str] = []
+    plugin = data.get("plugin")
+    if isinstance(plugin, list):
+        for p in plugin:
+            if isinstance(p, str) and p:
+                refs.append(p)
+    return refs
+
+
+def _opencode_config_path() -> pathlib.Path:
+    """The opencode config to read for auto-inference: opencode.json or, if
+    that is absent, opencode.jsonc."""
+    for name in ("opencode.json", "opencode.jsonc"):
+        candidate = OPCODE_CONFIG_DIR / name
+        if candidate.exists():
+            return candidate
+    return OPCODE_CONFIG_DIR / "opencode.json"
+
+
+def extract_base_urls(path: pathlib.Path) -> list[str]:
+    """Provider ``options.baseURL`` values from an opencode config and any
+    ``*.jsonc`` (or ``*.json``) presets it references.
+
+    Returns an empty list when the config is missing or unparseable -- the
+    caller treats that as "no endpoints found", never as "open the network".
+    """
+    path = pathlib.Path(path).expanduser()
+    if not path.exists():
+        return []
+    try:
+        data = parse_jsonc(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    urls = _base_urls_from(data)
+    for ref in _referenced_presets(data):
+        for candidate in (path.parent / f"{ref}.jsonc", path.parent / f"{ref}.json"):
+            if candidate.exists():
+                try:
+                    urls.extend(_base_urls_from(parse_jsonc(candidate.read_text())))
+                except (json.JSONDecodeError, OSError):
+                    pass
+    return urls
+
+
+def _host_port(url: str) -> tuple[str | None, int]:
+    """Split a base URL into (host, port), defaulting the port by scheme."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return None, 0
+    if not parsed.hostname:
+        return None, 0
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return parsed.hostname, port
+
+
+def _anchored_pattern(host: str, port: int) -> str:
+    """A NetRuleCap pattern: a regex over ``host:port``, anchored at both ends
+    and with the host's metacharacters escaped, so ``api.example.com:443``
+    cannot also match ``evil-api.example.com:443``."""
+    return rf"^{re.escape(host)}:{port}$"
+
+
+def endpoints_to_rules(base_urls: list[str]) -> list[dict]:
+    """Turn provider base URLs into NetRuleCap dicts, one per unique host:port.
+
+    Each rule is a single named hole in an otherwise closed network, matching
+    NetRuleCap's exact semantics (see capwrap/config.py): ``name`` plus an
+    anchored ``pattern`` over ``host:port``.
+    """
+    seen: set[tuple[str, int]] = set()
+    rules: list[dict] = []
+    for url in base_urls:
+        host, port = _host_port(url)
+        if host is None:
+            continue
+        key = (host, port)
+        if key in seen:
+            continue
+        seen.add(key)
+        rules.append(
+            {
+                "name": f"model-api-{len(rules) + 1}",
+                "pattern": _anchored_pattern(host, port),
+            }
+        )
+    return rules
 
 
 def quote(items: list[str]) -> str:
@@ -479,13 +693,19 @@ def compose(
         )
     else:
         if generous_shell:
-            auto_allow, auto_deny = ["*"], dedupe(
-                [*(f"bash({p})" for p in SHELL_DENYLIST), *retag(spec["deny"])]
+            auto_allow, auto_deny = (
+                ["*"],
+                dedupe([*(f"bash({p})" for p in SHELL_DENYLIST), *retag(spec["deny"])]),
             )
         else:
             auto_allow = dedupe(
-                ["read", "glob", "grep", *retag(spec["allow"]),
-                 *(f"bash({p})" for p in AMBIENT_SHELL)],
+                [
+                    "read",
+                    "glob",
+                    "grep",
+                    *retag(spec["allow"]),
+                    *(f"bash({p})" for p in AMBIENT_SHELL),
+                ],
                 key=str.lower,
             )
             auto_deny = dedupe(
@@ -498,6 +718,34 @@ def compose(
                     key=str.lower,
                 )
         permissions = ""
+
+    # -- network ---------------------------------------------------------
+    # True/False keep today's exact behaviour: `network = true` hands over the
+    # host's whole stack, `false` (or absent) is a closed network. "auto" opts
+    # into the capability proxy instead: it derives the provider endpoints the
+    # agent will actually call from the opencode config and emits one
+    # [[caps.network]] rule per unique host:port -- visible in the TOML, never
+    # applied silently. If nothing is found it emits no rules and a comment,
+    # rather than silently opening the network.
+    network_mode = spec.get("network", True)
+    if network_mode == "auto":
+        network_line = "false"
+        rules = endpoints_to_rules(extract_base_urls(_opencode_config_path()))
+        if rules:
+            caps_network = "\n" + "\n".join(
+                f'[[caps.network]]\nname    = "{r["name"]}"\n'
+                f"pattern = '{r['pattern']}'\n"
+                for r in rules
+            )
+        else:
+            caps_network = (
+                "\n# auto-inference found no provider endpoints in the opencode "
+                "config, so no [[caps.network]] rules were emitted.\n"
+            )
+    else:
+        network_line = str(network_mode).lower()
+        caps_network = ""
+
     config = TEMPLATE.format(
         role=role,
         persona=persona,
@@ -509,17 +757,20 @@ def compose(
         auto_allow=quote(auto_allow),
         auto_deny=quote(auto_deny),
         permissions=permissions,
-        network=str(spec.get("network", True)).lower(),
+        network=network_line,
         mounts=mounts,
         files=files,
         work=(WORKTREE.format(name=name) if spec["work"] == "worktree" else NO_REPO),
         caps=(
-            FACTORY.format(
-                containers=factory["containers"],
-                child_rights=quote(factory["child_rights"]),
+            (
+                FACTORY.format(
+                    containers=factory["containers"],
+                    child_rights=quote(factory["child_rights"]),
+                )
+                if factory
+                else ""
             )
-            if factory
-            else ""
+            + caps_network
         ),
     )
     path = BUILT / f"{fname}.toml"
