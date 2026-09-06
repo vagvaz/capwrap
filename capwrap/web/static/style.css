@@ -949,3 +949,120 @@ button:disabled {
   padding: 14px;
   max-width: 62ch;
 }
+
+/* ---------------------------------------------------------------- mailbox */
+/* The operator's view of one container's queued messages: what is still
+   waiting, with a nudge (type a reminder into its terminal) and a discard
+   (drop it without delivering). */
+.mailbox {
+  flex: 0 0 auto;
+  max-height: 40%;
+  overflow-y: auto;
+  padding: 8px 12px;
+  background: var(--bg-inset);
+  border-bottom: 1px solid var(--border);
+}
+.mailbox-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.mailbox-head .mono {
+  font-size: 12px;
+}
+.mailbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mailbox-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+}
+.mailbox-item .from {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+.mailbox-item .body {
+  flex: 1 1 auto;
+  word-break: break-word;
+  min-width: 0;
+}
+.mailbox-item .actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+/* ---------------------------------------------------------------- modal */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal[hidden] {
+  display: none;
+}
+.modal-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  width: min(680px, 92vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.spawn-body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+.spawn-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.spawn-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.spawn-row select {
+  min-width: 160px;
+}
+.spawn-preview pre {
+  margin: 4px 0 0;
+  max-height: 40vh;
+  overflow: auto;
+}
+.spawn-error {
+  color: var(--danger);
+  font-size: 12.5px;
+  border: 1px solid var(--danger);
+  border-radius: 4px;
+  padding: 8px;
+  background: var(--bg-inset);
+}
+.spawn-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

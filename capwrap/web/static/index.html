@@ -19,6 +19,13 @@
       <div class="topbar-right">
         <span id="conn" class="pill pill-warn">connecting…</span>
         <button
+          id="btn-spawn"
+          class="ghost"
+          title="Build and run a role × persona agent"
+        >
+          Spawn
+        </button>
+        <button
           id="layout-reset"
           class="ghost"
           title="Put the panels back where they started"
@@ -73,6 +80,7 @@
             <button id="btn-interrupt" class="ghost">Interrupt</button>
             <button id="btn-stop" class="ghost danger">Stop</button>
           </div>
+          <div id="mailbox" class="mailbox" hidden></div>
           <div id="terminal" class="terminal-host"></div>
         </div>
 
@@ -193,6 +201,42 @@
         <div id="messages" class="messages"></div>
       </aside>
     </main>
+
+    <!-- Spawn dialog: pick a role × persona × agent, preview the config, run it. -->
+    <div id="spawn-dialog" class="modal" hidden>
+      <div class="modal-card">
+        <div class="panel-head">
+          <span class="mono">Spawn an agent</span>
+          <span class="spacer"></span>
+          <button id="spawn-close" class="ghost" title="Close">×</button>
+        </div>
+        <div class="spawn-body">
+          <div class="spawn-row">
+            <label
+              >Role
+              <select id="spawn-role" required></select>
+            </label>
+            <label
+              >Persona
+              <select id="spawn-persona" required></select>
+            </label>
+            <label
+              >Agent
+              <select id="spawn-agent" required></select>
+            </label>
+          </div>
+          <div class="spawn-preview">
+            <div class="muted small">Config preview</div>
+            <pre id="spawn-preview" class="trace-payload">Loading…</pre>
+          </div>
+          <div id="spawn-error" class="spawn-error" hidden></div>
+          <div class="spawn-actions">
+            <button id="spawn-cancel" class="ghost">Cancel</button>
+            <button id="spawn-submit" class="primary">Spawn</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <script src="/static/vendor/xterm.js"></script>
     <script src="/static/vendor/addon-fit.js"></script>

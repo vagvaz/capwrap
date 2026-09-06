@@ -752,6 +752,98 @@ async function select(name, { focusTerminal = false } = {}) {
   renderTree();
   openTerminal(name);
   await loadCaps(name);
+  await loadMailbox(name);
+}
+
+// ------------------------------------------------------------------ mailbox
+
+// The selected container's queued messages, so the operator can nudge the agent
+// to read them or discard one that was posted by mistake.
+let mailbox = [];
+
+async function loadMailbox(name) {
+  try {
+    const detail = await api(`/api/containers/${name}`);
+    mailbox = detail.queued || [];
+  } catch (_) {
+    mailbox = [];
+  }
+  renderMailbox();
+}
+
+function renderMailbox() {
+  const host = $("mailbox");
+  if (!state.selected) {
+    host.hidden = true;
+    return;
+  }
+  if (!mailbox.length) {
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  host.innerHTML = `
+    <div class="mailbox-head">
+      <span class="mono">Mailbox</span>
+      <span class="muted small">${mailbox.length} queued</span>
+      <span class="spacer"></span>
+      <button class="ghost small" data-nudge-all>Nudge</button>
+    </div>
+    <div class="mailbox-list">
+      ${mailbox
+        .map(
+          (m) => `
+        <div class="mailbox-item" data-id="${m.id}">
+          <span class="from">${escapeHtml(m.from)}</span>
+          <span class="body">${escapeHtml(payloadText(m.payload))}</span>
+          <span class="actions">
+            <button class="ghost small" data-nudge="${m.id}">Nudge</button>
+            <button class="ghost small danger" data-discard="${m.id}">Discard</button>
+          </span>
+        </div>`,
+        )
+        .join("")}
+    </div>`;
+
+  const nudge = async (id) => {
+    const count = id ? 1 : mailbox.length;
+    const message =
+      `You have ${count} unread operator message${count === 1 ? "" : "s"} — ` +
+      "read them with `capctl recv`.";
+    try {
+      // The input endpoint types into the PTY; a terminal needs Enter as \r.
+      await api(`/api/containers/${state.selected}/input`, {
+        method: "POST",
+        body: JSON.stringify({ data: message + "\r" }),
+      });
+    } catch (err) {
+      alert(`Could not nudge ${state.selected}: ${err.message}`);
+    }
+  };
+
+  host
+    .querySelectorAll("[data-nudge]")
+    .forEach((b) =>
+      b.addEventListener("click", () => nudge(Number(b.dataset.nudge))),
+    );
+  host
+    .querySelector("[data-nudge-all]")
+    .addEventListener("click", () => nudge(null));
+
+  host.querySelectorAll("[data-discard]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const id = Number(b.dataset.discard);
+      try {
+        await api(`/api/containers/${state.selected}/mailbox/${id}/discard`, {
+          method: "POST",
+        });
+        mailbox = mailbox.filter((m) => m.id !== id);
+        renderMailbox();
+      } catch (err) {
+        alert(`Could not discard message ${id}: ${err.message}`);
+      }
+    }),
+  );
 }
 
 // ------------------------------------------------------------------ caps
@@ -1852,6 +1944,98 @@ async function refreshOverview() {
   if (state.selected) loadCaps(state.selected);
 }
 
+// ------------------------------------------------------------------ spawn
+
+// The role/persona/agent choices for the spawn dialog, and the current preview.
+let spawnOptions = { roles: [], personas: [], agents: [] };
+let spawnPreviewTimer = null;
+
+function openSpawnDialog() {
+  $("spawn-dialog").hidden = false;
+  $("spawn-error").hidden = true;
+  loadSpawnOptions();
+}
+
+function closeSpawnDialog() {
+  $("spawn-dialog").hidden = true;
+  clearTimeout(spawnPreviewTimer);
+}
+
+async function loadSpawnOptions() {
+  try {
+    spawnOptions = await api("/api/compose/options");
+  } catch (err) {
+    $("spawn-error").textContent = `Could not load options: ${err.message}`;
+    $("spawn-error").hidden = false;
+    return;
+  }
+  const fill = (id, values) => {
+    const select = $(id);
+    select.innerHTML = values
+      .map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`)
+      .join("");
+  };
+  fill("spawn-role", spawnOptions.roles);
+  fill("spawn-persona", spawnOptions.personas);
+  fill("spawn-agent", spawnOptions.agents);
+  refreshSpawnPreview();
+}
+
+function refreshSpawnPreview() {
+  clearTimeout(spawnPreviewTimer);
+  spawnPreviewTimer = setTimeout(async () => {
+    const role = $("spawn-role").value;
+    const persona = $("spawn-persona").value;
+    const agent = $("spawn-agent").value;
+    if (!role || !persona || !agent) return;
+    $("spawn-preview").textContent = "Loading…";
+    try {
+      const data = await api(
+        `/api/compose/preview?role=${encodeURIComponent(role)}` +
+          `&persona=${encodeURIComponent(persona)}` +
+          `&agent=${encodeURIComponent(agent)}`,
+      );
+      $("spawn-preview").textContent = data.toml;
+      $("spawn-error").hidden = true;
+    } catch (err) {
+      $("spawn-preview").textContent = "";
+      $("spawn-error").textContent = err.message;
+      $("spawn-error").hidden = false;
+    }
+  }, 150);
+}
+
+function wireSpawn() {
+  $("btn-spawn").addEventListener("click", openSpawnDialog);
+  $("spawn-close").addEventListener("click", closeSpawnDialog);
+  $("spawn-cancel").addEventListener("click", closeSpawnDialog);
+  $("spawn-dialog").addEventListener("click", (event) => {
+    if (event.target === $("spawn-dialog")) closeSpawnDialog();
+  });
+
+  for (const id of ["spawn-role", "spawn-persona", "spawn-agent"]) {
+    $(id).addEventListener("change", refreshSpawnPreview);
+  }
+
+  $("spawn-submit").addEventListener("click", async () => {
+    const role = $("spawn-role").value;
+    const persona = $("spawn-persona").value;
+    const agent = $("spawn-agent").value;
+    $("spawn-error").hidden = true;
+    try {
+      await api("/api/spawn", {
+        method: "POST",
+        body: JSON.stringify({ role, persona, agent }),
+      });
+      closeSpawnDialog();
+      await refreshOverview();
+    } catch (err) {
+      $("spawn-error").textContent = err.message;
+      $("spawn-error").hidden = false;
+    }
+  });
+}
+
 // ------------------------------------------------------------------ wiring
 
 function wire() {
@@ -1922,6 +2106,7 @@ function wire() {
 
   wireGrant();
   wireTrace();
+  wireSpawn();
 }
 
 // A hidden tab should cost nothing; browsers throttle timers but still run them.
