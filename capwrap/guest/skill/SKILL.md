@@ -33,14 +33,27 @@ were not given that authority; do not try to work around it, ask the operator.
 
 ## Asking the human
 
+Two different things need two different channels.
+
+**A conversation** — design questions, a grill, clarifications, anything with
+more than a yes or a no in it: stay in your own harness. End your turn with
+the questions, numbered, and the operator answers right here in your terminal.
+On claude, `AskUserQuestion` does the same natively — capwrap lets it through
+untouched, so its picker renders in this terminal. Do **not** route a
+conversation through `capctl ask`: the operator's queue is for permissions,
+and a design discussion there becomes a pile of cards nobody can answer well.
+
+**A decision** — you are mid-task, blocked on a yes/no, and ending your turn
+would lose the work in flight:
+
 ```
 capctl ask "May I add a dependency on requests?"
 ```
 
 Blocks until the operator answers in their console, then exits 0 for allow and
 non-zero for deny — so `capctl ask "..." && do-the-thing` does the right thing.
-Use this whenever you are about to do something you are not sure is wanted.
-The operator sees every agent's questions in one queue, so asking is cheap.
+Keep these rare and batched: one ask carrying several sub-questions beats five
+interrupts.
 
 ## Asking for a capability you do not have
 

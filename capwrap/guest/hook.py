@@ -175,36 +175,6 @@ def ask_operator(question: str, context: dict) -> dict:
     return reply.get("result") or {}
 
 
-def _questions(tool_input: dict) -> list[dict]:
-    """The AskUserQuestion payload, reduced to what the console renders.
-
-    Copied out field by field rather than passed through whole: the operator
-    console displays this, and it should show what the tool actually asked even
-    if the tool's schema grows fields capwrap knows nothing about.
-    """
-    out: list[dict] = []
-    for raw in tool_input.get("questions") or []:
-        if not isinstance(raw, dict):
-            continue
-        options = [
-            {
-                "label": str(o.get("label", "")),
-                "description": str(o.get("description", "")),
-            }
-            for o in (raw.get("options") or [])
-            if isinstance(o, dict)
-        ]
-        out.append(
-            {
-                "header": str(raw.get("header", "")),
-                "question": str(raw.get("question", "")),
-                "multi_select": bool(raw.get("multiSelect")),
-                "options": options,
-            }
-        )
-    return out
-
-
 def main() -> None:
     try:
         event: dict[str, Any] = json.load(sys.stdin)
@@ -221,6 +191,13 @@ def main() -> None:
     if matches(policy.get("allow", []), tool, summary):
         respond("allow", f"capwrap policy allows {tool}")
 
+    if tool == "AskUserQuestion":
+        # Not a permission: the agent asking its human a question. Diverting it
+        # to the queue turned a conversation into approval cards; the picker
+        # belongs in this agent's own terminal, where the operator answers it
+        # natively. Allow it through untouched.
+        respond("allow", "questions are conversation, not permission")
+
     container = os.environ.get("CAPWRAP_CONTAINER", "?")
     question = f"{tool}: {summary}" if summary else f"run {tool}"
 
@@ -231,14 +208,6 @@ def main() -> None:
         "cwd": event.get("cwd"),
         "session": event.get("session_id"),
     }
-    if tool == "AskUserQuestion":
-        # Flagged, because this one is not a permission at all. Allowing it only
-        # draws the picker in *this agent's* terminal, where someone still has
-        # to answer it with the arrow keys -- so the console needs to show the
-        # choices and offer to take the operator there, rather than presenting
-        # the usual allow/deny pair as if that settled anything.
-        context["kind"] = "user_question"
-        context["questions"] = _questions(tool_input)
 
     try:
         result = ask_operator(question, context)
