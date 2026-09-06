@@ -528,8 +528,7 @@ def test_opencode_merge_sets_instructions_when_the_user_has_none(tmp_path):
 def _pinned_agents(model: str) -> dict:
     """Every agent a model-pinned opencode config carries, on the pin."""
     return {
-        name: {"model": model}
-        for name in ("build", "plan", "general", "orchestrator")
+        name: {"model": model} for name in ("build", "plan", "general", "orchestrator")
     }
 
 

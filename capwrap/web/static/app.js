@@ -732,7 +732,13 @@ function openTerminal(name) {
         term.writeln(`\r\n\x1b[33m${payload.message}\x1b[0m`);
       return;
     }
+    // Stick to the bottom while streaming, but respect a operator who
+    // scrolled up to read history: only re-pin when the viewport already
+    // sat at the bottom before this chunk arrived.
+    const b = term.buffer.active;
+    const pinned = b.viewportY >= b.baseY - 1;
     term.write(new Uint8Array(event.data));
+    if (pinned) term.scrollToBottom();
   };
   socket.onopen = () => setTimeout(syncTerminalSize, 30);
   socket.onclose = () => {
