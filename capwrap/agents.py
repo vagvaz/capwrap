@@ -416,8 +416,13 @@ def _opencode_settings(profile: AgentProfile, config: ContainerConfig) -> Inject
         # opencode v2 migrates the legacy top-level `model` but its built-in
         # agents (Build, Plan, ...) pin their own model and ignore it, so the
         # per-agent pin is what actually selects the model there.  v1 reads
-        # both; the agent entry wins there too.
-        settings["agent"] = {"build": {"model": config.runtime.model}}
+        # both; the agent entry wins there too.  Seed the known built-ins:
+        # a session can start under any of them, and a pin that covers only
+        # `build` is how a session ends up on a model nobody chose.
+        settings["agent"] = {
+            name: {"model": config.runtime.model}
+            for name in ("build", "plan", "general", "orchestrator")
+        }
 
     assert profile.settings_path is not None, "opencode encoder implies a settings file"
     user = _read_user_settings(config, profile.settings_path)
@@ -439,6 +444,14 @@ def _opencode_settings(profile: AgentProfile, config: ContainerConfig) -> Inject
                     entry = dict(agents.get(name) or {})
                     entry.update(patch if isinstance(patch, dict) else {})
                     agents[name] = entry
+                # The operator's model pin is container-wide: every agent the
+                # merged config defines runs on it, whatever that agent's own
+                # definition or a plugin default says.  The operator pins the
+                # container, not one entry point into it.
+                if isinstance(merged.get("model"), str):
+                    for entry in agents.values():
+                        if isinstance(entry, dict):
+                            entry["model"] = merged["model"]
                 merged["agent"] = agents
             else:
                 merged[key] = value

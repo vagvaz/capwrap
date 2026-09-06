@@ -484,6 +484,37 @@ def test_opencode_merge_appends_instructions_to_the_user_array(tmp_path):
     }
 
 
+def test_opencode_model_pin_covers_every_agent(tmp_path):
+    """The operator's model pin is container-wide.
+
+    A session can start under any agent -- build, plan, or one a plugin
+    defines -- and opencode v2's agents ignore the top-level model.  A pin
+    that reached only `build` let a grill session run on a Zen-hosted model
+    nobody configured; every agent in the merged config gets the pin.
+    """
+    config, src = _opencode_config(tmp_path, model="opencode-go/glm-5.3-flash")
+    (src / "opencode.json").write_text(
+        json.dumps(
+            {
+                "model": "zen/gpt-6-astra",
+                "agent": {
+                    "orchestrator": {"model": "zen/gpt-6-astra", "prompt": "grill"},
+                    "oracle": {"mode": "subagent", "model": "zen/gpt-6-astra"},
+                },
+            }
+        )
+    )
+    settings = _opencode_settings(config)
+    assert settings["model"] == "opencode-go/glm-5.3-flash"
+    assert settings["agent"]["build"]["model"] == "opencode-go/glm-5.3-flash"
+    assert settings["agent"]["plan"]["model"] == "opencode-go/glm-5.3-flash"
+    assert settings["agent"]["orchestrator"]["model"] == "opencode-go/glm-5.3-flash"
+    assert settings["agent"]["oracle"]["model"] == "opencode-go/glm-5.3-flash"
+    # the agent's own non-model fields survive the pin
+    assert settings["agent"]["orchestrator"]["prompt"] == "grill"
+    assert settings["agent"]["oracle"]["mode"] == "subagent"
+
+
 def test_opencode_merge_sets_instructions_when_the_user_has_none(tmp_path):
     config, src = _opencode_config(tmp_path, role_prompt="role.md")
     _role(tmp_path)
@@ -494,12 +525,20 @@ def test_opencode_merge_sets_instructions_when_the_user_has_none(tmp_path):
     }
 
 
+def _pinned_agents(model: str) -> dict:
+    """Every agent a model-pinned opencode config carries, on the pin."""
+    return {
+        name: {"model": model}
+        for name in ("build", "plan", "general", "orchestrator")
+    }
+
+
 def test_opencode_merge_model_overrides_the_user_model(tmp_path):
     config, src = _opencode_config(tmp_path, model="opencode-go/glm-5.3-flash")
     (src / "opencode.json").write_text(json.dumps({"model": "old"}))
     assert _opencode_settings(config) == {
         "model": "opencode-go/glm-5.3-flash",
-        "agent": {"build": {"model": "opencode-go/glm-5.3-flash"}},
+        "agent": _pinned_agents("opencode-go/glm-5.3-flash"),
     }
 
 
@@ -509,13 +548,15 @@ def test_opencode_merge_preserves_user_config_and_adds_model(tmp_path):
     assert _opencode_settings(config) == {
         "provider": {"x": {}},
         "model": "opencode-go/glm-5.3-flash",
-        "agent": {"build": {"model": "opencode-go/glm-5.3-flash"}},
+        "agent": _pinned_agents("opencode-go/glm-5.3-flash"),
     }
 
 
 def test_opencode_merge_agent_pin_lands_inside_the_user_agent_block(tmp_path):
     """v2 ignores the legacy top-level model for built-in agents; the per-agent
-    pin merges into the user's agent block without discarding their agents."""
+    pin merges into the user's agent block without discarding their agents --
+    and the operator's pin wins over any per-agent model, because it pins the
+    container, not one entry point into it."""
     config, src = _opencode_config(tmp_path, model="opencode-go/glm-5.3-flash")
     (src / "opencode.json").write_text(
         json.dumps(
@@ -524,13 +565,10 @@ def test_opencode_merge_agent_pin_lands_inside_the_user_agent_block(tmp_path):
             }
         )
     )
-    assert _opencode_settings(config) == {
-        "model": "opencode-go/glm-5.3-flash",
-        "agent": {
-            "orchestrator": {"model": "opencode/glm-5.3-flash"},
-            "build": {"model": "opencode-go/glm-5.3-flash"},
-        },
-    }
+    settings = _opencode_settings(config)
+    assert settings["model"] == "opencode-go/glm-5.3-flash"
+    assert settings["agent"]["orchestrator"]["model"] == "opencode-go/glm-5.3-flash"
+    assert settings["agent"]["build"]["model"] == "opencode-go/glm-5.3-flash"
 
 
 def test_opencode_merge_unparseable_user_file_is_a_config_error(tmp_path):
@@ -609,7 +647,7 @@ def test_opencode_model_lands_in_a_fresh_file_without_a_mount(tmp_path):
     config = _config(tmp_path, agent="opencode2", model="opencode-go/glm-5.3-flash")
     assert _opencode_settings(config) == {
         "model": "opencode-go/glm-5.3-flash",
-        "agent": {"build": {"model": "opencode-go/glm-5.3-flash"}},
+        "agent": _pinned_agents("opencode-go/glm-5.3-flash"),
     }
 
 
