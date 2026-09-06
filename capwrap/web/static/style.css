@@ -332,6 +332,15 @@ h2:first-child {
   font-family: var(--mono);
   font-size: 13px;
 }
+.mail-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  color: var(--text);
+  white-space: nowrap;
+}
 .node .meta {
   margin-left: auto;
   font-size: 11px;
