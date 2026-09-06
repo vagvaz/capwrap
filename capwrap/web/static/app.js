@@ -459,11 +459,18 @@ function renderTree() {
       live.exit_code !== null && live.exit_code !== undefined
         ? `exit ${live.exit_code}`
         : `${entry.caps ?? 0} caps`;
+    // Unread operator messages: one number per container, from the list
+    // payload. Hidden entirely at zero so a quiet mailbox stays quiet.
+    const mail =
+      live.pending_mail > 0
+        ? `<span class="mail-badge" title="${live.pending_mail} queued message(s) — open the container to read or discard">✉ ${live.pending_mail}</span>`
+        : "";
     return `
       <div>
         <div class="node${selected}" data-name="${escapeHtml(entry.name)}">
           <span class="dot ${status}"></span>
           <span class="name">${escapeHtml(entry.name)}</span>
+          ${mail}
           <span class="meta">${escapeHtml(exit)}</span>
           ${dismiss}
         </div>
