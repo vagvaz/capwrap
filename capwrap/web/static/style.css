@@ -845,6 +845,13 @@ button:disabled {
   padding: 8px;
   margin-bottom: 8px;
 }
+.approval .reply-text {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  margin: 4px 0 8px;
+  font-size: 12.5px;
+}
 .approval .ask + .ask {
   margin-top: -2px;
 }
