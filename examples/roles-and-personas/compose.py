@@ -271,10 +271,36 @@ ask   = ["WebFetch"]
 deny  = [{deny}]
 """
 
-#: What each agent needs to run: the command that starts it, the mounts that
-#: bring its binary and config into the sandbox, and the host env vars that
-#: carry its credentials.  The role table above is agent-agnostic -- this is
-#: the only per-agent part, and `--agent` switches it.
+#: Shell posture for generated configs. The sandbox and the kernel's capability
+#: checks are the real enforcement; the tool gate exists to keep the operator's
+#: approval queue meaningful. So the default is a generous shell bounded by a
+#: hard denylist -- an agent that needs `find` or `capctl recv` should not have
+#: to ask -- and only the roles whose value depends on read-only-ness keep an
+#: enumerated, mutating-denied shell.
+SHELL_DENYLIST = ["sudo *", "curl *", "wget *", "rm -rf *"]
+SHELL_READONLY = [
+    "ls*", "find*", "cat*", "grep*", "rg*", "head*", "tail*", "wc*", "sort*",
+    "uniq*", "diff*", "stat*", "file*", "tree*", "which*", "pwd", "echo*",
+    "cd*", "mkdir*", "node *",
+]
+GIT_READONLY = ["git status*", "git log*", "git diff*", "git show*", "git branch --list*"]
+GIT_MUTATING = [
+    "git commit*", "git push*", "git reset*", "git clean*", "git checkout*",
+    "git rebase*", "git merge*",
+]
+CAPCTL_COMMS = ["capctl recv*", "capctl send*", "capctl ask*"]
+
+#: Roles whose guarantee IS read-only-ness; every other role gets the generous
+#: shell. (Their Write/Edit restrictions still hold -- only the shell is
+#: liberalised, and the sandbox bounds what it can reach.)
+READONLY_SHELL_ROLES = {"reviewer", "security-reviewer"}
+
+#: What each agent needs to run: the command that starts it, the tool name its
+#: shell gate answers to (they disagree: claude says Bash, opencode v2 renamed
+#: it Shell, pi is lowercase), the mounts that bring its binary and config into
+#: the sandbox, and the host env vars that carry its credentials.  The role
+#: table above is agent-agnostic -- this is the only per-agent part, and
+#: `--agent` switches it.
 #:
 #: `command` is required: `runtime.command` defaults to a bare shell, which is
 #: never what a role container means.  `native_permissions` marks agents whose
@@ -286,6 +312,7 @@ AGENT_SETUP: dict[str, dict] = {
     "claude": {
         "command": ["/opt/claude/claude"],
         "native_permissions": True,
+        "bash_tool": "Bash",
         "mounts": [
             ("~/.local/bin/claude", "/opt/claude/claude", "ro"),
             ("~/.claude", "/home/agent/.claude", "copy"),
@@ -296,6 +323,7 @@ AGENT_SETUP: dict[str, dict] = {
     "opencode": {
         "command": ["/opt/opencode/opencode"],
         "native_permissions": True,
+        "bash_tool": "Bash",
         "mounts": [
             ("~/.opencode/bin", "/opt/opencode", "ro"),
             ("~/.config/opencode", "/home/agent/.config/opencode", "copy"),
@@ -307,6 +335,7 @@ AGENT_SETUP: dict[str, dict] = {
     "opencode2": {
         "command": ["/opt/opencode/opencode2", "--standalone"],
         "native_permissions": True,
+        "bash_tool": "Shell",
         "mounts": [
             ("~/.opencode/bin", "/opt/opencode", "ro"),
             ("~/.config/opencode2", "/home/agent/.config/opencode2", "copy"),
@@ -318,6 +347,7 @@ AGENT_SETUP: dict[str, dict] = {
     "pi": {
         "command": ["node", "/opt/pi/pi-agent/dist/cli.js", "--thinking", "high"],
         "native_permissions": False,
+        "bash_tool": "bash",
         "mounts": [
             (
                 "~/.local/lib/node_modules/@earendil-works/pi-coding-agent",
@@ -362,10 +392,10 @@ def quote(items: list[str]) -> str:
     return ", ".join(f'"{item}"' for item in items)
 
 
-def dedupe(items: list[str]) -> list[str]:
+def dedupe(items: list[str], key=lambda x: x) -> list[str]:
     """First occurrence wins, order preserved."""
-    seen: set[str] = set()
-    return [x for x in items if not (x in seen or seen.add(x))]
+    seen: set = set()
+    return [x for x in items if not (key(x) in seen or seen.add(key(x)))]
 
 
 def compose(role: str, persona: str, agent: str = "claude") -> pathlib.Path:
@@ -416,16 +446,44 @@ def compose(role: str, persona: str, agent: str = "claude") -> pathlib.Path:
     )
 
     factory = spec.get("factory")
+    bash_tool = setup["bash_tool"]
+
+    def retag(rules: list[str]) -> list[str]:
+        """Role tables are written in claude's vocabulary; retag shell rules
+        to whichever tool name this agent's gate answers to."""
+        return [f"{bash_tool}{r[4:]}" if r.startswith("Bash(") else r for r in rules]
+
+    readonly_shell = role in READONLY_SHELL_ROLES
     if setup["native_permissions"]:
         auto_allow, auto_deny = ["Read", "Glob", "Grep", "TodoWrite"], ["Bash(sudo *)"]
+        allow, deny = retag(spec["allow"]), retag(spec["deny"])
+        if readonly_shell:
+            # Read-only-ness is the point: enumerated shell, mutations denied.
+            deny += [f"{bash_tool}({p})" for p in GIT_MUTATING]
+        else:
+            # Generous shell, bounded by the denylist; the sandbox is the
+            # enforcement, the queue is for things that deserve a human.
+            allow = [bash_tool, *allow]
+            deny += [f"{bash_tool}({p})" for p in SHELL_DENYLIST]
         permissions = NATIVE_PERMISSIONS.format(
-            allow=quote(spec["allow"]), deny=quote(spec["deny"])
+            allow=quote(dedupe(allow)), deny=quote(dedupe(deny))
         )
     else:
-        # No native permission system: the role's rules fold into the
-        # auto-allow/auto-deny tables, which the daemon enforces instead.
-        auto_allow = dedupe(["Read", "Glob", "Grep", "TodoWrite", *spec["allow"]])
-        auto_deny = dedupe(["Bash(sudo *)", *spec["deny"]])
+        if readonly_shell:
+            auto_allow = dedupe(
+                ["read", "glob", "grep", *retag(spec["allow"]),
+                *(f"bash({p})" for p in SHELL_READONLY + GIT_READONLY + CAPCTL_COMMS)],
+                key=str.lower,
+            )
+            auto_deny = dedupe(
+                [*(f"bash({p})" for p in SHELL_DENYLIST + GIT_MUTATING),
+                 *retag(spec["deny"])],
+                key=str.lower,
+            )
+        else:
+            auto_allow, auto_deny = ["*"], dedupe(
+                [*(f"bash({p})" for p in SHELL_DENYLIST), *retag(spec["deny"])]
+            )
         permissions = ""
     config = TEMPLATE.format(
         role=role,
