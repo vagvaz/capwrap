@@ -341,6 +341,63 @@ GIT_MUTATING = [
 CAPCTL_COMMS = ["capctl recv*", "capctl send*", "capctl ask*"]
 AMBIENT_SHELL = SHELL_READONLY + GIT_READONLY + CAPCTL_COMMS
 
+#: Roles whose real work is building and changing the tree: their shell grant
+#: adds the dev toolchain and the git work verbs. Publishing (push) and
+#: history rewriting (reset, clean) stay un-listed on purpose -- they prompt,
+#: which is the conservative default for the irreversible. Everything here is
+#: worktree-contained: the wall keeps the rest of the filesystem read-only.
+WORK_SHELL_ROLES = {
+    "implementer",
+    "refactorer",
+    "debugger",
+    "integrator",
+    "build-engineer",
+    "performance-engineer",
+    "test-writer",
+    "tester",
+    "tech-lead",
+}
+WORK_SHELL = [
+    "make*",
+    "pytest*",
+    "python*",
+    "python3*",
+    "pip*",
+    "pip3*",
+    "npx*",
+    "npm*",
+    "yarn*",
+    "pnpm*",
+    "bun*",
+    "ruff*",
+    "mypy*",
+    "pyright*",
+    "tsc*",
+    "prettier*",
+    "eslint*",
+    "touch*",
+    "cp*",
+    "mv*",
+    "sed*",
+    "rm*",
+    "chmod*",
+    "ln*",
+    "tar*",
+    "unzip*",
+    "env",
+    "date",
+    "sleep*",
+]
+GIT_WORK = [
+    "git add*",
+    "git commit*",
+    "git stash*",
+    "git checkout*",
+    "git merge*",
+    "git rebase*",
+    "git branch*",
+]
+
 #: Roles whose guarantee IS read-only-ness; their shell stays enumerated and
 #: mutating verbs are denied, not asked.
 READONLY_SHELL_ROLES = {"reviewer", "security-reviewer"}
@@ -744,6 +801,8 @@ def compose(
         else:
             # The ambient baseline: read-only shell, git reads, capctl comms.
             allow += [f"{bash_tool}({p})" for p in AMBIENT_SHELL]
+            if role in WORK_SHELL_ROLES:
+                allow += [f"{bash_tool}({p})" for p in WORK_SHELL + GIT_WORK]
         deny += [f"{bash_tool}({p})" for p in SHELL_DENYLIST]
         if readonly_shell:
             # Read-only-ness is the point: mutations denied, not asked.
@@ -765,6 +824,11 @@ def compose(
                     "grep",
                     *retag(spec["allow"]),
                     *(f"bash({p})" for p in AMBIENT_SHELL),
+                    *(
+                        f"bash({p})"
+                        for p in (WORK_SHELL + GIT_WORK)
+                        if role in WORK_SHELL_ROLES
+                    ),
                 ],
                 key=str.lower,
             )
