@@ -125,7 +125,9 @@ class FileSpec(Base):
     @model_validator(mode="after")
     def _one_source(self) -> "FileSpec":
         if (self.src is None) == (self.content is None):
-            raise ValueError("a [[files]] entry needs exactly one of 'src' or 'content'")
+            raise ValueError(
+                "a [[files]] entry needs exactly one of 'src' or 'content'"
+            )
         return self
 
 
@@ -486,7 +488,10 @@ class ContainerConfig(Base):
         for spec in self.files:
             if spec.src is not None and not spec.src.is_file():
                 raise ConfigError(f"file {spec.dest}: source {spec.src} is not a file")
-        if self.runtime.role_prompt is not None and not self.runtime.role_prompt.is_file():
+        if (
+            self.runtime.role_prompt is not None
+            and not self.runtime.role_prompt.is_file()
+        ):
             raise ConfigError(
                 f"runtime.role_prompt: {self.runtime.role_prompt} is not a file"
             )

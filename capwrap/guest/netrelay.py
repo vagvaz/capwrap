@@ -29,7 +29,6 @@ read-only into an otherwise unrelated filesystem and cannot import capwrap.
 from __future__ import annotations
 
 import argparse
-import os
 import signal
 import socket
 import socketserver
@@ -141,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     while True:
         try:
             return child.wait()
-        except KeyboardInterrupt:      # SIG_IGN does not cover every path
+        except KeyboardInterrupt:  # SIG_IGN does not cover every path
             continue
 
 

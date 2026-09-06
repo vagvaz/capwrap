@@ -111,7 +111,9 @@ class ResizeBody(BaseModel):
 
 
 def create_app(daemon: Daemon) -> FastAPI:
-    app = FastAPI(title="capwrap", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    app = FastAPI(
+        title="capwrap", docs_url="/api/docs", openapi_url="/api/openapi.json"
+    )
 
     @app.exception_handler(CapwrapError)
     async def _capwrap_error(_request, exc: CapwrapError):
@@ -147,9 +149,12 @@ def create_app(daemon: Daemon) -> FastAPI:
                 "cwd": c.config.runtime.cwd,
                 "network": c.config.sandbox.network,
                 "mounts": [
-                    {"dest": m.dest, "mode": m.mode,
-                     "src": str(m.src) if m.src else None,
-                     "branch": m.branch}
+                    {
+                        "dest": m.dest,
+                        "mode": m.mode,
+                        "src": str(m.src) if m.src else None,
+                        "branch": m.branch,
+                    }
                     for m in c.config.mounts
                 ],
             },
@@ -160,7 +165,8 @@ def create_app(daemon: Daemon) -> FastAPI:
             # give you without a terminal emulator on the client side.
             "session": (
                 {**c.session.status(), "screen": c.session.snapshot().to_dict()}
-                if c.session else None
+                if c.session
+                else None
             ),
         }
 
@@ -190,8 +196,11 @@ def create_app(daemon: Daemon) -> FastAPI:
         limit = max(1, min(rows, 200))
         return {
             "screens": [
-                {"container": c.name, "running": True,
-                 **c.session.snapshot(tail=limit).to_dict()}
+                {
+                    "container": c.name,
+                    "running": True,
+                    **c.session.snapshot(tail=limit).to_dict(),
+                }
                 for c in daemon.containers.values()
                 if c.running and c.session is not None
             ],
@@ -211,7 +220,7 @@ def create_app(daemon: Daemon) -> FastAPI:
                 {
                     **board.describe(),
                     "holders": daemon.kernel.board_holders(board.oid),
-                    "recent": board.posts[-max(1, limit):],
+                    "recent": board.posts[-max(1, limit) :],
                 }
                 for board in daemon.kernel.boards()
             ],
@@ -228,8 +237,9 @@ def create_app(daemon: Daemon) -> FastAPI:
         return daemon.kernel.cap_graph()
 
     @app.get("/api/audit")
-    async def audit(limit: int = 100, actor: str | None = None,
-                    denied: bool = False) -> list[dict]:
+    async def audit(
+        limit: int = 100, actor: str | None = None, denied: bool = False
+    ) -> list[dict]:
         return daemon.audit.tail(limit=limit, actor=actor, denied_only=denied)
 
     @app.get("/api/inbox")
@@ -253,8 +263,9 @@ def create_app(daemon: Daemon) -> FastAPI:
         this is an authority grant from the human rather than a spawn -- an agent
         wanting a child still goes through a factory capability and its quota.
         """
-        config = load_config_data(dict(body.config), base_dir=Path.cwd(),
-                                  origin="operator:add")
+        config = load_config_data(
+            dict(body.config), base_dir=Path.cwd(), origin="operator:add"
+        )
         if config.name in daemon.containers:
             raise HTTPException(409, f"a container named {config.name} already exists")
 
@@ -329,9 +340,7 @@ def create_app(daemon: Daemon) -> FastAPI:
                 raise HTTPException(404, f"no such container: {name}")
             slot = daemon.kernel.root.find(target.oid)
             if slot is None:
-                raise HTTPException(
-                    500, f"the operator holds no capability on {name}"
-                )
+                raise HTTPException(500, f"the operator holds no capability on {name}")
             slots.append(slot)
 
         if len(slots) == 1:
@@ -401,24 +410,30 @@ def create_app(daemon: Daemon) -> FastAPI:
         container = daemon.containers.get(pending.container)
         detail = None
         if container is not None:
-            detail = {"config": {
-                "agent": container.config.runtime.agent,
-                "model": container.config.runtime.model,
-                "command": container.config.runtime.command,
-                "cwd": container.config.runtime.cwd,
-                "network": container.config.sandbox.network,
-                "mounts": [
-                    {"dest": m.dest, "mode": m.mode} for m in container.config.mounts
-                ],
-            }}
+            detail = {
+                "config": {
+                    "agent": container.config.runtime.agent,
+                    "model": container.config.runtime.model,
+                    "command": container.config.runtime.command,
+                    "cwd": container.config.runtime.cwd,
+                    "network": container.config.sandbox.network,
+                    "mounts": [
+                        {"dest": m.dest, "mode": m.mode}
+                        for m in container.config.mounts
+                    ],
+                }
+            }
 
         try:
             result = await daemon.explainer.explain(pending.to_dict(), detail)
         except ExplainError as exc:
             raise HTTPException(503, str(exc)) from None
         daemon.audit.record(
-            OPERATOR, "approval.explain", allowed=True,
-            target=pending.container, detail={"model": result["model"]},
+            OPERATOR,
+            "approval.explain",
+            allowed=True,
+            target=pending.container,
+            detail={"model": result["model"]},
         )
         return result
 
@@ -441,8 +456,11 @@ def create_app(daemon: Daemon) -> FastAPI:
     async def grant(body: GrantBody) -> dict:
         """Hand a container a new capability on another container, at runtime."""
         return daemon.kernel.operator_grant(
-            body.holder, "container", body.target_container,
-            parse_rights(body.rights), label=body.label,
+            body.holder,
+            "container",
+            body.target_container,
+            parse_rights(body.rights),
+            label=body.label,
         )
 
     # ------------------------------------------------------------------
@@ -475,7 +493,9 @@ def create_app(daemon: Daemon) -> FastAPI:
         await socket.accept()
         container = daemon.containers.get(name)
         if container is None or container.session is None:
-            await socket.send_json({"type": "error", "message": f"{name} is not running"})
+            await socket.send_json(
+                {"type": "error", "message": f"{name} is not running"}
+            )
             await socket.close()
             return
 

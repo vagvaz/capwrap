@@ -31,21 +31,27 @@ from capwrap.kernel.signing import fingerprint, sign_post, signing_bytes, verify
 #: RFC 8032 section 7.1. A signature scheme that is subtly wrong still verifies
 #: its own output, so the only meaningful check is against somebody else's.
 RFC_8032 = [
-    ("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
-     "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
-     "",
-     "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a"
-     "33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"),
-    ("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
-     "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
-     "72",
-     "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e"
-     "15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"),
-    ("c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
-     "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
-     "af82",
-     "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d"
-     "16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a"),
+    (
+        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "",
+        "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a"
+        "33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+    ),
+    (
+        "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+        "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+        "72",
+        "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e"
+        "15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00",
+    ),
+    (
+        "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+        "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+        "af82",
+        "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d"
+        "16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a",
+    ),
 ]
 
 
@@ -56,8 +62,9 @@ def test_ed25519_matches_the_rfc_vectors(seed, public, message, signature):
 
     assert ed25519.public_key(seed_bytes).hex() == public
     assert ed25519.sign(seed_bytes, message_bytes).hex() == signature
-    assert ed25519.verify(binascii.unhexlify(public), message_bytes,
-                          binascii.unhexlify(signature))
+    assert ed25519.verify(
+        binascii.unhexlify(public), message_bytes, binascii.unhexlify(signature)
+    )
 
 
 def test_a_changed_message_does_not_verify():
@@ -75,11 +82,15 @@ def test_another_key_does_not_verify():
     assert not ed25519.verify(other, b"mine", signature)
 
 
-@pytest.mark.parametrize("key,signature", [
-    (b"too short", b"x" * 64),
-    (b"x" * 32, b"too short"),
-    (b"\xff" * 32, b"\x00" * 64),        # not a point on the curve
-], ids=["short-key", "short-signature", "not-a-point"])
+@pytest.mark.parametrize(
+    "key,signature",
+    [
+        (b"too short", b"x" * 64),
+        (b"x" * 32, b"too short"),
+        (b"\xff" * 32, b"\x00" * 64),  # not a point on the curve
+    ],
+    ids=["short-key", "short-signature", "not-a-point"],
+)
 def test_malformed_input_is_false_not_an_exception(key, signature):
     """A caller checking a signature wants one answer; corrupt and wrong are
     the same answer to it."""
@@ -110,8 +121,9 @@ def test_the_signature_covers_the_board_the_author_and_the_payload():
 
 def test_the_encoding_is_canonical():
     """Two dicts that differ only in key order are the same message."""
-    assert (signing_bytes("b", "a", {"x": 1, "y": 2})
-            == signing_bytes("b", "a", {"y": 2, "x": 1}))
+    assert signing_bytes("b", "a", {"x": 1, "y": 2}) == signing_bytes(
+        "b", "a", {"y": 2, "x": 1}
+    )
 
 
 def test_a_string_payload_and_its_json_are_different_messages():
@@ -162,9 +174,9 @@ def slot_labelled(kernel: CapKernel, actor: str, label: str) -> int:
 @pytest.fixture
 def board_kernel():
     kernel = CapKernel()
-    kernel.register_container(config(
-        "boss", factory={"rights": ["create"], "quota": {"containers": 1}}
-    ))
+    kernel.register_container(
+        config("boss", factory={"rights": ["create"], "quota": {"containers": 1}})
+    )
     seed = ed25519.generate_seed()
     kernel.find_container("boss").public_key = ed25519.public_key(seed).hex()
     slot = kernel.board_create(
@@ -182,8 +194,9 @@ def test_a_signed_post_is_stored_with_what_a_reader_needs(board_kernel):
     post = kernel.board_read("boss", slot)["posts"][0]
     assert post["signed"] is True
     # The key travels with the post, so verifying needs nothing else.
-    assert verify_post(post["public_key"], "standup", post["from"],
-                       post["payload"], post["signature"])
+    assert verify_post(
+        post["public_key"], "standup", post["from"], post["payload"], post["signature"]
+    )
 
 
 def test_a_signature_that_does_not_match_is_refused_not_stored(board_kernel):
@@ -210,8 +223,9 @@ def test_a_container_with_no_key_cannot_sign(board_kernel):
     kernel, seed, slot = board_kernel
     kernel.find_container("boss").public_key = ""
     with pytest.raises(CapabilityError, match="no signing key"):
-        kernel.board_post("boss", slot, "ready", signature=sign_post(
-            seed, "standup", "boss", "ready"))
+        kernel.board_post(
+            "boss", slot, "ready", signature=sign_post(seed, "standup", "boss", "ready")
+        )
 
 
 def test_unsigned_posts_still_work_and_are_marked_as_such(board_kernel):
@@ -226,15 +240,17 @@ def test_unsigned_posts_still_work_and_are_marked_as_such(board_kernel):
 def test_a_tampered_post_stops_verifying(board_kernel):
     """The property the whole thing exists for: a reader can tell."""
     kernel, seed, slot = board_kernel
-    kernel.board_post("boss", slot, "ship it",
-                      signature=sign_post(seed, "standup", "boss", "ship it"))
+    kernel.board_post(
+        "boss", slot, "ship it", signature=sign_post(seed, "standup", "boss", "ship it")
+    )
 
     board = kernel.boards()[0]
-    board.posts[0]["payload"] = "do not ship it"      # someone edits the record
+    board.posts[0]["payload"] = "do not ship it"  # someone edits the record
 
     post = kernel.board_read("boss", slot)["posts"][0]
-    assert not verify_post(post["public_key"], "standup", post["from"],
-                           post["payload"], post["signature"])
+    assert not verify_post(
+        post["public_key"], "standup", post["from"], post["payload"], post["signature"]
+    )
 
 
 # ==========================================================================
@@ -261,10 +277,15 @@ def messaging():
     kernel.hooks = Recording()
     for name in ("beta", "gamma"):
         kernel.register_container(config(name))
-    kernel.register_container(config("alpha", peers=[
-        {"container": "beta", "rights": ["send"]},
-        {"container": "gamma", "rights": ["send"]},
-    ]))
+    kernel.register_container(
+        config(
+            "alpha",
+            peers=[
+                {"container": "beta", "rights": ["send"]},
+                {"container": "gamma", "rights": ["send"]},
+            ],
+        )
+    )
     seed = ed25519.generate_seed()
     kernel.find_container("alpha").public_key = ed25519.public_key(seed).hex()
     return kernel, seed
@@ -279,8 +300,9 @@ def test_a_signed_message_carries_what_the_recipient_needs(messaging):
     kernel.msg_send("alpha", slot, "bench is green", signature=signature)
 
     _target, message = kernel.hooks.delivered[0]
-    assert verify_message(message["public_key"], message["from"],
-                          message["payload"], message["signature"])
+    assert verify_message(
+        message["public_key"], message["from"], message["payload"], message["signature"]
+    )
 
 
 def test_one_signature_covers_a_whole_broadcast(messaging):
@@ -291,14 +313,14 @@ def test_one_signature_covers_a_whole_broadcast(messaging):
     kernel, seed = messaging
     slots = [slot_labelled(kernel, "alpha", f"peer:{n}") for n in ("beta", "gamma")]
     signature = sign_message(seed, "alpha", "bench is green")
-    result = kernel.msg_broadcast("alpha", slots, "bench is green",
-                                  signature=signature)
+    result = kernel.msg_broadcast("alpha", slots, "bench is green", signature=signature)
 
     assert sorted(result["recipients"]) == ["beta", "gamma"]
     assert len(kernel.hooks.delivered) == 2
     for _target, message in kernel.hooks.delivered:
-        assert verify_message(message["public_key"], "alpha",
-                              message["payload"], message["signature"])
+        assert verify_message(
+            message["public_key"], "alpha", message["payload"], message["signature"]
+        )
 
 
 def test_a_forged_message_signature_is_refused_and_nothing_is_sent(messaging):
@@ -352,19 +374,24 @@ def test_a_forwarded_message_keeps_its_author(messaging):
 
     kernel, seed = messaging
     signature = sign_message(seed, "alpha", "bench is green")
-    kernel.msg_send("alpha", slot_labelled(kernel, "alpha", "peer:beta"),
-                    "bench is green", signature=signature)
+    kernel.msg_send(
+        "alpha",
+        slot_labelled(kernel, "alpha", "peer:beta"),
+        "bench is green",
+        signature=signature,
+    )
 
     # beta passes it on verbatim.
-    kernel.register_container(config(
-        "relay", peers=[{"container": "gamma", "rights": ["send"]}]
-    ))
+    kernel.register_container(
+        config("relay", peers=[{"container": "gamma", "rights": ["send"]}])
+    )
     _target, original = kernel.hooks.delivered[0]
-    kernel.msg_send("relay", slot_labelled(kernel, "relay", "peer:gamma"),
-                    original["payload"])
+    kernel.msg_send(
+        "relay", slot_labelled(kernel, "relay", "peer:gamma"), original["payload"]
+    )
 
     _to, forwarded = kernel.hooks.delivered[-1]
-    assert forwarded["from"] == "relay"          # who sent it
-    assert verify_message(                       # who wrote it
+    assert forwarded["from"] == "relay"  # who sent it
+    assert verify_message(  # who wrote it
         original["public_key"], "alpha", forwarded["payload"], signature
     )

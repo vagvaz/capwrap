@@ -29,11 +29,7 @@ def argv_for(config, paths, prepared, **kw) -> list[str]:
 
 def pairs(argv: list[str], flag: str) -> list[tuple[str, str]]:
     """All (src, dest) pairs for a two-argument bwrap flag."""
-    return [
-        (argv[i + 1], argv[i + 2])
-        for i, tok in enumerate(argv)
-        if tok == flag
-    ]
+    return [(argv[i + 1], argv[i + 2]) for i, tok in enumerate(argv) if tok == flag]
 
 
 # --------------------------------------------------------------------------
@@ -44,13 +40,16 @@ def pairs(argv: list[str], flag: str) -> list[tuple[str, str]]:
 def test_ro_and_rw_map_to_the_right_bwrap_flags(tmp_path, state_dir):
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
-    config = make({
-        "name": "m",
-        "mounts": [
-            {"src": "a", "dest": "/a", "mode": "ro"},
-            {"src": "b", "dest": "/b", "mode": "rw"},
-        ],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "m",
+            "mounts": [
+                {"src": "a", "dest": "/a", "mode": "ro"},
+                {"src": "b", "dest": "/b", "mode": "rw"},
+            ],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("m")
     prepared = fsprep.prepare(config, paths)
     argv = argv_for(config, paths, prepared)
@@ -64,10 +63,13 @@ def test_copy_mode_makes_a_private_copy(tmp_path, state_dir):
     src.mkdir()
     (src / "seed.txt").write_text("original\n")
 
-    config = make({
-        "name": "c",
-        "mounts": [{"src": "data", "dest": "/data", "mode": "copy"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "c",
+            "mounts": [{"src": "data", "dest": "/data", "mode": "copy"}],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("c")
     prepared = fsprep.prepare(config, paths)
 
@@ -85,10 +87,13 @@ def test_copy_mode_makes_a_private_copy(tmp_path, state_dir):
 def test_overlay_creates_upper_and_work_dirs(tmp_path, state_dir):
     src = tmp_path / "db"
     src.mkdir()
-    config = make({
-        "name": "o",
-        "mounts": [{"src": "db", "dest": "/db", "mode": "overlay"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "o",
+            "mounts": [{"src": "db", "dest": "/db", "mode": "overlay"}],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("o")
     prepared = fsprep.prepare(config, paths, overlay_backend="kernel")
 
@@ -101,7 +106,9 @@ def test_overlay_creates_upper_and_work_dirs(tmp_path, state_dir):
     # --overlay-src applies to the *next* --overlay, so order matters.
     assert argv[i + 2] == "--overlay"
     assert argv[i + 3 : i + 6] == [
-        str(paths.upper("/db")), str(paths.work("/db")), "/db",
+        str(paths.upper("/db")),
+        str(paths.work("/db")),
+        "/db",
     ]
 
 
@@ -121,10 +128,13 @@ def test_two_containers_get_separate_upper_dirs(tmp_path, state_dir):
 
 
 def test_tmpfs_size_is_converted_to_bytes(tmp_path, state_dir):
-    config = make({
-        "name": "t",
-        "mounts": [{"dest": "/scratch", "mode": "tmpfs", "size": "128m"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "t",
+            "mounts": [{"dest": "/scratch", "mode": "tmpfs", "size": "128m"}],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("t")
     argv = argv_for(config, paths, fsprep.prepare(config, paths))
     i = argv.index("--size")
@@ -134,10 +144,13 @@ def test_tmpfs_size_is_converted_to_bytes(tmp_path, state_dir):
 
 def test_overlay_without_a_backend_fails_loudly(tmp_path, state_dir):
     (tmp_path / "db").mkdir()
-    config = make({
-        "name": "o",
-        "mounts": [{"src": "db", "dest": "/db", "mode": "overlay"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "o",
+            "mounts": [{"src": "db", "dest": "/db", "mode": "overlay"}],
+        },
+        tmp_path,
+    )
     with pytest.raises(SandboxError, match="no overlay backend"):
         fsprep.prepare(config, ContainerPaths("o"), overlay_backend="none")
 
@@ -158,7 +171,11 @@ def _nested_config(tmp_path, order):
     specs = {
         "/a": {"src": str(root / "a"), "dest": "/a", "mode": "ro"},
         "/a/b": {"src": str(root / "a" / "b"), "dest": "/a/b", "mode": "overlay"},
-        "/a/b/c": {"src": str(root / "a" / "b" / "c"), "dest": "/a/b/c", "mode": "copy"},
+        "/a/b/c": {
+            "src": str(root / "a" / "b" / "c"),
+            "dest": "/a/b/c",
+            "mode": "copy",
+        },
     }
     return make({"name": "nest", "mounts": [specs[d] for d in order]}, tmp_path)
 
@@ -200,12 +217,15 @@ def test_nested_mount_modes_each_take_effect(
 ):
     """Three different modes at three depths of one tree, all live."""
     config = _nested_config(tmp_path, ["/a/b/c", "/a/b", "/a"])  # worst-case order
-    result = run_in_sandbox(config, """
+    result = run_in_sandbox(
+        config,
+        """
         find /a -name '*.txt' | sort
         touch /a/nope 2>&1 | head -1
         echo overlay > /a/b/new.txt   && echo 'b writable'
         echo copied  > /a/b/c/new.txt && echo 'c writable'
-    """)
+    """,
+    )
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert "/a/a.txt" in out and "/a/b/b.txt" in out and "/a/b/c/c.txt" in out
@@ -229,10 +249,13 @@ def test_nested_mount_modes_each_take_effect(
 
 
 def test_inline_file_is_staged_and_bound_read_only(tmp_path, state_dir):
-    config = make({
-        "name": "f",
-        "files": [{"dest": "/work/ROLE.md", "content": "you are a test\n"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "f",
+            "files": [{"dest": "/work/ROLE.md", "content": "you are a test\n"}],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("f")
     prepared = fsprep.prepare(config, paths)
 
@@ -243,10 +266,13 @@ def test_inline_file_is_staged_and_bound_read_only(tmp_path, state_dir):
 
 
 def test_file_mode_is_applied(tmp_path, state_dir):
-    config = make({
-        "name": "f",
-        "files": [{"dest": "/run/secret", "content": "s", "mode": "0600"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "f",
+            "files": [{"dest": "/run/secret", "content": "s", "mode": "0600"}],
+        },
+        tmp_path,
+    )
     prepared = fsprep.prepare(config, ContainerPaths("f"))
     staged, _ = prepared.files[0]
     assert staged.stat().st_mode & 0o777 == 0o600
@@ -258,13 +284,20 @@ def test_file_mode_is_applied(tmp_path, state_dir):
 
 
 def test_worktree_creates_a_branch_and_checkout(tmp_path, state_dir, git_repo):
-    config = make({
-        "name": "wt",
-        "mounts": [{
-            "src": str(git_repo), "dest": "/work",
-            "mode": "worktree", "base": "main",
-        }],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "wt",
+            "mounts": [
+                {
+                    "src": str(git_repo),
+                    "dest": "/work",
+                    "mode": "worktree",
+                    "base": "main",
+                }
+            ],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("wt")
     fsprep.prepare(config, paths)
 
@@ -274,7 +307,10 @@ def test_worktree_creates_a_branch_and_checkout(tmp_path, state_dir, git_repo):
 
     branches = subprocess.run(
         ["git", "branch", "--format=%(refname:short)"],
-        cwd=git_repo, capture_output=True, text=True, check=True,
+        cwd=git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.split()
     assert "capwrap/wt" in branches
     assert "main" in branches
@@ -289,13 +325,20 @@ def test_worktree_dotgit_is_rewritten_to_the_in_sandbox_path(
     directory.  Inside the sandbox the repo lives at /gitdir/<slug>, so an
     unrewritten path makes every git command fail with "not a git repository".
     """
-    config = make({
-        "name": "wt",
-        "mounts": [{
-            "src": str(git_repo), "dest": "/work",
-            "mode": "worktree", "base": "main",
-        }],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "wt",
+            "mounts": [
+                {
+                    "src": str(git_repo),
+                    "dest": "/work",
+                    "mode": "worktree",
+                    "base": "main",
+                }
+            ],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("wt")
     prepared = fsprep.prepare(config, paths)
 
@@ -319,29 +362,52 @@ def test_host_worktree_administration_is_left_alone(tmp_path, state_dir, git_rep
     worktree had vanished and `git worktree prune` would delete it out from
     under a running agent.
     """
-    config = make({
-        "name": "wt",
-        "mounts": [{"src": str(git_repo), "dest": "/work",
-                    "mode": "worktree", "base": "main"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "wt",
+            "mounts": [
+                {
+                    "src": str(git_repo),
+                    "dest": "/work",
+                    "mode": "worktree",
+                    "base": "main",
+                }
+            ],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("wt")
     fsprep.prepare(config, paths)
 
-    subprocess.run(["git", "worktree", "prune"], cwd=git_repo, check=True,
-                   capture_output=True)
+    subprocess.run(
+        ["git", "worktree", "prune"], cwd=git_repo, check=True, capture_output=True
+    )
     listing = subprocess.run(
-        ["git", "worktree", "list"], cwd=git_repo,
-        capture_output=True, text=True, check=True,
+        ["git", "worktree", "list"],
+        cwd=git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     assert str(paths.worktree("/work")) in listing, "prune ate the live worktree"
 
 
 def test_worktree_binds_the_shared_object_store(tmp_path, state_dir, git_repo):
-    config = make({
-        "name": "wt",
-        "mounts": [{"src": str(git_repo), "dest": "/work",
-                    "mode": "worktree", "share": "objects", "base": "main"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "wt",
+            "mounts": [
+                {
+                    "src": str(git_repo),
+                    "dest": "/work",
+                    "mode": "worktree",
+                    "share": "objects",
+                    "base": "main",
+                }
+            ],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("wt")
     prepared = fsprep.prepare(config, paths)
     argv = argv_for(config, paths, prepared)
@@ -350,11 +416,21 @@ def test_worktree_binds_the_shared_object_store(tmp_path, state_dir, git_repo):
 
 
 def test_share_none_makes_a_standalone_clone(tmp_path, state_dir, git_repo):
-    config = make({
-        "name": "cl",
-        "mounts": [{"src": str(git_repo), "dest": "/work",
-                    "mode": "worktree", "share": "none", "base": "main"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "cl",
+            "mounts": [
+                {
+                    "src": str(git_repo),
+                    "dest": "/work",
+                    "mode": "worktree",
+                    "share": "none",
+                    "base": "main",
+                }
+            ],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("cl")
     prepared = fsprep.prepare(config, paths)
 
@@ -368,12 +444,21 @@ def test_share_none_makes_a_standalone_clone(tmp_path, state_dir, git_repo):
 def test_injected_files_are_excluded_from_the_agents_repo(
     tmp_path, state_dir, git_repo
 ):
-    config = make({
-        "name": "wt",
-        "mounts": [{"src": str(git_repo), "dest": "/work",
-                    "mode": "worktree", "base": "main"}],
-        "files": [{"dest": "/work/ROLE.md", "content": "scaffolding\n"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "wt",
+            "mounts": [
+                {
+                    "src": str(git_repo),
+                    "dest": "/work",
+                    "mode": "worktree",
+                    "base": "main",
+                }
+            ],
+            "files": [{"dest": "/work/ROLE.md", "content": "scaffolding\n"}],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("wt")
     fsprep.prepare(config, paths)
 
@@ -390,16 +475,25 @@ def test_worktree_survives_its_state_being_deleted(tmp_path, state_dir, git_repo
     """
     from capwrap.paths import force_rmtree
 
-    config = make({
-        "name": "wt",
-        "mounts": [{"src": str(git_repo), "dest": "/work",
-                    "mode": "worktree", "base": "main"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "wt",
+            "mounts": [
+                {
+                    "src": str(git_repo),
+                    "dest": "/work",
+                    "mode": "worktree",
+                    "base": "main",
+                }
+            ],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("wt")
     fsprep.prepare(config, paths)
 
-    force_rmtree(paths.root)          # what `capwrap clean --yes` does
-    fsprep.prepare(config, paths)     # must not raise
+    force_rmtree(paths.root)  # what `capwrap clean --yes` does
+    fsprep.prepare(config, paths)  # must not raise
 
     assert (paths.worktree("/work") / "README.md").exists()
     assert gitwt.current_branch(paths.worktree("/work")) == "capwrap/wt"
@@ -410,11 +504,20 @@ def test_pruning_does_not_disturb_a_sibling_worktree(tmp_path, state_dir, git_re
     from capwrap.paths import force_rmtree
 
     def config_for(name):
-        return make({
-            "name": name,
-            "mounts": [{"src": str(git_repo), "dest": "/work",
-                        "mode": "worktree", "base": "main"}],
-        }, tmp_path)
+        return make(
+            {
+                "name": name,
+                "mounts": [
+                    {
+                        "src": str(git_repo),
+                        "dest": "/work",
+                        "mode": "worktree",
+                        "base": "main",
+                    }
+                ],
+            },
+            tmp_path,
+        )
 
     alive = ContainerPaths("alive")
     fsprep.prepare(config_for("alive"), alive)
@@ -426,11 +529,15 @@ def test_pruning_does_not_disturb_a_sibling_worktree(tmp_path, state_dir, git_re
 
     fsprep.prepare(config_for("doomed"), doomed)  # triggers the prune
 
-    assert (alive.worktree("/work") / "in-progress.txt").exists(), \
+    assert (alive.worktree("/work") / "in-progress.txt").exists(), (
         "pruning removed a live sibling worktree"
+    )
     listing = subprocess.run(
-        ["git", "worktree", "list"], cwd=git_repo,
-        capture_output=True, text=True, check=True,
+        ["git", "worktree", "list"],
+        cwd=git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     assert str(alive.worktree("/work")) in listing
 
@@ -446,11 +553,20 @@ def test_an_orphaned_worktree_is_moved_aside_and_recreated(
     """
     import subprocess as sp
 
-    config = make({
-        "name": "wt",
-        "mounts": [{"src": str(git_repo), "dest": "/work",
-                    "mode": "worktree", "base": "main"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "wt",
+            "mounts": [
+                {
+                    "src": str(git_repo),
+                    "dest": "/work",
+                    "mode": "worktree",
+                    "base": "main",
+                }
+            ],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("wt")
     fsprep.prepare(config, paths)
     worktree = paths.worktree("/work")
@@ -458,15 +574,23 @@ def test_an_orphaned_worktree_is_moved_aside_and_recreated(
 
     # Recreate the repo from scratch, exactly as a re-clone would.
     from capwrap.paths import force_rmtree
+
     force_rmtree(git_repo)
     git_repo.mkdir()
-    for args in (["init", "--quiet", "--initial-branch=main"],
-                 ["config", "user.email", "t@x"], ["config", "user.name", "T"]):
+    for args in (
+        ["init", "--quiet", "--initial-branch=main"],
+        ["config", "user.email", "t@x"],
+        ["config", "user.name", "T"],
+    ):
         sp.run(["git", *args], cwd=git_repo, check=True, capture_output=True)
     (git_repo / "README.md").write_text("fresh\n")
     sp.run(["git", "add", "-A"], cwd=git_repo, check=True, capture_output=True)
-    sp.run(["git", "commit", "--quiet", "-m", "new"], cwd=git_repo, check=True,
-           capture_output=True)
+    sp.run(
+        ["git", "commit", "--quiet", "-m", "new"],
+        cwd=git_repo,
+        check=True,
+        capture_output=True,
+    )
 
     fsprep.prepare(config, paths)
 
@@ -477,17 +601,27 @@ def test_an_orphaned_worktree_is_moved_aside_and_recreated(
 
     # And the fresh one is a working worktree of the new repo.
     assert gitwt.current_branch(worktree) == "capwrap/wt"
-    status = sp.run(["git", "status", "--short"], cwd=worktree,
-                    capture_output=True, text=True)
+    status = sp.run(
+        ["git", "status", "--short"], cwd=worktree, capture_output=True, text=True
+    )
     assert status.returncode == 0, status.stderr
 
 
 def test_a_healthy_worktree_is_never_quarantined(tmp_path, state_dir, git_repo):
-    config = make({
-        "name": "wt",
-        "mounts": [{"src": str(git_repo), "dest": "/work",
-                    "mode": "worktree", "base": "main"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "wt",
+            "mounts": [
+                {
+                    "src": str(git_repo),
+                    "dest": "/work",
+                    "mode": "worktree",
+                    "base": "main",
+                }
+            ],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("wt")
     fsprep.prepare(config, paths)
     fsprep.prepare(config, paths)
@@ -496,18 +630,28 @@ def test_a_healthy_worktree_is_never_quarantined(tmp_path, state_dir, git_repo):
 
 
 def test_worktree_is_reused_across_restarts(tmp_path, state_dir, git_repo):
-    config = make({
-        "name": "wt",
-        "mounts": [{"src": str(git_repo), "dest": "/work",
-                    "mode": "worktree", "base": "main"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "wt",
+            "mounts": [
+                {
+                    "src": str(git_repo),
+                    "dest": "/work",
+                    "mode": "worktree",
+                    "base": "main",
+                }
+            ],
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("wt")
     fsprep.prepare(config, paths)
     (paths.worktree("/work") / "in-progress.txt").write_text("agent work\n")
 
     fsprep.prepare(config, paths)  # restart
-    assert (paths.worktree("/work") / "in-progress.txt").exists(), \
+    assert (paths.worktree("/work") / "in-progress.txt").exists(), (
         "restarting a container must not discard the agent's work"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -540,10 +684,13 @@ def test_enabling_network_binds_resolver_config(tmp_path, state_dir):
 
 
 def test_hostname_requires_a_uts_namespace(tmp_path, state_dir):
-    config = make({
-        "name": "n",
-        "sandbox": {"hostname": "boxy", "unshare": ["pid"]},
-    }, tmp_path)
+    config = make(
+        {
+            "name": "n",
+            "sandbox": {"hostname": "boxy", "unshare": ["pid"]},
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("n")
     with pytest.raises(SandboxError, match="requires 'uts'"):
         argv_for(config, paths, fsprep.prepare(config, paths))
@@ -577,10 +724,13 @@ def test_overlay_isolates_two_agents_for_real(
     (shared / "seed.txt").write_text("seed\n")
 
     def config_for(name):
-        return make({
-            "name": name,
-            "mounts": [{"src": str(shared), "dest": "/db", "mode": "overlay"}],
-        }, tmp_path)
+        return make(
+            {
+                "name": name,
+                "mounts": [{"src": str(shared), "dest": "/db", "mode": "overlay"}],
+            },
+            tmp_path,
+        )
 
     a = run_in_sandbox(config_for("iso-a"), "echo A > /db/a.txt && ls /db")
     assert a.returncode == 0, a.stderr
@@ -600,10 +750,13 @@ def test_read_only_mount_really_is_read_only(tmp_path, state_dir, run_in_sandbox
     ref.mkdir()
     (ref / "STYLE.md").write_text("rules\n")
 
-    config = make({
-        "name": "ro-test",
-        "mounts": [{"src": str(ref), "dest": "/ref", "mode": "ro"}],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "ro-test",
+            "mounts": [{"src": str(ref), "dest": "/ref", "mode": "ro"}],
+        },
+        tmp_path,
+    )
     result = run_in_sandbox(config, "touch /ref/new 2>&1; cat /ref/STYLE.md")
     assert "Read-only file system" in result.stdout
     assert "rules" in result.stdout
@@ -623,20 +776,32 @@ def test_git_works_inside_a_worktree_sandbox(
     tmp_path, state_dir, git_repo, run_in_sandbox
 ):
     """End-to-end proof that the .git rewriting and object-store bind line up."""
-    config = make({
-        "name": "wt-live",
-        "mounts": [{"src": str(git_repo), "dest": "/work",
-                    "mode": "worktree", "base": "main"}],
-        "runtime": {"cwd": "/work"},
-    }, tmp_path)
+    config = make(
+        {
+            "name": "wt-live",
+            "mounts": [
+                {
+                    "src": str(git_repo),
+                    "dest": "/work",
+                    "mode": "worktree",
+                    "base": "main",
+                }
+            ],
+            "runtime": {"cwd": "/work"},
+        },
+        tmp_path,
+    )
 
-    result = run_in_sandbox(config, """
+    result = run_in_sandbox(
+        config,
+        """
         set -e
         git rev-parse --abbrev-ref HEAD
         echo 'agent change' >> README.md
         git -c user.email=a@x -c user.name=A commit -qam 'agent commit'
         git log --oneline -1 --format=%s
-    """)
+    """,
+    )
     assert result.returncode == 0, result.stderr
     lines = result.stdout.split()
     assert "capwrap/wt-live" in result.stdout
@@ -645,12 +810,18 @@ def test_git_works_inside_a_worktree_sandbox(
     # The commit is visible from the host repo, on the agent's branch only.
     log = subprocess.run(
         ["git", "log", "--oneline", "--format=%s", "capwrap/wt-live"],
-        cwd=git_repo, capture_output=True, text=True, check=True,
+        cwd=git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     assert "agent commit" in log
     main_log = subprocess.run(
         ["git", "log", "--oneline", "--format=%s", "main"],
-        cwd=git_repo, capture_output=True, text=True, check=True,
+        cwd=git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     assert "agent commit" not in main_log
     assert lines  # keep the linter honest about the unused split
@@ -669,10 +840,13 @@ def test_no_environment_values_appear_in_argv(tmp_path, state_dir):
     /proc/<pid>/environ, which is readable only by the owner.
     """
     secret = "sk-ant-DO-NOT-LEAK-abcdef123456"
-    config = make({
-        "name": "n",
-        "runtime": {"env": {"ANTHROPIC_AUTH_TOKEN": secret}},
-    }, tmp_path)
+    config = make(
+        {
+            "name": "n",
+            "runtime": {"env": {"ANTHROPIC_AUTH_TOKEN": secret}},
+        },
+        tmp_path,
+    )
     paths = ContainerPaths("n")
     argv = argv_for(config, paths, fsprep.prepare(config, paths))
 
@@ -687,10 +861,15 @@ def test_env_from_host_lifts_named_variables(tmp_path, state_dir, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-from-the-daemon")
     monkeypatch.setenv("SOMETHING_ELSE", "not requested")
 
-    config = make({
-        "name": "n",
-        "runtime": {"env_from_host": ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"]},
-    }, tmp_path)
+    config = make(
+        {
+            "name": "n",
+            "runtime": {
+                "env_from_host": ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"]
+            },
+        },
+        tmp_path,
+    )
     env = bwrap_mod.build_env(config)
 
     assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-ant-from-the-daemon"
@@ -723,9 +902,13 @@ def test_env_file_is_read_and_resolves_against_the_config(tmp_path, state_dir):
         'ANTHROPIC_AUTH_TOKEN="sk-ant-quoted-value"\n'
         "PADDED = spaces around it \n"
     )
-    config = make({
-        "name": "n", "runtime": {"env_file": "secrets.env"},
-    }, tmp_path)
+    config = make(
+        {
+            "name": "n",
+            "runtime": {"env_file": "secrets.env"},
+        },
+        tmp_path,
+    )
     env = bwrap_mod.build_env(config)
 
     assert env["ANTHROPIC_BASE_URL"] == "https://gateway.internal/v1"
@@ -749,37 +932,50 @@ def test_a_missing_env_file_is_an_error_not_a_silent_skip(tmp_path, state_dir):
 def test_config_env_wins_over_host_and_file(tmp_path, state_dir, monkeypatch):
     monkeypatch.setenv("PICK_ME", "from host")
     (tmp_path / "e.env").write_text("PICK_ME=from file\n")
-    config = make({
-        "name": "n",
-        "runtime": {
-            "env_from_host": ["PICK_ME"],
-            "env_file": "e.env",
-            "env": {"PICK_ME": "from config"},
+    config = make(
+        {
+            "name": "n",
+            "runtime": {
+                "env_from_host": ["PICK_ME"],
+                "env_file": "e.env",
+                "env": {"PICK_ME": "from config"},
+            },
         },
-    }, tmp_path)
+        tmp_path,
+    )
     assert bwrap_mod.build_env(config)["PICK_ME"] == "from config"
 
 
-@pytest.mark.parametrize("name, secret", [
-    ("ANTHROPIC_AUTH_TOKEN", True),
-    ("ANTHROPIC_API_KEY", True),
-    ("MY_SECRET", True),
-    ("DB_PASSWORD", True),
-    ("ANTHROPIC_BASE_URL", False),
-    ("PATH", False),
-    ("TERM", False),
-])
+@pytest.mark.parametrize(
+    "name, secret",
+    [
+        ("ANTHROPIC_AUTH_TOKEN", True),
+        ("ANTHROPIC_API_KEY", True),
+        ("MY_SECRET", True),
+        ("DB_PASSWORD", True),
+        ("ANTHROPIC_BASE_URL", False),
+        ("PATH", False),
+        ("TERM", False),
+    ],
+)
 def test_secret_names_are_recognised_for_redaction(name, secret):
     assert bwrap_mod.is_secret(name) is secret
 
 
 def test_redaction_masks_values_but_keeps_names(tmp_path, state_dir):
     """`--dry-run` has to stay useful without printing the token."""
-    config = make({
-        "name": "n",
-        "runtime": {"env": {"ANTHROPIC_AUTH_TOKEN": "sk-ant-xyz",
-                            "ANTHROPIC_BASE_URL": "https://example/v1"}},
-    }, tmp_path)
+    config = make(
+        {
+            "name": "n",
+            "runtime": {
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "sk-ant-xyz",
+                    "ANTHROPIC_BASE_URL": "https://example/v1",
+                }
+            },
+        },
+        tmp_path,
+    )
     shown = bwrap_mod.redact(bwrap_mod.build_env(config))
 
     assert shown["ANTHROPIC_AUTH_TOKEN"] == "<redacted>"

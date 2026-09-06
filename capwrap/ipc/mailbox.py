@@ -91,7 +91,9 @@ class Mailbox:
                 pass
         return message
 
-    async def receive(self, timeout: float | None = None, limit: int = 1) -> list[Message]:
+    async def receive(
+        self, timeout: float | None = None, limit: int = 1
+    ) -> list[Message]:
         """Pop up to `limit` messages, waiting up to `timeout` for the first.
 
         `timeout=0` polls without blocking; `None` waits indefinitely.

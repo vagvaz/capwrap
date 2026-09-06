@@ -77,9 +77,13 @@ _PROFILES: dict[str, AgentProfile] = {
         # no credentials are wired here.
         # The prompt goes before --disallowedTools: the flag is variadic and
         # would swallow a trailing prompt as another tool name.
-        explain_argv=("claude", "--print", "{prompt}",
-                      "--disallowedTools", "Bash,Write,Edit,NotebookEdit,"
-                      "WebFetch,WebSearch,Task"),
+        explain_argv=(
+            "claude",
+            "--print",
+            "{prompt}",
+            "--disallowedTools",
+            "Bash,Write,Edit,NotebookEdit,WebFetch,WebSearch,Task",
+        ),
     ),
     # opencode v1: permission rules via opencode.json work, but approval
     # routing does not -- the plugin hook that would intercept prompts exists
@@ -124,9 +128,17 @@ _PROFILES: dict[str, AgentProfile] = {
         # --no-tools is the hard guarantee: the explainer must not act.
         # --thinking mirrors the example's runtime command: some models
         # (glm-5.3-flash) refuse to run without an explicit level.
-        explain_argv=("pi", "--print", "--no-session", "--no-tools",
-                      "--thinking", "high",
-                      "--model", "{model}", "{prompt}"),
+        explain_argv=(
+            "pi",
+            "--print",
+            "--no-session",
+            "--no-tools",
+            "--thinking",
+            "high",
+            "--model",
+            "{model}",
+            "{prompt}",
+        ),
     ),
     "generic": AgentProfile(
         name="generic",
@@ -183,18 +195,22 @@ def _claude_hook(config: ContainerConfig) -> list[Injection]:
     capwrap's hooks and permissions replacing theirs outright (operator
     policy wins).
     """
-    settings: dict = _read_user_settings(
-        config, f"{GUEST_HOME}/.claude/settings.json"
-    ) or {}
+    settings: dict = (
+        _read_user_settings(config, f"{GUEST_HOME}/.claude/settings.json") or {}
+    )
     settings["hooks"] = {
-        "PreToolUse": [{
-            "matcher": "*",
-            "hooks": [{
-                "type": "command",
-                "command": f"{GUEST_TOOLS}/hook.py",
-                "timeout": 3600,
-            }],
-        }],
+        "PreToolUse": [
+            {
+                "matcher": "*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f"{GUEST_TOOLS}/hook.py",
+                        "timeout": 3600,
+                    }
+                ],
+            }
+        ],
     }
     permissions = config.runtime.permissions.to_policy().to_settings()
     if permissions:
@@ -273,11 +289,15 @@ def _policy_injection(config: ContainerConfig) -> Injection:
     policy = config.runtime.permissions.to_policy()
     return Injection(
         staged_name="policy.json",
-        content=json.dumps({
-            "allow": [_normalize_rule(r) for r in config.runtime.auto_allow],
-            "deny": [_normalize_rule(r) for r in config.runtime.auto_deny],
-            "fallback": "ask" if policy.ask else "deny",
-        }, indent=2) + "\n",
+        content=json.dumps(
+            {
+                "allow": [_normalize_rule(r) for r in config.runtime.auto_allow],
+                "deny": [_normalize_rule(r) for r in config.runtime.auto_deny],
+                "fallback": "ask" if policy.ask else "deny",
+            },
+            indent=2,
+        )
+        + "\n",
         dest=GUEST_POLICY,
     )
 
@@ -290,9 +310,7 @@ def _claude_settings(config: ContainerConfig) -> Injection:
     settings instead and this builder is not called at all.  Like the hook
     path, it merges over the user's own settings rather than replacing them.
     """
-    settings = _read_user_settings(
-        config, f"{GUEST_HOME}/.claude/settings.json"
-    ) or {}
+    settings = _read_user_settings(config, f"{GUEST_HOME}/.claude/settings.json") or {}
     settings["permissions"] = config.runtime.permissions.to_policy().to_settings()
     return Injection(
         staged_name="claude-settings.json",
@@ -408,7 +426,11 @@ def _opencode_settings(profile: AgentProfile, config: ContainerConfig) -> Inject
         for key, value in settings.items():
             if key == "instructions" and isinstance(merged.get("instructions"), list):
                 merged["instructions"] = list(merged["instructions"]) + list(value)
-            elif key == "agent" and isinstance(merged.get("agent"), dict) and isinstance(value, dict):
+            elif (
+                key == "agent"
+                and isinstance(merged.get("agent"), dict)
+                and isinstance(value, dict)
+            ):
                 # Per-agent entries merge one level deep: capwrap's model pin
                 # lands inside the user's agent block without discarding their
                 # other agent definitions (orchestrator, council, ...).
@@ -502,7 +524,7 @@ def _read_user_settings(config: ContainerConfig, settings_path: str) -> dict | N
         prefix = mount.dest.rstrip("/") + "/"
         if not settings_path.startswith(prefix):
             continue
-        rel = settings_path[len(prefix):]
+        rel = settings_path[len(prefix) :]
         if best is None or len(mount.dest) > len(best.dest):
             best, best_rel = mount, rel
     if best is None or best_rel is None:

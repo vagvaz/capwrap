@@ -97,7 +97,9 @@ def test_a_bwrap_that_cannot_build_a_namespace_is_passed_over(tmp_path, monkeypa
     broken = fake_bwrap(tmp_path / "broken")
     working = fake_bwrap(tmp_path / "working")
     monkeypatch.delenv("CAPWRAP_BWRAP", raising=False)
-    monkeypatch.setenv("PATH", os.pathsep.join([str(broken.parent), str(working.parent)]))
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([str(broken.parent), str(working.parent)])
+    )
 
     def only_the_second_works(path):
         if path == str(working):
@@ -120,7 +122,8 @@ def test_a_host_where_none_of_them_work_reports_every_attempt(tmp_path, monkeypa
     monkeypatch.delenv("CAPWRAP_BWRAP", raising=False)
     monkeypatch.setenv("PATH", os.pathsep.join([str(first.parent), str(second.parent)]))
     monkeypatch.setattr(
-        probe, "_bwrap_builds_a_namespace",
+        probe,
+        "_bwrap_builds_a_namespace",
         lambda path: (False, "setting up uid map: Permission denied"),
     )
 

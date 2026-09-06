@@ -61,17 +61,29 @@ class Rights(Flag):
     #: a decidable check instead of regex containment, which is not.
     CONNECT = auto()
 
-    def __contains__(self, other: "Rights") -> bool:
+    def __contains__(self, other: object) -> bool:
         """True when `self` carries every right in `other`.
 
         This is the monotonicity test: a delegation is legal exactly when the
         requested rights are contained in the delegator's own rights.
         """
+        # Fail closed on type confusion: an operand that is not a Rights mask
+        # carries no rights, so nothing can be missing from it.
+        if not isinstance(other, Rights):
+            return False
         return (self.value & other.value) == other.value
 
     def names(self) -> list[str]:
         """Lowercase right names, sorted, for display and the wire protocol."""
-        return sorted(r.name.lower() for r in Rights if r.value and r in self)
+        # Iterate `__members__` rather than the class so the names come as
+        # plain `str`; `Flag.member.name` is typed `str | None` because
+        # composite flags (SEND|READ, say) have none, though class-level
+        # iteration never yields one.
+        return sorted(
+            name.lower()
+            for name, right in Rights.__members__.items()
+            if right.value and right in self
+        )
 
     def __str__(self) -> str:  # pragma: no cover - display only
         return "|".join(self.names()) or "none"
@@ -108,7 +120,9 @@ VALID_RIGHTS: dict[str, Rights] = {
     "board": Rights.INSPECT | Rights.DELEGATE | Rights.SEND | Rights.READ,
 }
 
-_BY_NAME = {r.name.lower(): r for r in Rights if r.value}
+_BY_NAME = {
+    name.lower(): right for name, right in Rights.__members__.items() if right.value
+}
 
 
 def parse_rights(values: "str | list[str] | Rights | None") -> Rights:

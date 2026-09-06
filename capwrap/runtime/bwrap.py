@@ -18,7 +18,6 @@ from .. import agents
 from ..config import ContainerConfig
 from ..errors import SandboxError
 from ..paths import (
-    GUEST_GITDIR_ROOT,
     GUEST_HOME,
     GUEST_POLICY,
     GUEST_PROXY_PORT,
@@ -99,10 +98,15 @@ def _entry_command(config: ContainerConfig) -> list[str]:
     if not config.proxied_network:
         return command
     return [
-        "/usr/bin/env", "python3", f"{GUEST_TOOLS}/netrelay.py",
-        "--port", str(GUEST_PROXY_PORT),
-        "--socket", GUEST_PROXY_SOCKET,
-        "--", *command,
+        "/usr/bin/env",
+        "python3",
+        f"{GUEST_TOOLS}/netrelay.py",
+        "--port",
+        str(GUEST_PROXY_PORT),
+        "--socket",
+        GUEST_PROXY_SOCKET,
+        "--",
+        *command,
     ]
 
 
@@ -133,9 +137,7 @@ def _namespace_args(config: ContainerConfig) -> list[str]:
         args += ["--gid", str(sb.gid)]
     if sb.hostname:
         if "uts" not in requested:
-            raise SandboxError(
-                "sandbox.hostname requires 'uts' in sandbox.unshare"
-            )
+            raise SandboxError("sandbox.hostname requires 'uts' in sandbox.unshare")
         args += ["--hostname", sb.hostname]
     if sb.die_with_parent:
         args.append("--die-with-parent")
@@ -244,8 +246,12 @@ def _capwrap_args(
     is no token an agent could steal, guess or forge.
     """
     args = [
-        "--bind", str(paths.shared), GUEST_SHARED,
-        "--bind", str(paths.home), GUEST_HOME,
+        "--bind",
+        str(paths.shared),
+        GUEST_SHARED,
+        "--bind",
+        str(paths.home),
+        GUEST_HOME,
     ]
     if paths.socket.exists():
         args += ["--bind", str(paths.socket), GUEST_SOCKET]
@@ -284,12 +290,12 @@ def is_secret(name: str) -> bool:
 
 def redact(env: dict[str, str]) -> dict[str, str]:
     """Env with secret values masked, for `--dry-run` and the web UI."""
-    return {
-        k: ("<redacted>" if is_secret(k) and v else v) for k, v in env.items()
-    }
+    return {k: ("<redacted>" if is_secret(k) and v else v) for k, v in env.items()}
 
 
-def build_env(config: ContainerConfig, extra: dict[str, str] | None = None) -> dict[str, str]:
+def build_env(
+    config: ContainerConfig, extra: dict[str, str] | None = None
+) -> dict[str, str]:
     """The complete environment the container's process will see.
 
     Handed to bwrap as *its own* environment and inherited by the child, rather
@@ -304,34 +310,42 @@ def build_env(config: ContainerConfig, extra: dict[str, str] | None = None) -> d
         # Opt-in inheritance of the daemon's whole environment.
         env.update(os.environ)
 
-    env.update({
-        "HOME": GUEST_HOME,
-        "USER": "agent",
-        "LOGNAME": "agent",
-        # GUEST_TOOLS first, so `capctl` is on PATH without the agent being told
-        # where it lives.
-        "PATH": f"{GUEST_TOOLS}:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
-        "SHELL": "/bin/bash",
-        "TMPDIR": "/tmp",
-        "LANG": os.environ.get("LANG", "C.UTF-8"),
-        # Where guest tooling looks for the kernel, so capctl needs no arguments.
-        "CAPWRAP_SOCKET": GUEST_SOCKET,
-        "CAPWRAP_CONTAINER": config.name,
-        "CAPWRAP_SHARED": GUEST_SHARED,
-        "CAPWRAP_POLICY": GUEST_POLICY,
-        "CAPWRAP_SIGNING_KEY": GUEST_SIGNING_KEY,
-        "GIT_CONFIG_GLOBAL": f"{GUEST_HOME}/.gitconfig",
-    })
+    env.update(
+        {
+            "HOME": GUEST_HOME,
+            "USER": "agent",
+            "LOGNAME": "agent",
+            # GUEST_TOOLS first, so `capctl` is on PATH without the agent being told
+            # where it lives.
+            "PATH": f"{GUEST_TOOLS}:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
+            "SHELL": "/bin/bash",
+            "TMPDIR": "/tmp",
+            "LANG": os.environ.get("LANG", "C.UTF-8"),
+            # Where guest tooling looks for the kernel, so capctl needs no arguments.
+            "CAPWRAP_SOCKET": GUEST_SOCKET,
+            "CAPWRAP_CONTAINER": config.name,
+            "CAPWRAP_SHARED": GUEST_SHARED,
+            "CAPWRAP_POLICY": GUEST_POLICY,
+            "CAPWRAP_SIGNING_KEY": GUEST_SIGNING_KEY,
+            "GIT_CONFIG_GLOBAL": f"{GUEST_HOME}/.gitconfig",
+        }
+    )
     if config.proxied_network:
         # Both cases, because tooling is split on which it reads, and `no_proxy`
         # keeps the loopback relay itself from being proxied through itself.
         proxy = f"http://127.0.0.1:{GUEST_PROXY_PORT}"
-        env.update({
-            "HTTP_PROXY": proxy, "HTTPS_PROXY": proxy,
-            "http_proxy": proxy, "https_proxy": proxy,
-            "ALL_PROXY": proxy, "all_proxy": proxy,
-            "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
-        })
+        env.update(
+            {
+                "HTTP_PROXY": proxy,
+                "HTTPS_PROXY": proxy,
+                "http_proxy": proxy,
+                "https_proxy": proxy,
+                "ALL_PROXY": proxy,
+                "all_proxy": proxy,
+                "NO_PROXY": "127.0.0.1,localhost",
+                "no_proxy": "127.0.0.1,localhost",
+            }
+        )
     if config.runtime.tty:
         env["TERM"] = os.environ.get("TERM", "xterm-256color")
     env.update(extra or {})
@@ -409,8 +423,17 @@ def render(argv: list[str]) -> str:
         elif token in ("--setenv",):
             out.append("  " + " ".join(shlex.quote(a) for a in argv[i : i + 3]))
             i += 3
-        elif token in ("--overlay-src", "--tmpfs", "--proc", "--dev", "--chdir",
-                       "--uid", "--gid", "--hostname", "--size"):
+        elif token in (
+            "--overlay-src",
+            "--tmpfs",
+            "--proc",
+            "--dev",
+            "--chdir",
+            "--uid",
+            "--gid",
+            "--hostname",
+            "--size",
+        ):
             out.append("  " + " ".join(shlex.quote(a) for a in argv[i : i + 2]))
             i += 2
         else:

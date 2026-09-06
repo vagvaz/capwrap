@@ -71,7 +71,11 @@ class MappingDB:
     # -- construction ----------------------------------------------------
 
     def insert_root(
-        self, oid: int, holder: str, slot: int, rights: Rights,
+        self,
+        oid: int,
+        holder: str,
+        slot: int,
+        rights: Rights,
         on_revoke: str | None = None,
     ) -> MapNode:
         """Mint a fresh root capability.
@@ -82,14 +86,22 @@ class MappingDB:
         the operator's control.
         """
         node = MapNode(
-            id=next(self._ids), oid=oid, rights=rights,
-            holder=holder, slot=slot, on_revoke=on_revoke,
+            id=next(self._ids),
+            oid=oid,
+            rights=rights,
+            holder=holder,
+            slot=slot,
+            on_revoke=on_revoke,
         )
         self._nodes[node.id] = node
         return node
 
     def map(
-        self, parent_id: int, holder: str, slot: int, rights: Rights,
+        self,
+        parent_id: int,
+        holder: str,
+        slot: int,
+        rights: Rights,
         on_revoke: str | None = None,
     ) -> MapNode:
         """Derive a child mapping from `parent_id`.
@@ -105,8 +117,13 @@ class MappingDB:
                 f"cannot delegate {excess}: the delegator only holds {parent.rights}"
             )
         node = MapNode(
-            id=next(self._ids), oid=parent.oid, rights=rights,
-            holder=holder, slot=slot, parent=parent.id, on_revoke=on_revoke,
+            id=next(self._ids),
+            oid=parent.oid,
+            rights=rights,
+            holder=holder,
+            slot=slot,
+            parent=parent.id,
+            on_revoke=on_revoke,
         )
         self._nodes[node.id] = node
         parent.children.add(node.id)
@@ -130,16 +147,11 @@ class MappingDB:
         while stack:
             node = stack.pop()
             out.append(node)
-            stack.extend(
-                self._nodes[c] for c in node.children if c in self._nodes
-            )
+            stack.extend(self._nodes[c] for c in node.children if c in self._nodes)
         return out
 
     def nodes_for_holder(self, holder: str) -> list[MapNode]:
-        return [
-            n for n in self._nodes.values()
-            if n.holder == holder and not n.revoked
-        ]
+        return [n for n in self._nodes.values() if n.holder == holder and not n.revoked]
 
     def nodes_for_object(self, oid: int) -> list[MapNode]:
         return [n for n in self._nodes.values() if n.oid == oid and not n.revoked]

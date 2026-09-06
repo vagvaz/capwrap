@@ -264,7 +264,8 @@ def check_bwrap_works() -> Check:
         tried.append(f"{path}: {detail}")
 
     return Check(
-        "bwrap can create namespaces", False,
+        "bwrap can create namespaces",
+        False,
         "; ".join(tried),
         hint=_userns_hint(candidates),
     )
@@ -309,7 +310,9 @@ def check_kernel_overlay(bwrap: str | None = None) -> Check:
     """
     path = bwrap or find_bwrap()
     if not path:
-        return Check("overlay (kernel, in userns)", False, "bwrap not found", optional=True)
+        return Check(
+            "overlay (kernel, in userns)", False, "bwrap not found", optional=True
+        )
 
     with tempfile.TemporaryDirectory(prefix="capwrap-probe-") as tmp:
         root = Path(tmp)
@@ -318,14 +321,26 @@ def check_kernel_overlay(bwrap: str | None = None) -> Check:
             d.mkdir()
         (low / "probe").write_text("lower\n")
 
-        proc = _run([
-            path, "--unshare-all", *_base_binds(),
-            "--overlay-src", str(low),
-            "--overlay", str(up), str(work), "/mnt",
-            "/bin/sh", "-c", "cat /mnt/probe && echo upper > /mnt/written",
-        ])
+        proc = _run(
+            [
+                path,
+                "--unshare-all",
+                *_base_binds(),
+                "--overlay-src",
+                str(low),
+                "--overlay",
+                str(up),
+                str(work),
+                "/mnt",
+                "/bin/sh",
+                "-c",
+                "cat /mnt/probe && echo upper > /mnt/written",
+            ]
+        )
         if proc.returncode == 0 and (up / "written").exists():
-            return Check("overlay (kernel, in userns)", True, "mounted and wrote to upper")
+            return Check(
+                "overlay (kernel, in userns)", True, "mounted and wrote to upper"
+            )
 
         detail = (proc.stderr or proc.stdout).strip().splitlines()
         return Check(
@@ -349,8 +364,11 @@ def check_fuse_overlayfs() -> Check:
         )
     if not Path("/dev/fuse").exists():
         return Check(
-            "fuse-overlayfs", False, "/dev/fuse missing",
-            hint="sudo modprobe fuse", optional=True,
+            "fuse-overlayfs",
+            False,
+            "/dev/fuse missing",
+            hint="sudo modprobe fuse",
+            optional=True,
         )
     proc = _run([path, "--version"])
     first = (proc.stdout or proc.stderr).strip().splitlines()
@@ -361,7 +379,9 @@ def check_git() -> Check:
     path = shutil.which("git")
     if not path:
         return Check(
-            "git", False, "not found",
+            "git",
+            False,
+            "not found",
             hint="needed for mode='worktree'; nix: add `git` to home.packages",
             optional=True,
         )
@@ -383,7 +403,9 @@ def check_live_remapping() -> Check:
     if ok:
         return Check("live remapping (nsmount)", True, detail, optional=True)
     return Check(
-        "live remapping (nsmount)", False, detail,
+        "live remapping (nsmount)",
+        False,
+        detail,
         hint=(
             "falling back to the 'shared' backend, which copies into the "
             "target's /shared. For real bind mounts, run the daemon with "
@@ -403,7 +425,9 @@ def check_state_dir() -> Check:
         probe.unlink()
     except OSError as exc:
         return Check(
-            "state directory writable", False, f"{root}: {exc}",
+            "state directory writable",
+            False,
+            f"{root}: {exc}",
             hint="set CAPWRAP_STATE to a writable location",
         )
     return Check("state directory writable", True, str(root))
@@ -427,6 +451,7 @@ def run_all() -> Report:
 
 def format_report(report: Report, color: bool = True) -> str:
     """Render a report for the terminal."""
+
     def paint(text: str, code: str) -> str:
         return f"\033[{code}m{text}\033[0m" if color else text
 

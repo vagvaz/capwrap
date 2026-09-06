@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "httpx"]
+dev = ["pytest", "pytest-asyncio", "httpx", "ruff>=0.8", "mypy>=1.13"]
 # Only for the console's "Explain" button. capwrap runs fine without it.
 
 [project.scripts]
@@ -34,3 +34,11 @@ asyncio_mode = "auto"
 markers = [
     "sandbox: requires a working bwrap (skipped when `capwrap doctor` is unhappy)",
 ]
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["capwrap/web/static/vendor"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true

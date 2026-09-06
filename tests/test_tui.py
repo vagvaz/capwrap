@@ -10,10 +10,9 @@ from __future__ import annotations
 import json
 import struct
 
-import pytest
 
 from capwrap.tui.app import VIEWS, Console
-from capwrap.tui.client import Client, ConsoleError
+from capwrap.tui.client import Client
 from capwrap.tui.ws import WebSocket
 
 
@@ -60,10 +59,13 @@ def test_a_binary_frame_comes_back_whole():
 
 def test_several_frames_in_one_read_all_come_back():
     """A PTY burst arrives as one read holding several frames."""
-    ws = WebSocket(FakeSocket(
-        server_frame(0x2, b"one") + server_frame(0x2, b"two")
-        + server_frame(0x2, b"three")
-    ))
+    ws = WebSocket(
+        FakeSocket(
+            server_frame(0x2, b"one")
+            + server_frame(0x2, b"two")
+            + server_frame(0x2, b"three")
+        )
+    )
     assert ws.receive() == [(0x2, b"one"), (0x2, b"two"), (0x2, b"three")]
 
 
@@ -72,16 +74,18 @@ def test_a_frame_split_across_reads_waits_for_its_tail():
     whole = server_frame(0x2, b"a longer piece of terminal output")
     sock = FakeSocket(whole[:6], whole[6:])
     ws = WebSocket(sock)
-    assert ws.receive() == []                    # not yet a whole frame
+    assert ws.receive() == []  # not yet a whole frame
     assert ws.receive() == [(0x2, b"a longer piece of terminal output")]
 
 
 def test_a_fragmented_message_is_reassembled():
     """Dropping the tail would corrupt the screen rather than fail loudly."""
-    ws = WebSocket(FakeSocket(
-        server_frame(0x2, b"first half ", fin=False)
-        + server_frame(0x0, b"second half", fin=True)
-    ))
+    ws = WebSocket(
+        FakeSocket(
+            server_frame(0x2, b"first half ", fin=False)
+            + server_frame(0x0, b"second half", fin=True)
+        )
+    )
     assert ws.receive() == [(0x2, b"first half second half")]
 
 
@@ -112,8 +116,8 @@ def test_what_the_client_sends_is_masked_and_round_trips():
     ws.send_text(json.dumps({"type": "input", "data": "ls\r"}))
 
     sent = bytes(sock.sent)
-    assert sent[0] == 0x81                       # fin + text
-    assert sent[1] & 0x80                        # masked
+    assert sent[0] == 0x81  # fin + text
+    assert sent[1] & 0x80  # masked
     length = sent[1] & 0x7F
     mask, body = sent[2:6], sent[6 : 6 + length]
     decoded = bytes(b ^ mask[i % 4] for i, b in enumerate(body))
@@ -162,9 +166,12 @@ def test_tab_cycles_the_views():
 
 
 def test_answering_takes_the_approval_off_the_queue():
-    client = StubClient(overview={
-        "containers": [], "approvals": [approval(7, "alpha")],
-    })
+    client = StubClient(
+        overview={
+            "containers": [],
+            "approvals": [approval(7, "alpha")],
+        }
+    )
     console = Console(client)
     console.refresh(rows=10)
     console.view = "approvals"
@@ -181,10 +188,20 @@ def test_allowing_a_capability_request_grants_what_was_asked_for():
     checkbox list. Silently granting something other than what the card shows
     would be worse than not offering the choice at all.
     """
-    client = StubClient(overview={"containers": [], "approvals": [
-        approval(3, "beta", kind="capability_request",
-                 kind_="container", rights=["send", "inspect"]),
-    ]})
+    client = StubClient(
+        overview={
+            "containers": [],
+            "approvals": [
+                approval(
+                    3,
+                    "beta",
+                    kind="capability_request",
+                    kind_="container",
+                    rights=["send", "inspect"],
+                ),
+            ],
+        }
+    )
     console = Console(client)
     console.refresh(rows=10)
     console.view = "approvals"
@@ -194,9 +211,14 @@ def test_allowing_a_capability_request_grants_what_was_asked_for():
 
 
 def test_denying_never_carries_rights():
-    client = StubClient(overview={"containers": [], "approvals": [
-        approval(3, "beta", kind="capability_request", rights=["send"]),
-    ]})
+    client = StubClient(
+        overview={
+            "containers": [],
+            "approvals": [
+                approval(3, "beta", kind="capability_request", rights=["send"]),
+            ],
+        }
+    )
     console = Console(client)
     console.refresh(rows=10)
     console.view = "approvals"
@@ -205,10 +227,12 @@ def test_denying_never_carries_rights():
 
 
 def test_attaching_to_a_stopped_container_says_so_rather_than_hanging():
-    client = StubClient(overview={
-        "containers": [{"name": "alpha", "running": False, "state": "exited"}],
-        "approvals": [],
-    })
+    client = StubClient(
+        overview={
+            "containers": [{"name": "alpha", "running": False, "state": "exited"}],
+            "approvals": [],
+        }
+    )
     console = Console(client)
     console.refresh(rows=10)
     console.handle(ord("\n"))
@@ -219,9 +243,12 @@ def test_attaching_to_a_stopped_container_says_so_rather_than_hanging():
 
 def test_attaching_asks_the_caller_to_tear_curses_down_first():
     """The agent's own full-screen program needs the terminal to itself."""
-    client = StubClient(overview={
-        "containers": [{"name": "alpha", "running": True}], "approvals": [],
-    })
+    client = StubClient(
+        overview={
+            "containers": [{"name": "alpha", "running": True}],
+            "approvals": [],
+        }
+    )
     console = Console(client)
     console.refresh(rows=10)
     console.handle(ord("\n"))
@@ -236,16 +263,19 @@ def test_a_daemon_that_is_not_there_is_reported_not_raised():
 
 
 def test_selection_survives_a_container_disappearing():
-    client = StubClient(overview={
-        "containers": [{"name": n, "running": True} for n in ("a", "b", "c")],
-        "approvals": [],
-    })
+    client = StubClient(
+        overview={
+            "containers": [{"name": n, "running": True} for n in ("a", "b", "c")],
+            "approvals": [],
+        }
+    )
     console = Console(client)
     console.refresh(rows=10)
     console.selected = 2
 
     client.data["overview"] = {
-        "containers": [{"name": "a", "running": True}], "approvals": [],
+        "containers": [{"name": "a", "running": True}],
+        "approvals": [],
     }
     console.refresh(rows=10)
     assert console.current["name"] == "a"

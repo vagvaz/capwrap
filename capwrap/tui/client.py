@@ -26,8 +26,9 @@ class ConsoleError(Exception):
 class Client:
     """One capwrap instance's HTTP API."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8420,
-                 timeout: float = 10.0) -> None:
+    def __init__(
+        self, host: str = "127.0.0.1", port: int = 8420, timeout: float = 10.0
+    ) -> None:
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -37,7 +38,8 @@ class Client:
 
     def _call(self, path: str, method: str = "GET", body: Any = None) -> Any:
         request = urllib.request.Request(
-            f"{self.base}{path}", method=method,
+            f"{self.base}{path}",
+            method=method,
             data=None if body is None else json.dumps(body).encode(),
             headers={"Content-Type": "application/json"},
         )
@@ -94,34 +96,39 @@ class Client:
     # control
     # ------------------------------------------------------------------
 
-    def answer(self, approval_id: int, decision: str, reason: str = "",
-               rights: list[str] | None = None) -> Any:
+    def answer(
+        self,
+        approval_id: int,
+        decision: str,
+        reason: str = "",
+        rights: list[str] | None = None,
+    ) -> Any:
         return self._call(
-            f"/api/approvals/{approval_id}", "POST",
+            f"/api/approvals/{approval_id}",
+            "POST",
             {"decision": decision, "reason": reason, "rights": rights},
         )
 
     def send(self, targets: list[str], message: str) -> Any:
-        return self._call("/api/send", "POST",
-                          {"targets": targets, "message": message})
+        return self._call("/api/send", "POST", {"targets": targets, "message": message})
 
     def start(self, name: str) -> Any:
-        return self._call(
-            f"/api/containers/{urllib.parse.quote(name)}/start", "POST")
+        return self._call(f"/api/containers/{urllib.parse.quote(name)}/start", "POST")
 
     def stop(self, name: str) -> Any:
-        return self._call(
-            f"/api/containers/{urllib.parse.quote(name)}/stop", "POST")
+        return self._call(f"/api/containers/{urllib.parse.quote(name)}/stop", "POST")
 
     def interrupt(self, name: str) -> Any:
         return self._call(
-            f"/api/containers/{urllib.parse.quote(name)}/signal?sig=2", "POST")
+            f"/api/containers/{urllib.parse.quote(name)}/signal?sig=2", "POST"
+        )
 
     def set_trace(self, enabled: bool) -> Any:
         return self._call("/api/trace", "POST", {"enabled": enabled})
 
     def write_input(self, name: str, data: str) -> Any:
         return self._call(
-            f"/api/containers/{urllib.parse.quote(name)}/input", "POST",
+            f"/api/containers/{urllib.parse.quote(name)}/input",
+            "POST",
             {"data": data},
         )

@@ -119,15 +119,15 @@ class WebSocket:
                 return out
             fin, opcode, payload = frame
 
-            if opcode == 0x9:                      # ping
+            if opcode == 0x9:  # ping
                 self._send(0xA, payload)
                 continue
-            if opcode == 0xA:                      # pong
+            if opcode == 0xA:  # pong
                 continue
 
-            if opcode == 0x0:                      # continuation
+            if opcode == 0x0:  # continuation
                 if self._continuation is None:
-                    continue                       # nothing to continue; ignore
+                    continue  # nothing to continue; ignore
                 start_opcode, buffered = self._continuation
                 buffered += payload
                 if fin:
@@ -164,7 +164,7 @@ class WebSocket:
             offset += 8
 
         mask = b""
-        if masked:                                  # servers normally do not
+        if masked:  # servers normally do not
             if len(buffer) < offset + 4:
                 return None
             mask = buffer[offset : offset + 4]

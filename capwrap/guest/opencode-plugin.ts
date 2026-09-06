@@ -55,7 +55,8 @@ function loadPolicy(): { allow: string[]; deny: string[]; fallback?: string } {
     return {
       allow: Array.isArray(parsed.allow) ? parsed.allow.map(String) : [],
       deny: Array.isArray(parsed.deny) ? parsed.deny.map(String) : [],
-      fallback: typeof parsed.fallback === "string" ? parsed.fallback : undefined,
+      fallback:
+        typeof parsed.fallback === "string" ? parsed.fallback : undefined,
     };
   } catch {
     return { allow: [], deny: [] };
@@ -117,7 +118,11 @@ function globToRegExp(pattern: string): RegExp {
  * `Bash(git *)` is the shape people actually want: allow git, keep asking
  * about everything else the same tool could do.
  */
-function matches(rules: string[] | undefined, tool: string, summary: string): boolean {
+function matches(
+  rules: string[] | undefined,
+  tool: string,
+  summary: string,
+): boolean {
   // Rules arrive pre-normalised from the policy file: lowercase tool names,
   // glob patterns (see agents._normalize_rule).  opencode's own tool names
   // are lowercase already, so the comparison is plain.
@@ -182,7 +187,9 @@ function askDaemon(
     const onError = (err: Error) => fail(err);
     const onClose = () => fail(new Error("the daemon closed the connection"));
     const onTimeout = () =>
-      fail(new Error(`timed out waiting for the capwrap daemon (${ASK_TIMEOUT}s)`));
+      fail(
+        new Error(`timed out waiting for the capwrap daemon (${ASK_TIMEOUT}s)`),
+      );
 
     sock.on("data", onData);
     sock.on("error", onError);

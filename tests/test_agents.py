@@ -67,16 +67,23 @@ def test_profile_fields_match_the_documented_layout():
     opencode = agents.get_profile("opencode")
     assert opencode.settings_path == f"{GUEST_HOME}/.config/opencode/opencode.json"
     assert opencode.permission_encoder == "opencode"
-    assert opencode.hook_protocol is None, \
+    assert opencode.hook_protocol is None, (
         "v1's permission.ask is declared but never wired upstream"
-    assert opencode.skill_path == f"{GUEST_HOME}/.config/opencode/skills/capwrap/SKILL.md"
+    )
+    assert (
+        opencode.skill_path == f"{GUEST_HOME}/.config/opencode/skills/capwrap/SKILL.md"
+    )
 
     opencode2 = agents.get_profile("opencode2")
-    assert opencode2.settings_path == f"{GUEST_HOME}/.config/opencode2/opencode.json", \
+    assert opencode2.settings_path == f"{GUEST_HOME}/.config/opencode2/opencode.json", (
         "v2 reads its own config dir, not v1's ~/.config/opencode"
+    )
     assert opencode2.permission_encoder == "opencode"
     assert opencode2.hook_protocol == "opencode2"
-    assert opencode2.skill_path == f"{GUEST_HOME}/.config/opencode2/skills/capwrap/SKILL.md"
+    assert (
+        opencode2.skill_path
+        == f"{GUEST_HOME}/.config/opencode2/skills/capwrap/SKILL.md"
+    )
 
     pi = agents.get_profile("pi")
     assert pi.settings_path is None
@@ -110,7 +117,9 @@ def test_injection_needs_exactly_one_of_content_or_src():
 
 def test_injection_accepts_content_or_src_alone():
     assert agents.Injection(staged_name="x", dest="/x", content="a").content == "a"
-    assert agents.Injection(staged_name="x", dest="/x", src=Path("/a")).src == Path("/a")
+    assert agents.Injection(staged_name="x", dest="/x", src=Path("/a")).src == Path(
+        "/a"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -269,24 +278,37 @@ def test_claude_capwrap_merges_over_the_user_settings(tmp_path):
     replace theirs outright."""
     src = tmp_path / "claude"
     src.mkdir()
-    (src / "settings.json").write_text(json.dumps({
-        "env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:3456",
-                "ANTHROPIC_AUTH_TOKEN": "unused"},
-        "model": "claude-opus-4-8",
-    }))
-    config = make({
-        "name": "ca",
-        "runtime": {
-            "approvals": "capwrap",
-            "permissions": {"allow": ["Read"]},
+    (src / "settings.json").write_text(
+        json.dumps(
+            {
+                "env": {
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:3456",
+                    "ANTHROPIC_AUTH_TOKEN": "unused",
+                },
+                "model": "claude-opus-4-8",
+            }
+        )
+    )
+    config = make(
+        {
+            "name": "ca",
+            "runtime": {
+                "approvals": "capwrap",
+                "permissions": {"allow": ["Read"]},
+            },
+            "mounts": [
+                {"src": str(src), "dest": f"{GUEST_HOME}/.claude", "mode": "copy"}
+            ],
         },
-        "mounts": [{"src": str(src), "dest": f"{GUEST_HOME}/.claude", "mode": "copy"}],
-    }, tmp_path)
+        tmp_path,
+    )
     injections = agents.guest_injections(agents.get_profile("claude"), config)
 
     settings = loads(injections[0])
-    assert settings["env"] == {"ANTHROPIC_BASE_URL": "http://127.0.0.1:3456",
-                               "ANTHROPIC_AUTH_TOKEN": "unused"}
+    assert settings["env"] == {
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:3456",
+        "ANTHROPIC_AUTH_TOKEN": "unused",
+    }
     assert settings["model"] == "claude-opus-4-8"
     assert "hooks" in settings
     assert settings["permissions"] == {"allow": ["Read"]}
@@ -295,14 +317,23 @@ def test_claude_capwrap_merges_over_the_user_settings(tmp_path):
 def test_claude_native_merges_over_the_user_settings_too(tmp_path):
     src = tmp_path / "claude"
     src.mkdir()
-    (src / "settings.json").write_text(json.dumps({
-        "env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:3456"},
-    }))
-    config = make({
-        "name": "ca",
-        "runtime": {"permissions": {"allow": ["Read"]}},
-        "mounts": [{"src": str(src), "dest": f"{GUEST_HOME}/.claude", "mode": "copy"}],
-    }, tmp_path)
+    (src / "settings.json").write_text(
+        json.dumps(
+            {
+                "env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:3456"},
+            }
+        )
+    )
+    config = make(
+        {
+            "name": "ca",
+            "runtime": {"permissions": {"allow": ["Read"]}},
+            "mounts": [
+                {"src": str(src), "dest": f"{GUEST_HOME}/.claude", "mode": "copy"}
+            ],
+        },
+        tmp_path,
+    )
     injections = agents.guest_injections(agents.get_profile("claude"), config)
     settings = loads(injections[0])
     assert settings["env"] == {"ANTHROPIC_BASE_URL": "http://127.0.0.1:3456"}
@@ -357,7 +388,7 @@ def test_opencode2_capwrap_role_prompt_gets_instructions_only(tmp_path):
 
 
 def test_opencode_native_permissions_and_role_prompt_share_one_file(tmp_path):
-    role = _role(tmp_path)
+    _role(tmp_path)  # creates the role file the injection binds to
     config = _config(
         tmp_path,
         agent="opencode",
@@ -395,15 +426,20 @@ def _opencode_config(tmp_path, **runtime):
     """
     src = tmp_path / "oc"
     src.mkdir()
-    config = make({
-        "name": "oc",
-        "runtime": runtime,
-        "mounts": [{
-            "src": str(src),
-            "dest": f"{GUEST_HOME}/.config/opencode2",
-            "mode": "ro",
-        }],
-    }, tmp_path)
+    config = make(
+        {
+            "name": "oc",
+            "runtime": runtime,
+            "mounts": [
+                {
+                    "src": str(src),
+                    "dest": f"{GUEST_HOME}/.config/opencode2",
+                    "mode": "ro",
+                }
+            ],
+        },
+        tmp_path,
+    )
     return config, src
 
 
@@ -416,11 +452,15 @@ def _opencode_settings(config) -> dict:
 
 def test_opencode_merge_preserves_user_config_and_adds_permission(tmp_path):
     config, src = _opencode_config(tmp_path, permissions={"allow": ["Read"]})
-    (src / "opencode.json").write_text(json.dumps({
-        "provider": {"x": {}},
-        "agent": {"y": {}},
-        "mcp": {"z": {}},
-    }))
+    (src / "opencode.json").write_text(
+        json.dumps(
+            {
+                "provider": {"x": {}},
+                "agent": {"y": {}},
+                "mcp": {"z": {}},
+            }
+        )
+    )
     assert _opencode_settings(config) == {
         "provider": {"x": {}},
         "agent": {"y": {}},
@@ -432,9 +472,13 @@ def test_opencode_merge_preserves_user_config_and_adds_permission(tmp_path):
 def test_opencode_merge_appends_instructions_to_the_user_array(tmp_path):
     config, src = _opencode_config(tmp_path, role_prompt="role.md")
     _role(tmp_path)
-    (src / "opencode.json").write_text(json.dumps({
-        "instructions": ["/home/agent/notes.md"],
-    }))
+    (src / "opencode.json").write_text(
+        json.dumps(
+            {
+                "instructions": ["/home/agent/notes.md"],
+            }
+        )
+    )
     assert _opencode_settings(config) == {
         "instructions": ["/home/agent/notes.md", GUEST_ROLE_PROMPT],
     }
@@ -473,9 +517,13 @@ def test_opencode_merge_agent_pin_lands_inside_the_user_agent_block(tmp_path):
     """v2 ignores the legacy top-level model for built-in agents; the per-agent
     pin merges into the user's agent block without discarding their agents."""
     config, src = _opencode_config(tmp_path, model="opencode-go/glm-5.3-flash")
-    (src / "opencode.json").write_text(json.dumps({
-        "agent": {"orchestrator": {"model": "opencode/glm-5.3-flash"}},
-    }))
+    (src / "opencode.json").write_text(
+        json.dumps(
+            {
+                "agent": {"orchestrator": {"model": "opencode/glm-5.3-flash"}},
+            }
+        )
+    )
     assert _opencode_settings(config) == {
         "model": "opencode-go/glm-5.3-flash",
         "agent": {
@@ -489,9 +537,7 @@ def test_opencode_merge_unparseable_user_file_is_a_config_error(tmp_path):
     """A file json.loads cannot read even after comment-stripping is refused,
     never shadowed: merging capwrap-only keys would delete the user's config."""
     config, src = _opencode_config(tmp_path, permissions={"allow": ["Read"]})
-    (src / "opencode.json").write_text(
-        '{"provider": {"x": {}}, trailing comma here,}'
-    )
+    (src / "opencode.json").write_text('{"provider": {"x": {}}, trailing comma here,}')
     with pytest.raises(ConfigError, match="not parseable"):
         _opencode_settings(config)
 
@@ -500,12 +546,12 @@ def test_opencode_merge_strips_jsonc_comments_and_merges(tmp_path):
     """JSONC configs (comments allowed) are read, not silently dropped."""
     config, src = _opencode_config(tmp_path, permissions={"allow": ["Read"]})
     (src / "opencode.json").write_text(
-        '// my providers\n'
-        '{\n'
+        "// my providers\n"
+        "{\n"
         '  "provider": {"x": {"options": {"baseURL": "https://api.example.com/v1"}}},\n'
-        '  /* block comment */\n'
+        "  /* block comment */\n"
         '  "mcp": {"z": {}},\n'
-        '}\n'
+        "}\n"
     )
     assert _opencode_settings(config) == {
         "provider": {"x": {"options": {"baseURL": "https://api.example.com/v1"}}},
@@ -571,14 +617,21 @@ def test_opencode_merge_reads_through_a_home_level_mount(tmp_path):
     """A mount on $HOME covers the config too; rel is computed from the dest."""
     src = tmp_path / "home"
     (src / ".config" / "opencode2").mkdir(parents=True)
-    (src / ".config" / "opencode2" / "opencode.json").write_text(json.dumps({
-        "provider": {"x": {}},
-    }))
-    config = make({
-        "name": "oc",
-        "runtime": {"agent": "opencode2", "permissions": {"allow": ["Read"]}},
-        "mounts": [{"src": str(src), "dest": GUEST_HOME, "mode": "ro"}],
-    }, tmp_path)
+    (src / ".config" / "opencode2" / "opencode.json").write_text(
+        json.dumps(
+            {
+                "provider": {"x": {}},
+            }
+        )
+    )
+    config = make(
+        {
+            "name": "oc",
+            "runtime": {"agent": "opencode2", "permissions": {"allow": ["Read"]}},
+            "mounts": [{"src": str(src), "dest": GUEST_HOME, "mode": "ro"}],
+        },
+        tmp_path,
+    )
     assert _opencode_settings(config) == {
         "provider": {"x": {}},
         "permission": {"read": "allow"},
@@ -590,20 +643,35 @@ def test_opencode_merge_deepest_covering_mount_wins(tmp_path):
     home = tmp_path / "home"
     oc = home / ".config" / "opencode2"
     oc.mkdir(parents=True)
-    (home / ".config" / "opencode2" / "opencode.json").write_text(json.dumps({
-        "provider": {"shallow": {}},
-    }))
-    (oc / "opencode.json").write_text(json.dumps({
-        "provider": {"deep": {}},
-    }))
-    config = make({
-        "name": "oc",
-        "runtime": {"agent": "opencode2", "permissions": {"allow": ["Read"]}},
-        "mounts": [
-            {"src": str(home), "dest": GUEST_HOME, "mode": "ro"},
-            {"src": str(oc), "dest": f"{GUEST_HOME}/.config/opencode2", "mode": "ro"},
-        ],
-    }, tmp_path)
+    (home / ".config" / "opencode2" / "opencode.json").write_text(
+        json.dumps(
+            {
+                "provider": {"shallow": {}},
+            }
+        )
+    )
+    (oc / "opencode.json").write_text(
+        json.dumps(
+            {
+                "provider": {"deep": {}},
+            }
+        )
+    )
+    config = make(
+        {
+            "name": "oc",
+            "runtime": {"agent": "opencode2", "permissions": {"allow": ["Read"]}},
+            "mounts": [
+                {"src": str(home), "dest": GUEST_HOME, "mode": "ro"},
+                {
+                    "src": str(oc),
+                    "dest": f"{GUEST_HOME}/.config/opencode2",
+                    "mode": "ro",
+                },
+            ],
+        },
+        tmp_path,
+    )
     assert _opencode_settings(config) == {
         "provider": {"deep": {}},
         "permission": {"read": "allow"},
@@ -640,12 +708,14 @@ def test_command_flags_claude_and_pi_point_at_the_bound_file(tmp_path):
     _role(tmp_path)
     claude = _config(tmp_path, agent="claude", role_prompt="role.md")
     assert agents.command_flags(agents.get_profile("claude"), claude) == [
-        "--append-system-prompt-file", GUEST_ROLE_PROMPT,
+        "--append-system-prompt-file",
+        GUEST_ROLE_PROMPT,
     ]
 
     pi = _config(tmp_path, agent="pi", role_prompt="role.md")
     assert agents.command_flags(agents.get_profile("pi"), pi) == [
-        "--append-system-prompt", GUEST_ROLE_PROMPT,
+        "--append-system-prompt",
+        GUEST_ROLE_PROMPT,
     ]
 
 
@@ -665,12 +735,14 @@ def test_command_flags_are_empty_without_a_role_prompt(tmp_path, name):
 def test_command_flags_claude_and_pi_emit_the_model_flag(tmp_path):
     claude = _config(tmp_path, agent="claude", model="opencode-go/glm-5.3-flash")
     assert agents.command_flags(agents.get_profile("claude"), claude) == [
-        "--model", "opencode-go/glm-5.3-flash",
+        "--model",
+        "opencode-go/glm-5.3-flash",
     ]
 
     pi = _config(tmp_path, agent="pi", model="opencode-go/glm-5.3-flash")
     assert agents.command_flags(agents.get_profile("pi"), pi) == [
-        "--model", "opencode-go/glm-5.3-flash",
+        "--model",
+        "opencode-go/glm-5.3-flash",
     ]
 
 
@@ -683,8 +755,10 @@ def test_command_flags_combine_role_prompt_and_model_for_claude(tmp_path):
         model="opencode-go/glm-5.3-flash",
     )
     assert agents.command_flags(agents.get_profile("claude"), config) == [
-        "--append-system-prompt-file", GUEST_ROLE_PROMPT,
-        "--model", "opencode-go/glm-5.3-flash",
+        "--append-system-prompt-file",
+        GUEST_ROLE_PROMPT,
+        "--model",
+        "opencode-go/glm-5.3-flash",
     ]
 
 
@@ -721,7 +795,8 @@ def test_to_opencode_lowercases_tool_names():
 
 def test_to_opencode_emits_deny_after_allow_for_the_same_tool():
     block = Policy.from_lists(
-        allow=["Bash(git *)"], deny=["Bash(sudo *)"],
+        allow=["Bash(git *)"],
+        deny=["Bash(sudo *)"],
     ).to_opencode()
     assert block == {"bash": {"git *": "allow", "sudo *": "deny"}}
     assert list(block["bash"]) == ["git *", "sudo *"], "deny must come last"
@@ -734,7 +809,8 @@ def test_to_opencode_bare_rule_alongside_patterned_promotes_to_catch_all():
 
 def test_to_opencode_drops_default_mode():
     block = Policy.from_lists(
-        allow=["Read"], default_mode="bypassPermissions",
+        allow=["Read"],
+        default_mode="bypassPermissions",
     ).to_opencode()
     assert block == {"read": "allow"}
 
@@ -744,17 +820,18 @@ def test_to_opencode_drops_default_mode():
 # --------------------------------------------------------------------------
 
 
-def test_opencode2_capwrap_approvals_stage_plugin_policy_and_skill(
-    tmp_path, state_dir
-):
-    config = make({
-        "name": "oc2",
-        "runtime": {
-            "agent": "opencode2",
-            "approvals": "capwrap",
-            "auto_allow": ["Read"],
+def test_opencode2_capwrap_approvals_stage_plugin_policy_and_skill(tmp_path, state_dir):
+    config = make(
+        {
+            "name": "oc2",
+            "runtime": {
+                "agent": "opencode2",
+                "approvals": "capwrap",
+                "auto_allow": ["Read"],
+            },
         },
-    }, tmp_path)
+        tmp_path,
+    )
     files = files_by_dest(fsprep.prepare(config, ContainerPaths("oc2")))
 
     plugin = files[f"{GUEST_HOME}/.config/opencode2/plugins/capwrap.ts"]
@@ -772,42 +849,54 @@ def test_opencode2_capwrap_approvals_stage_plugin_policy_and_skill(
 
 
 def test_opencode_v1_capwrap_approvals_are_rejected(tmp_path, state_dir):
-    config = make({
-        "name": "oc1",
-        "runtime": {"agent": "opencode", "approvals": "capwrap"},
-    }, tmp_path)
+    config = make(
+        {
+            "name": "oc1",
+            "runtime": {"agent": "opencode", "approvals": "capwrap"},
+        },
+        tmp_path,
+    )
     with pytest.raises(ConfigError, match="no approval shim"):
         fsprep.prepare(config, ContainerPaths("oc1"))
 
 
 def test_pi_native_approvals_with_permissions_are_rejected(tmp_path, state_dir):
-    config = make({
-        "name": "pi",
-        "runtime": {
-            "agent": "pi",
-            "approvals": "native",
-            "permissions": {"allow": ["Read"]},
+    config = make(
+        {
+            "name": "pi",
+            "runtime": {
+                "agent": "pi",
+                "approvals": "native",
+                "permissions": {"allow": ["Read"]},
+            },
         },
-    }, tmp_path)
+        tmp_path,
+    )
     with pytest.raises(ConfigError, match="no native permission system"):
         fsprep.prepare(config, ContainerPaths("pi"))
 
 
 def test_generic_capwrap_approvals_are_rejected(tmp_path, state_dir):
-    config = make({
-        "name": "gen",
-        "runtime": {"agent": "generic", "approvals": "capwrap"},
-    }, tmp_path)
+    config = make(
+        {
+            "name": "gen",
+            "runtime": {"agent": "generic", "approvals": "capwrap"},
+        },
+        tmp_path,
+    )
     with pytest.raises(ConfigError, match="no approval shim"):
         fsprep.prepare(config, ContainerPaths("gen"))
 
 
 def test_default_agent_is_still_claude(tmp_path, state_dir):
     """Configs written before profiles existed keep producing claude settings."""
-    config = make({
-        "name": "legacy",
-        "runtime": {"approvals": "capwrap", "auto_allow": ["Read"]},
-    }, tmp_path)
+    config = make(
+        {
+            "name": "legacy",
+            "runtime": {"approvals": "capwrap", "auto_allow": ["Read"]},
+        },
+        tmp_path,
+    )
     files = files_by_dest(fsprep.prepare(config, ContainerPaths("legacy")))
     assert f"{GUEST_HOME}/.claude/settings.json" in files
     assert GUEST_POLICY in files
@@ -815,10 +904,13 @@ def test_default_agent_is_still_claude(tmp_path, state_dir):
 
 def test_role_prompt_is_staged_and_bound_for_claude(tmp_path, state_dir):
     _role(tmp_path, "# you are the architect\n")
-    config = make({
-        "name": "rp",
-        "runtime": {"agent": "claude", "role_prompt": "role.md"},
-    }, tmp_path)
+    config = make(
+        {
+            "name": "rp",
+            "runtime": {"agent": "claude", "role_prompt": "role.md"},
+        },
+        tmp_path,
+    )
     files = files_by_dest(fsprep.prepare(config, ContainerPaths("rp")))
 
     staged = files[GUEST_ROLE_PROMPT]
@@ -828,10 +920,13 @@ def test_role_prompt_is_staged_and_bound_for_claude(tmp_path, state_dir):
 
 def test_role_prompt_is_staged_and_bound_for_generic(tmp_path, state_dir):
     _role(tmp_path, "# you are a generic agent\n")
-    config = make({
-        "name": "rp",
-        "runtime": {"agent": "generic", "role_prompt": "role.md"},
-    }, tmp_path)
+    config = make(
+        {
+            "name": "rp",
+            "runtime": {"agent": "generic", "role_prompt": "role.md"},
+        },
+        tmp_path,
+    )
     files = files_by_dest(fsprep.prepare(config, ContainerPaths("rp")))
 
     staged = files[GUEST_ROLE_PROMPT]
@@ -843,22 +938,29 @@ def test_bwrap_inserts_the_claude_role_prompt_flag_after_the_binary(
     tmp_path, state_dir
 ):
     _role(tmp_path)
-    config = make({
-        "name": "rp",
-        "runtime": {
-            "agent": "claude",
-            "role_prompt": "role.md",
-            "command": ["claude", "-p", "task"],
+    config = make(
+        {
+            "name": "rp",
+            "runtime": {
+                "agent": "claude",
+                "role_prompt": "role.md",
+                "command": ["claude", "-p", "task"],
+            },
         },
-    }, tmp_path)
+        tmp_path,
+    )
     paths = ContainerPaths("rp")
     argv = bwrap.build_argv(config, fsprep.prepare(config, paths), paths)
 
-    command = argv[argv.index("--") + 1:]
+    command = argv[argv.index("--") + 1 :]
     # Flags are appended at the END, not after argv[0]: pi's command is
     # ["node", ".../cli.js"] and `node --model` would die with exit 9.
     assert command == [
-        "claude", "-p", "task", "--append-system-prompt-file", GUEST_ROLE_PROMPT,
+        "claude",
+        "-p",
+        "task",
+        "--append-system-prompt-file",
+        GUEST_ROLE_PROMPT,
     ]
 
 
