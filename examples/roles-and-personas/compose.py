@@ -237,6 +237,7 @@ name = "{fname}"
 
 [runtime]
 agent = "{agent}"
+command = [{command}]
 # Role and persona are one system prompt: it survives compaction, and the
 # agent cannot talk itself out of either halfway through a session.  capwrap
 # binds the file and delivers it natively for whichever agent this runs.
@@ -245,19 +246,12 @@ cwd       = "/work"
 tty       = true
 approvals = "capwrap"
 
-auto_allow = ["Read", "Glob", "Grep", "TodoWrite"]
-auto_deny  = ["Bash(sudo *)"]
+auto_allow = [{auto_allow}]
+auto_deny  = [{auto_deny}]
 
 env_from_host = [{env}]
 
-# The role's capability table. This is the half of the role that is
-# *enforced*; the persona above is a disposition and enforces nothing.
-[runtime.permissions]
-allow = [{allow}]
-ask   = ["WebFetch"]
-deny  = [{deny}]
-
-[sandbox]
+{permissions}[sandbox]
 network  = {network}
 hostname = "{fname}"
 unshare  = ["pid", "ipc", "uts", "cgroup"]
@@ -266,12 +260,32 @@ unshare  = ["pid", "ipc", "uts", "cgroup"]
 parent = ["send"]
 {caps}"""
 
-#: What each agent needs to run: the mounts that bring its binary and config
-#: into the sandbox, and the host env vars that carry its credentials.  The
-#: role table above is agent-agnostic -- this is the only per-agent part, and
-#: `--agent` switches it.
+#: The role's capability table, for agents that enforce one natively. This is
+#: the half of the role that is *enforced*; the persona is a disposition and
+#: enforces nothing.
+NATIVE_PERMISSIONS = """\
+# The role's capability table, enforced by the agent's own permission system.
+[runtime.permissions]
+allow = [{allow}]
+ask   = ["WebFetch"]
+deny  = [{deny}]
+"""
+
+#: What each agent needs to run: the command that starts it, the mounts that
+#: bring its binary and config into the sandbox, and the host env vars that
+#: carry its credentials.  The role table above is agent-agnostic -- this is
+#: the only per-agent part, and `--agent` switches it.
+#:
+#: `command` is required: `runtime.command` defaults to a bare shell, which is
+#: never what a role container means.  `native_permissions` marks agents whose
+#: CLI enforces allow/deny itself (claude, opencode); the others have none, so
+#: the role's rules fold into `auto_allow`/`auto_deny` and the
+#: `[runtime.permissions]` block is omitted -- a permissions block on such an
+#: agent is a config error.
 AGENT_SETUP: dict[str, dict] = {
     "claude": {
+        "command": ["/opt/claude/claude"],
+        "native_permissions": True,
         "mounts": [
             ("~/.local/bin/claude", "/opt/claude/claude", "ro"),
             ("~/.claude", "/home/agent/.claude", "copy"),
@@ -280,6 +294,8 @@ AGENT_SETUP: dict[str, dict] = {
         "files": True,  # house rules land at /work/CLAUDE.md
     },
     "opencode": {
+        "command": ["/opt/opencode/opencode"],
+        "native_permissions": True,
         "mounts": [
             ("~/.opencode/bin", "/opt/opencode", "ro"),
             ("~/.config/opencode", "/home/agent/.config/opencode", "copy"),
@@ -289,6 +305,8 @@ AGENT_SETUP: dict[str, dict] = {
         "files": False,
     },
     "opencode2": {
+        "command": ["/opt/opencode/opencode2", "--standalone"],
+        "native_permissions": True,
         "mounts": [
             ("~/.opencode/bin", "/opt/opencode", "ro"),
             ("~/.config/opencode2", "/home/agent/.config/opencode2", "copy"),
@@ -298,6 +316,8 @@ AGENT_SETUP: dict[str, dict] = {
         "files": False,
     },
     "pi": {
+        "command": ["node", "/opt/pi/pi-agent/dist/cli.js", "--thinking", "high"],
+        "native_permissions": False,
         "mounts": [
             (
                 "~/.local/lib/node_modules/@earendil-works/pi-coding-agent",
@@ -340,6 +360,12 @@ child_rights = [{child_rights}]
 
 def quote(items: list[str]) -> str:
     return ", ".join(f'"{item}"' for item in items)
+
+
+def dedupe(items: list[str]) -> list[str]:
+    """First occurrence wins, order preserved."""
+    seen: set[str] = set()
+    return [x for x in items if not (x in seen or seen.add(x))]
 
 
 def compose(role: str, persona: str, agent: str = "claude") -> pathlib.Path:
@@ -390,15 +416,28 @@ def compose(role: str, persona: str, agent: str = "claude") -> pathlib.Path:
     )
 
     factory = spec.get("factory")
+    if setup["native_permissions"]:
+        auto_allow, auto_deny = ["Read", "Glob", "Grep", "TodoWrite"], ["Bash(sudo *)"]
+        permissions = NATIVE_PERMISSIONS.format(
+            allow=quote(spec["allow"]), deny=quote(spec["deny"])
+        )
+    else:
+        # No native permission system: the role's rules fold into the
+        # auto-allow/auto-deny tables, which the daemon enforces instead.
+        auto_allow = dedupe(["Read", "Glob", "Grep", "TodoWrite", *spec["allow"]])
+        auto_deny = dedupe(["Bash(sudo *)", *spec["deny"]])
+        permissions = ""
     config = TEMPLATE.format(
         role=role,
         persona=persona,
         fname=fname,
         agent=agent,
+        command=quote(setup["command"]),
         summary=spec["summary"],
         env=quote(setup["env"]),
-        allow=quote(spec["allow"]),
-        deny=quote(spec["deny"]),
+        auto_allow=quote(auto_allow),
+        auto_deny=quote(auto_deny),
+        permissions=permissions,
         network=str(spec.get("network", True)).lower(),
         mounts=mounts,
         files=files,
