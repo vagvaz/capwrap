@@ -1017,12 +1017,13 @@ function userQuestionCard(approval, ctx) {
     <div class="approval question">
       <div class="who">${escapeHtml(approval.container)} · asking you</div>
       ${blocks || `<div class="q">${escapeHtml(approval.question)}</div>`}
-      <div class="note">
-        A question, not a permission. Answering it means going to
-        ${escapeHtml(approval.container)}'s terminal and picking there.
+      <div class="reply">
+        <textarea class="reply-text" rows="4"
+                  placeholder="Type your answer — it goes straight back to the agent as text. Numbered answers are welcome."></textarea>
       </div>
       <div class="actions">
-        <button class="primary small" data-answer="${approval.id}"
+        <button class="primary small" data-reply="${approval.id}">Send answer</button>
+        <button class="small" data-answer="${approval.id}"
                 data-container="${escapeHtml(approval.container)}">
           Answer in the terminal
         </button>
@@ -1112,11 +1113,11 @@ function renderApprovals() {
     })
     .join("");
 
-  const resolve = async (id, decision, rights = null) => {
+  const resolve = async (id, decision, rights = null, reason = "") => {
     try {
       await api(`/api/approvals/${id}`, {
         method: "POST",
-        body: JSON.stringify({ decision, reason: "", rights }),
+        body: JSON.stringify({ decision, reason, rights }),
       });
       state.approvals = state.approvals.filter((a) => a.id !== id);
       renderApprovals();
@@ -1134,6 +1135,17 @@ function renderApprovals() {
       ].map((i) => i.value);
       if (!rights.length) return alert("Pick at least one right, or Deny.");
       resolve(Number(b.dataset.grant), "allow", rights);
+    }),
+  );
+
+  host.querySelectorAll("[data-reply]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const card = b.closest(".approval");
+      const text = card.querySelector(".reply-text")?.value.trim();
+      if (!text) return alert("Type an answer first — or Deny to refuse.");
+      // A question's answer rides the reason field; "allow" only means
+      // "answered" — the agent reads the text, not the verdict.
+      await resolve(Number(b.dataset.reply), "allow", null, text);
     }),
   );
 
