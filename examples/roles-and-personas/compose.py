@@ -26,6 +26,7 @@ import argparse
 import json
 import pathlib
 import re
+import subprocess
 import sys
 import urllib.parse
 
@@ -344,6 +345,7 @@ AMBIENT_SHELL = SHELL_READONLY + GIT_READONLY + CAPCTL_COMMS
 #: mutating verbs are denied, not asked.
 READONLY_SHELL_ROLES = {"reviewer", "security-reviewer"}
 
+
 #: What each agent needs to run: the command that starts it, the tool name its
 #: shell gate answers to (they disagree: claude says Bash, opencode v2 renamed
 #: it Shell, pi is lowercase), the mounts that bring its binary and config into
@@ -351,6 +353,76 @@ READONLY_SHELL_ROLES = {"reviewer", "security-reviewer"}
 #: table above is agent-agnostic -- this is the only per-agent part, and
 #: `--agent` switches it.
 #:
+def find_pi_package() -> pathlib.Path | None:
+    """Locate the installed pi-coding-agent package, wherever npm put it.
+
+    The install moves between prefixes (a system update landed in /usr while
+    ~/.local held a stale copy, then the system copy was removed again), so
+    the config resolves the package at generation time instead of hard-coding
+    one location.
+    """
+    candidates = [
+        pathlib.Path(
+            "~/.local/lib/node_modules/@earendil-works/pi-coding-agent"
+        ).expanduser(),
+        pathlib.Path("/usr/lib/node_modules/@earendil-works/pi-coding-agent"),
+    ]
+    try:
+        root = subprocess.run(
+            ["npm", "root", "-g"], capture_output=True, text=True, timeout=10
+        ).stdout.strip()
+        if root:
+            candidates.insert(0, pathlib.Path(root) / "@earendil-works/pi-coding-agent")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for candidate in candidates:
+        if (candidate / "package.json").is_file():
+            return candidate
+    return None
+
+
+def _pi_entry(package: pathlib.Path) -> str:
+    """The CLI entry from the package's own ``bin`` field."""
+    try:
+        bin_field = json.loads((package / "package.json").read_text()).get("bin", {})
+        entry = bin_field.get("pi") if isinstance(bin_field, dict) else bin_field
+        return entry or "dist/bundle/cli.js"
+    except (OSError, ValueError):
+        return "dist/bundle/cli.js"
+
+
+_PI_PACKAGE = find_pi_package()
+
+
+def _pi_setup() -> dict:
+    """The pi agent adapter, pointed at wherever the package actually lives."""
+    if _PI_PACKAGE is None:
+        return {
+            "command": [],
+            "native_permissions": False,
+            "bash_tool": "bash",
+            "mounts": [("~/.pi/agent", "/home/agent/.pi/agent", "copy")],
+            "env": ["OPENCODE_API_KEY"],
+            "files": False,
+        }
+    return {
+        "command": [
+            "node",
+            str(pathlib.Path("/opt/pi/pi-agent") / _pi_entry(_PI_PACKAGE)),
+            "--thinking",
+            "high",
+        ],
+        "native_permissions": False,
+        "bash_tool": "bash",
+        "mounts": [
+            (str(_PI_PACKAGE), "/opt/pi/pi-agent", "ro"),
+            ("~/.pi/agent", "/home/agent/.pi/agent", "copy"),
+        ],
+        "env": ["OPENCODE_API_KEY"],
+        "files": False,
+    }
+
+
 #: `command` is required: `runtime.command` defaults to a bare shell, which is
 #: never what a role container means.  `native_permissions` marks agents whose
 #: CLI enforces allow/deny itself (claude, opencode); the others have none, so
@@ -393,24 +465,7 @@ AGENT_SETUP: dict[str, dict] = {
         "env": ["OPENCODE_API_KEY"],
         "files": False,
     },
-    "pi": {
-        # The system install (/usr/bin/pi), not ~/.local: a stale user-level
-        # copy left containers running an old pi that nagged about updates.
-        # /usr is already bound read-only into every sandbox.
-        "command": [
-            "node",
-            "/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
-            "--thinking",
-            "high",
-        ],
-        "native_permissions": False,
-        "bash_tool": "bash",
-        "mounts": [
-            ("~/.pi/agent", "/home/agent/.pi/agent", "copy"),
-        ],
-        "env": ["OPENCODE_API_KEY"],
-        "files": False,
-    },
+    "pi": _pi_setup(),
 }
 
 WORKTREE = """
@@ -623,6 +678,11 @@ def compose(
         sys.exit(f"unknown persona {persona!r}; try --list")
     if agent not in AGENT_SETUP:
         sys.exit(f"unknown agent {agent!r}; try --list")
+    if agent == "pi" and _PI_PACKAGE is None:
+        sys.exit(
+            "pi-coding-agent is not installed; "
+            "npm install -g @earendil-works/pi-coding-agent"
+        )
 
     spec = ROLES[role]
     setup = AGENT_SETUP[agent]
