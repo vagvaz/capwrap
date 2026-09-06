@@ -9,9 +9,10 @@ unbounded trust.
 ### Trust and permissions
 
 **Quiet by default**:
-The target permission posture. Agents act freely inside the sandbox; only
-boundary crossings and deliberate questions reach the operator.
-_Avoid_: allowlist posture, prompt-everything
+The target posture: ordinary work rarely prompts, reached through complete
+explicit allowlists — permissions stay deny-by-default; a prompt means a list
+is missing an entry.
+_Avoid_: removing allowlists, yolo mode
 
 **Boundary**:
 A container-level limit enforced by bubblewrap or the capability proxy:
