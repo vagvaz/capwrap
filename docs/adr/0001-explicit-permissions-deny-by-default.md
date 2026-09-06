@@ -38,3 +38,10 @@ explain) kept separate from questions; per-container question routing
   always-allow it via the grant table), not to widen the default.
 - The agent-side layer remains a second enforcement surface alongside the
   container boundary; the two must agree, and the role docs say so.
+- **Deny lists stay minimal**: only the per-role known-no set (sudo,
+  destructive git), where the answer is no and prompting would be noise plus
+  a footgun. Where the container wall already refuses (network for no-network
+  roles, sudo in an unprivileged sandbox), a deny entry is optional polish —
+  fail fast with a clean "denied by policy" instead of a wasted turn — never
+  a security layer. No blanket denies "for safety": that is how the prompt
+  storm returned last time.
