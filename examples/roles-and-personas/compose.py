@@ -271,12 +271,14 @@ ask   = ["WebFetch"]
 deny  = [{deny}]
 """
 
-#: Shell posture for generated configs. The sandbox and the kernel's capability
-#: checks are the real enforcement; the tool gate exists to keep the operator's
-#: approval queue meaningful. So the default is a generous shell bounded by a
-#: hard denylist -- an agent that needs `find` or `capctl recv` should not have
-#: to ask -- and only the roles whose value depends on read-only-ness keep an
-#: enumerated, mutating-denied shell.
+#: Shell posture for generated configs. Roles are the pre-decision layer: the
+#: operator encodes intent once, in the role table, and the approval queue
+#: should be quiet by role design -- not because the operator rubber-stamps.
+#: So every role gets an *ambient* baseline (read-only shell, git reads, the
+#: capctl comms verbs: the ability to function, not authority), the role table
+#: carries the distinctive powers on top, a hard denylist bounds the shell,
+#: and the queue is left for genuine outliers. Only the roles whose value IS
+#: read-only-ness deny the mutating verbs outright.
 SHELL_DENYLIST = ["sudo *", "curl *", "wget *", "rm -rf *"]
 SHELL_READONLY = [
     "ls*", "find*", "cat*", "grep*", "rg*", "head*", "tail*", "wc*", "sort*",
@@ -289,10 +291,10 @@ GIT_MUTATING = [
     "git rebase*", "git merge*",
 ]
 CAPCTL_COMMS = ["capctl recv*", "capctl send*", "capctl ask*"]
+AMBIENT_SHELL = SHELL_READONLY + GIT_READONLY + CAPCTL_COMMS
 
-#: Roles whose guarantee IS read-only-ness; every other role gets the generous
-#: shell. (Their Write/Edit restrictions still hold -- only the shell is
-#: liberalised, and the sandbox bounds what it can reach.)
+#: Roles whose guarantee IS read-only-ness; their shell stays enumerated and
+#: mutating verbs are denied, not asked.
 READONLY_SHELL_ROLES = {"reviewer", "security-reviewer"}
 
 #: What each agent needs to run: the command that starts it, the tool name its
@@ -398,7 +400,9 @@ def dedupe(items: list[str], key=lambda x: x) -> list[str]:
     return [x for x in items if not (key(x) in seen or seen.add(key(x)))]
 
 
-def compose(role: str, persona: str, agent: str = "claude") -> pathlib.Path:
+def compose(
+    role: str, persona: str, agent: str = "claude", generous: bool = False
+) -> pathlib.Path:
     if role not in ROLES:
         sys.exit(f"unknown role {role!r}; try --list")
     if persona not in PERSONAS:
@@ -454,36 +458,45 @@ def compose(role: str, persona: str, agent: str = "claude") -> pathlib.Path:
         return [f"{bash_tool}{r[4:]}" if r.startswith("Bash(") else r for r in rules]
 
     readonly_shell = role in READONLY_SHELL_ROLES
+    # `--auto-allow` trades role precision for a quiet queue: everything
+    # except the denylist. Read-only roles keep their guarantee regardless --
+    # read-only-ness is the point of those roles, not a queue-saving measure.
+    generous_shell = generous and not readonly_shell
     if setup["native_permissions"]:
         auto_allow, auto_deny = ["Read", "Glob", "Grep", "TodoWrite"], ["Bash(sudo *)"]
         allow, deny = retag(spec["allow"]), retag(spec["deny"])
-        if readonly_shell:
-            # Read-only-ness is the point: enumerated shell, mutations denied.
-            deny += [f"{bash_tool}({p})" for p in GIT_MUTATING]
-        else:
-            # Generous shell, bounded by the denylist; the sandbox is the
-            # enforcement, the queue is for things that deserve a human.
+        if generous_shell:
             allow = [bash_tool, *allow]
-            deny += [f"{bash_tool}({p})" for p in SHELL_DENYLIST]
+        else:
+            # The ambient baseline: read-only shell, git reads, capctl comms.
+            allow += [f"{bash_tool}({p})" for p in AMBIENT_SHELL]
+        deny += [f"{bash_tool}({p})" for p in SHELL_DENYLIST]
+        if readonly_shell:
+            # Read-only-ness is the point: mutations denied, not asked.
+            deny += [f"{bash_tool}({p})" for p in GIT_MUTATING]
         permissions = NATIVE_PERMISSIONS.format(
             allow=quote(dedupe(allow)), deny=quote(dedupe(deny))
         )
     else:
-        if readonly_shell:
-            auto_allow = dedupe(
-                ["read", "glob", "grep", *retag(spec["allow"]),
-                *(f"bash({p})" for p in SHELL_READONLY + GIT_READONLY + CAPCTL_COMMS)],
-                key=str.lower,
-            )
-            auto_deny = dedupe(
-                [*(f"bash({p})" for p in SHELL_DENYLIST + GIT_MUTATING),
-                 *retag(spec["deny"])],
-                key=str.lower,
-            )
-        else:
+        if generous_shell:
             auto_allow, auto_deny = ["*"], dedupe(
                 [*(f"bash({p})" for p in SHELL_DENYLIST), *retag(spec["deny"])]
             )
+        else:
+            auto_allow = dedupe(
+                ["read", "glob", "grep", *retag(spec["allow"]),
+                 *(f"bash({p})" for p in AMBIENT_SHELL)],
+                key=str.lower,
+            )
+            auto_deny = dedupe(
+                [*(f"bash({p})" for p in SHELL_DENYLIST), *retag(spec["deny"])],
+                key=str.lower,
+            )
+            if readonly_shell:
+                auto_deny = dedupe(
+                    [*auto_deny, *(f"bash({p})" for p in GIT_MUTATING)],
+                    key=str.lower,
+                )
         permissions = ""
     config = TEMPLATE.format(
         role=role,
@@ -532,6 +545,12 @@ def main() -> int:
         choices=sorted(AGENT_SETUP),
         help="which agent the generated configs run (default: claude)",
     )
+    parser.add_argument(
+        "--auto-allow",
+        action="store_true",
+        help="grant the generous shell (everything except the denylist) instead "
+        "of the role's ambient baseline; read-only roles stay read-only",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -553,7 +572,7 @@ def main() -> int:
         parser.error("give at least one ROLE:PERSONA, or --list")
 
     for role, persona in pairs:
-        path = compose(role, persona, args.agent)
+        path = compose(role, persona, args.agent, generous=args.auto_allow)
         print(f"built {path.relative_to(HERE.parent.parent)}")
     return 0
 
