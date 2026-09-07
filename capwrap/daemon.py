@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import time
 from collections import deque
 from pathlib import Path
 from typing import Any
 
-from .config import ContainerConfig, load_config_data
+from .config import ContainerConfig, load_config, load_config_data
 from .errors import CapabilityError, CapwrapError, SandboxError
 from .explain import Explainer
 from .grants import GrantStore
@@ -41,6 +42,7 @@ from .runtime import bwrap as bwrap_mod
 from .runtime import fsprep, mapper as mapper_mod
 from .runtime import probe
 from .runtime.supervisor import PtySession
+from .teams import Team, load_compose, parse_team_data, team_preamble
 
 OPERATOR = "operator"
 
@@ -309,6 +311,10 @@ class Daemon:
         self.mailboxes = MailboxRegistry()
         self.containers: dict[str, Container] = {}
         self.approvals: dict[int, PendingApproval] = {}
+        #: Teams, keyed by name. Persisted to teams.json so they survive a
+        #: restart; membership (peer caps + shared board) is re-linked on boot.
+        self.teams: dict[str, Team] = {}
+        self._load_teams()
         #: Opt-in, and off by default: a trace holds whole message payloads,
         #: which are the agents' working content, not metadata. The audit log
         #: records that a message was sent; this records what was in it.
@@ -388,6 +394,172 @@ class Daemon:
         """Resolve peer capabilities that referred to containers registered later."""
         for container in self.containers.values():
             self.kernel.link_peers(container.config)
+
+    # ==================================================================
+    # teams
+    # ==================================================================
+
+    def _teams_path(self) -> Path:
+        return self.state / "teams.json"
+
+    def _load_teams(self) -> None:
+        """Load persisted teams so they survive a restart.
+
+        Only the team metadata is loaded here; the member containers are
+        re-registered from their configs on `capwrap up`, and `link_team_membership`
+        re-grants the shared board once they are.
+        """
+        path = self._teams_path()
+        if not path.exists():
+            return
+        try:
+            raw = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return
+        try:
+            compose = load_compose()
+        except CapwrapError:
+            return
+        for name, data in raw.items():
+            try:
+                team = parse_team_data(data, compose)
+            except CapwrapError:
+                continue
+            self.teams[name] = team
+
+    def _persist_teams(self) -> None:
+        data = {name: team.to_dict() for name, team in self.teams.items()}
+        self._teams_path().write_text(json.dumps(data, indent=2))
+
+    def _ensure_team_board(self, team: Team) -> None:
+        """Create the team's shared board if it does not exist yet."""
+        topic = team.board_topic
+        if not any(b.topic == topic for b in self.kernel.boards()):
+            self.kernel.create_board(topic, created_by="operator")
+
+    def _holds_board(self, name: str, topic: str) -> bool:
+        for cap in self.kernel.cap_list(name):
+            if cap.kind == "board" and cap.detail.get("topic") == topic:
+                return True
+        return False
+
+    def _grant_board_if_needed(self, name: str, topic: str) -> None:
+        """Give a member read/write on the team board, unless it already holds it.
+
+        Idempotent so it can be called on boot and after a spawn without
+        minting duplicate capabilities.
+        """
+        if name not in self.containers or self._holds_board(name, topic):
+            return
+        self.kernel.operator_grant(name, "board", topic, parse_rights(["send", "read"]))
+
+    def link_team_membership(self) -> None:
+        """Re-grant team membership (shared board) to registered members.
+
+        Peer messaging comes from each member's config at generation time, so
+        `link_all_peers` already handles it; this only re-establishes the board
+        after a restart, for members that have been re-registered.
+        """
+        for team in self.teams.values():
+            self._ensure_team_board(team)
+            for member in team.members:
+                self._grant_board_if_needed(member.name, team.board_topic)
+
+    async def spawn_team(self, team: Team) -> dict:
+        """Register, start and record a whole team, atomically.
+
+        Every member is generated via compose(), registered and started through
+        the operator path (the same flow `capwrap add` uses -- an authority
+        grant from the human, not a kernel factory spawn). A name collision on
+        any member refuses the whole team with no partial spawns.
+        """
+        if team.name in self.teams:
+            raise CapwrapError(f"a team named {team.name!r} already exists")
+        for member in team.members:
+            if member.name in self.containers:
+                raise CapwrapError(
+                    f"a container named {member.name!r} already exists; "
+                    "dismiss it or pick a different role/persona/agent"
+                )
+
+        compose = load_compose()
+        peer_names = [m.name for m in team.members]
+        preamble = team_preamble(team)
+        spawned: list[Container] = []
+        try:
+            for member in team.members:
+                path = compose.compose(
+                    member.role,
+                    member.persona,
+                    member.agent,
+                    extra_prompt=preamble,
+                    peers=[p for p in peer_names if p != member.name],
+                )
+                config = load_config(path)
+                spawned.append(self.register(config))
+
+            self.link_all_peers()
+            self._ensure_team_board(team)
+            for member in team.members:
+                self._grant_board_if_needed(member.name, team.board_topic)
+
+            for container in spawned:
+                await self.start(container.name)
+
+            self.teams[team.name] = team
+            self._persist_teams()
+            self._emit("team.spawned", {"team": team.name})
+            return {
+                "team": team.name,
+                "members": [m.name for m in team.members],
+            }
+        except Exception:
+            # No partial spawns: undo anything that got registered before the
+            # failure, so a bad team leaves nothing behind.
+            for container in spawned:
+                with contextlib.suppress(Exception):
+                    await self.destroy(container.name, force=True)
+            raise
+
+    def teams_view(self) -> list[dict]:
+        """Every team, with each member's running state, for the console."""
+        out: list[dict] = []
+        for team in self.teams.values():
+            members = []
+            for m in team.members:
+                container = self.containers.get(m.name)
+                members.append(
+                    {
+                        "name": m.name,
+                        "role": m.role,
+                        "persona": m.persona,
+                        "agent": m.agent,
+                        "running": container.running
+                        if container is not None
+                        else False,
+                    }
+                )
+            out.append(
+                {
+                    "name": team.name,
+                    "goal": team.goal,
+                    "success_criteria": team.success_criteria,
+                    "members": members,
+                }
+            )
+        return out
+
+    async def stop_team(self, name: str) -> dict:
+        """Stop every member of a team."""
+        team = self.teams.get(name)
+        if team is None:
+            raise CapwrapError(f"no such team: {name}")
+        results = []
+        for member in team.members:
+            if member.name in self.containers:
+                code = await self.stop(member.name)
+                results.append({"name": member.name, "exit_code": code})
+        return {"team": name, "members": results}
 
     async def start(self, name: str) -> Container:
         """Prepare the filesystem, bind the control socket, launch the sandbox."""

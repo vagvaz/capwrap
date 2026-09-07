@@ -219,6 +219,9 @@ def cmd_up(args: argparse.Namespace) -> int:
             daemon.register(config)
         # Two passes, so configs may refer to each other in any order.
         daemon.link_all_peers()
+        # Re-establish team membership (shared boards) for any teams persisted
+        # from a previous run whose members have just been re-registered.
+        daemon.link_team_membership()
 
         if not args.no_start:
             for config in configs:
@@ -306,6 +309,48 @@ def cmd_add(args: argparse.Namespace) -> int:
     for entry in added:
         state = "started" if entry.get("started") else "registered, not started"
         print(f"{entry['name']}: {state}")
+    return 0
+
+
+def cmd_team(args: argparse.Namespace) -> int:
+    """Spawn a whole team of containers from a team TOML file.
+
+    The team is parsed and validated here, then sent to a running capwrap which
+    generates each member's config, registers and starts them, creates the
+    shared board and records the team.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    from .teams import parse_team
+
+    team = parse_team(args.file)
+
+    base = f"http://{args.host}:{args.port}"
+    payload = json.dumps({"team": team.to_dict()}).encode()
+    request = urllib.request.Request(
+        f"{base}/api/teams/spawn",
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        with contextlib.suppress(Exception):
+            body = json.loads(detail)
+            detail = body.get("error") or body.get("detail") or detail
+        raise CapwrapError(f"team {team.name}: {detail}") from None
+    except urllib.error.URLError as exc:
+        raise CapwrapError(
+            f"no capwrap answering on {base} ({exc.reason}). "
+            "Start one with `capwrap up`, or pass --port."
+        ) from None
+
+    print(f"team {result['team']}: spawned {', '.join(result['members'])}")
     return 0
 
 
@@ -399,6 +444,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8420)
     p.set_defaults(func=cmd_tui)
+
+    p = sub.add_parser("team", help="manage teams of containers")
+    team_sub = p.add_subparsers(dest="team_command", required=True)
+    tp = team_sub.add_parser("up", help="spawn a whole team from a team TOML file")
+    tp.add_argument("file", help="path to a team .toml")
+    tp.add_argument("--host", default="127.0.0.1")
+    tp.add_argument("--port", type=int, default=8420)
+    tp.set_defaults(func=cmd_team)
 
     p = sub.add_parser("clean", help="remove a container's host-side state")
     p.add_argument("name")

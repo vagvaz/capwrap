@@ -35,6 +35,8 @@ from ..errors import CapabilityError, CapwrapError
 from ..explain import ExplainError
 from ..kernel.kernel import ROOT
 from ..kernel.rights import parse_rights
+from ..teams import load_compose as load_team_compose
+from ..teams import parse_team_data
 
 STATIC = Path(__file__).resolve().parent / "static"
 
@@ -131,6 +133,12 @@ class SpawnBody(BaseModel):
     role: str
     persona: str
     agent: str = "claude"
+
+
+class TeamBody(BaseModel):
+    """A whole team to spawn: the team TOML, as a mapping."""
+
+    team: dict
 
 
 class ResizeBody(BaseModel):
@@ -411,6 +419,31 @@ def create_app(daemon: Daemon) -> FastAPI:
         daemon.link_all_peers()
         await daemon.start(config.name)
         return {**container.status(), "started": True}
+
+    # ------------------------------------------------------------------
+    # teams
+    # ------------------------------------------------------------------
+
+    @app.get("/api/teams")
+    async def teams() -> list[dict]:
+        """Every team, with each member's running state."""
+        return daemon.teams_view()
+
+    @app.post("/api/teams/spawn")
+    async def spawn_team(body: TeamBody) -> dict:
+        """Spawn a whole team: validate, generate each member, register and
+        start them, create the shared board and record the team.
+
+        A name collision on any member refuses the whole team with no partial
+        spawns.
+        """
+        team = parse_team_data(body.team, load_team_compose())
+        return await daemon.spawn_team(team)
+
+    @app.post("/api/teams/{name}/stop")
+    async def stop_team(name: str) -> dict:
+        """Stop every member of a team."""
+        return await daemon.stop_team(name)
 
     @app.post("/api/containers/{name}/start")
     async def start(name: str) -> dict:
