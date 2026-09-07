@@ -257,9 +257,17 @@ export default {
         if (result.decision === "allow") {
           event.effect = "allow";
           event.message = reason || "approved in the capwrap console";
-        } else if (result.decision === "deny") {
+        } else if (result.decision === "deny" || result.decision === "reject") {
+          // "reject" is the console's word now; "deny" is its legacy alias.
           event.effect = "deny";
           event.message = reason || "denied in the capwrap console";
+        } else if (result.decision === "explain") {
+          // The operator declined to decide and sent text instead. Leave the
+          // effect untouched so opencode falls back to its own computed
+          // decision, and surface the operator's explanation as the message --
+          // the harness's native equivalent of "not decided".
+          event.message =
+            result.message || "the operator explained instead of deciding";
         }
         // Anything else (timeout, no answer): leave event.effect untouched so
         // opencode falls back to its own computed decision.

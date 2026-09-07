@@ -589,6 +589,45 @@ tr:hover td {
   display: flex;
   gap: 6px;
 }
+.approval .explain-reply {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.approval .explain-reply .explain-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------- grants */
+.grants {
+  margin-top: 18px;
+}
+.grants-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.grant-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 7px 9px;
+  font-size: 12.5px;
+}
+.grant-item .mono {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grant-item .actions {
+  margin-left: auto;
+}
 
 .messages {
   padding: 0;

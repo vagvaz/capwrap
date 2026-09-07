@@ -124,6 +124,18 @@
           </form>
 
           <div id="caps" class="caps"></div>
+
+          <div id="grants" class="grants" hidden>
+            <div class="panel-head">
+              <span class="mono">Grants</span>
+              <span id="grants-count" class="muted small"></span>
+            </div>
+            <p class="muted small">
+              Always-allow entries: requests matching one of these never prompt
+              again. Revoke one to make it ask again.
+            </p>
+            <div id="grants-list" class="grants-list"></div>
+          </div>
         </div>
 
         <!-- Shared boards: where several agents coordinate, rather than one

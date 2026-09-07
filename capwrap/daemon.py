@@ -25,6 +25,7 @@ from typing import Any
 from .config import ContainerConfig, load_config_data
 from .errors import CapabilityError, CapwrapError, SandboxError
 from .explain import Explainer
+from .grants import GrantStore
 from .guest import ed25519
 from .ipc.mailbox import MailboxRegistry, write_inbox_file
 from .ipc.protocol import AGENT_OPS, MAX_REQUEST_BYTES, ProtocolError, Request, Response
@@ -32,7 +33,7 @@ from .kernel.audit import AuditLog
 from .kernel.kernel import ROOT, CapKernel
 from .kernel.objects import ContainerObject
 from .kernel import signing
-from .kernel.policy import contains as policy_contains
+from .kernel.policy import Rule, contains as policy_contains
 from .kernel.rights import VALID_RIGHTS, Rights, parse_rights
 from .net.proxy import NetProxy
 from .paths import ContainerPaths, db_path, force_rmtree, state_root
@@ -54,6 +55,80 @@ DEFAULT_REQUEST_RIGHTS = {
     "factory": Rights.CREATE,
     "net_rule": Rights.CONNECT,
 }
+
+#: Capabilities an escalation card can grant live.  Anything else is a
+#: structural limit (worktree writes, host mounts) that needs a respawn.
+ESCALATABLE = ("network", "spawn")
+
+
+def _normalize_rule_text(rule: str) -> str:
+    """Lowercase a rule's tool name, mirroring `agents._normalize_rule`.
+
+    The grant table and the deny check match with `Rule.covers`, which compares
+    tool names exactly; the shims send the tool name in their own case ("Bash"
+    from claude, "bash" from opencode/pi), so both sides are folded to the
+    policy file's lowercase convention before matching.
+    """
+    if "(" in rule and rule.endswith(")"):
+        name, _, pattern = rule.partition("(")
+        return f"{name.lower()}({pattern[:-1]})"
+    return rule.lower()
+
+
+def _request_rule(context: dict) -> Rule | None:
+    """The permission request as a policy Rule, or None if it is not one.
+
+    A request is a tool plus its main argument, the same "summary" the guest
+    shims build (`describe` in hook.py).  Only requests that carry a tool in
+    their context are permission requests; capability requests, escalations and
+    plain questions have no tool and are never auto-decided here.
+    """
+    tool = context.get("tool")
+    if not tool:
+        return None
+    tool = str(tool).lower()
+    tool_input = context.get("input") or {}
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    summary = ""
+    if tool == "bash":
+        summary = str(tool_input.get("command", "")).strip()
+    else:
+        for key in (
+            "file_path",
+            "path",
+            "url",
+            "pattern",
+            "notebook_path",
+            "command",
+            "name",
+            "query",
+            "prompt",
+        ):
+            if key in tool_input:
+                summary = str(tool_input[key])
+                break
+    if not summary:
+        return Rule(tool)
+    return Rule(tool, summary)
+
+
+def _grant_pattern_from_request(context: dict) -> str:
+    """A grant pattern covering this request, in role-allow vocabulary.
+
+    A Bash request becomes ``bash(<first-word> *)`` so the whole command family
+    is always-allowed from then on; any other tool becomes the bare tool name.
+    """
+    tool = str(context.get("tool") or "?").lower()
+    tool_input = context.get("input") or {}
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    if tool == "bash":
+        command = str(tool_input.get("command", "")).strip()
+        first = command.split()[0] if command.split() else ""
+        if first:
+            return f"{tool}({first} *)"
+    return tool
 
 
 class PendingApproval:
@@ -157,6 +232,12 @@ class Container:
         self.server: asyncio.AbstractServer | None = None
         #: Only for a container with network rules; None means no network.
         self.proxy: NetProxy | None = None
+        #: The per-container grant table ("always allow"), persisted to
+        #: grants.json beside signing.key.
+        self.grants = GrantStore(self.paths.grants)
+        #: Spawn authority granted live via an escalation card (capability
+        #: "spawn").  A set of patterns the container may spawn with.
+        self.spawn_grants: set[str] = set()
 
     @property
     def name(self) -> str:
@@ -674,6 +755,14 @@ class Daemon:
                 blocking=bool(args.get("block", True)),
                 timeout=args.get("timeout"),
             )
+        if op == "escalate":
+            return await self.escalate(
+                actor,
+                capability=str(args.get("capability", "")),
+                pattern=str(args.get("pattern", "")),
+                reason=str(args.get("reason", "")),
+                timeout=args.get("timeout"),
+            )
         raise ProtocolError(f"unhandled operation {op!r}")
 
     def _config_from_agent(self, raw: dict, actor: str) -> ContainerConfig:
@@ -738,6 +827,19 @@ class Daemon:
             )
             return
 
+        # A standing spawn grant (from an escalation card) pre-authorises a
+        # range the envelope does not cover, the same way an explicit envelope
+        # does -- the operator said once, live, instead of per spawn.
+        if self._spawn_authorised(parent, child_policy):
+            self.audit.record(
+                actor,
+                "policy.check",
+                allowed=True,
+                target=config.name,
+                detail="child policy is within the parent's spawn grants",
+            )
+            return
+
         reasons = diff.reasons()
         self.audit.record(
             actor,
@@ -771,6 +873,29 @@ class Daemon:
             target=config.name,
             detail={"approved_for": actor},
         )
+
+    def _spawn_authorised(self, parent: Container, child_policy) -> bool:
+        """Whether a standing spawn grant covers the child's requested policy.
+
+        A spawn grant is a policy rule (e.g. ``Bash(*)``) recorded when an
+        escalation card for capability ``spawn`` is granted.  The child's
+        allow/ask rules must all be covered by some grant; anything uncovered
+        still reaches the operator.
+        """
+        if not parent.spawn_grants:
+            return False
+        grants = []
+        for text in parent.spawn_grants:
+            try:
+                grants.append(Rule.parse(text))
+            except (KeyError, TypeError):
+                continue
+        if not grants:
+            return False
+        for rule in (*child_policy.allow, *child_policy.ask):
+            if not any(grant.covers(rule) for grant in grants):
+                return False
+        return True
 
     # ==================================================================
     # kernel hooks -- the effects the kernel authorises
@@ -974,7 +1099,19 @@ class Daemon:
         Every container can reach this -- it is granted at creation and is not
         revocable by another agent -- because an agent that cannot ask for
         permission will simply guess instead.
+
+        A *permission request* (one whose context names a tool) is settled
+        before the human is troubled, in this order: the deny list first (deny
+        wins), then the grant table (auto-approve, no card), and only then does
+        a card reach the operator.  Capability requests, escalations and plain
+        questions have no tool and always become cards.
         """
+        container_obj = self.containers.get(container)
+        if container_obj is not None:
+            decided = self._auto_decide(container_obj, context)
+            if decided is not None:
+                return decided
+
         pending = PendingApproval(container, question, context)
         self.approvals[pending.id] = pending
         self.kernel.audit.record(
@@ -1014,6 +1151,56 @@ class Daemon:
             raise
         finally:
             self.approvals.pop(pending.id, None)
+
+    def _auto_decide(self, container: Container, context: dict) -> dict | None:
+        """Settle a permission request without the operator, or say None.
+
+        Check order, per ADR 0001: the deny list first (deny wins over
+        everything, a grant included), then the grant table (auto-approve, no
+        card).  Only requests that carry a tool in their context are permission
+        requests; anything else returns None and becomes a card as before.
+        """
+        rule = _request_rule(context)
+        if rule is None:
+            return None
+
+        # Deny wins.  Both the auto_deny list (what the guest shims enforce
+        # locally) and the role's explicit deny rules are checked here, so a
+        # deny beats a grant even when the shim's local copy is stale.
+        deny_rules = [
+            Rule.parse(_normalize_rule_text(text))
+            for text in (
+                *container.config.runtime.auto_deny,
+                *container.config.runtime.permissions.deny,
+            )
+        ]
+        for deny_rule in deny_rules:
+            if deny_rule.covers(rule):
+                self.kernel.audit.record(
+                    container.name,
+                    "ask",
+                    allowed=False,
+                    target=OPERATOR,
+                    detail=f"denied by policy: {deny_rule}",
+                )
+                return {
+                    "decision": "deny",
+                    "reason": f"capwrap policy denies {rule.tool}",
+                }
+
+        if container.grants.matches(rule):
+            self.kernel.audit.record(
+                container.name,
+                "ask",
+                allowed=True,
+                target=OPERATOR,
+                detail="auto-approved by the grant table",
+            )
+            return {
+                "decision": "allow",
+                "reason": "approved by a standing grant",
+            }
+        return None
 
     async def request_capability(
         self,
@@ -1110,6 +1297,54 @@ class Daemon:
         self._emit("cap.granted", {"container": actor, **result})
         return {"granted": True, "decision": "allow", **result}
 
+    async def escalate(
+        self,
+        actor: str,
+        capability: str,
+        pattern: str,
+        reason: str = "",
+        timeout: float | None = None,
+    ) -> dict:
+        """Ask the operator to cross a boundary: network or child-spawn.
+
+        `capctl escalate` is the agent's way to request a live capability grant.
+        The card shows the capability, the pattern and the reason.  On grant the
+        capability is applied live (see `_apply_escalation_grant`); on reject
+        the call returns refused; on explain the agent gets the operator's text.
+
+        Structural capabilities (worktree writes, host mounts) are refused
+        without a card: they are baked into the sandbox at start and no live
+        grant can change them.
+        """
+        if capability not in ESCALATABLE:
+            return {
+                "decision": "respawn_required",
+                "message": (
+                    f"{capability} is a structural limit of the sandbox; "
+                    "respawn the container with a wider config"
+                ),
+            }
+
+        self.kernel.audit.record(
+            actor,
+            "escalate",
+            allowed=True,
+            target=capability,
+            detail={"pattern": pattern, "reason": reason},
+        )
+        return await self.ask_operator(
+            actor,
+            f"{actor} wants to escalate: {capability} {pattern}"
+            + (f" ({reason})" if reason else ""),
+            {
+                "kind": "escalation",
+                "capability": capability,
+                "pattern": pattern,
+                "reason": reason,
+            },
+            timeout=timeout,
+        )
+
     def resolve_approval(
         self,
         approval_id: int,
@@ -1119,28 +1354,166 @@ class Daemon:
     ) -> bool:
         """Answer a pending question from the web UI.
 
+        Decisions: ``allow`` answers yes, ``reject`` (or its alias ``deny``)
+        answers no, ``grant`` answers yes *and* appends the request to the
+        container's grant table so it never prompts again, and ``explain``
+        decides nothing -- the waiting agent is handed the operator's text as
+        the ask's result and continues.
+
         `rights` is only meaningful for a capability request, where it lets the
         operator grant less than was asked for.
         """
         pending = self.approvals.get(approval_id)
         if pending is None or pending.future.done():
             return False
-        pending.future.set_result(
-            {"decision": decision, "reason": reason, "rights": rights}
-        )
+
+        # Backward compatibility: the console and the tests have always said
+        # "deny"; the endpoint accepts it as an alias for "reject", and the
+        # agent is handed back whichever word the operator used -- the shims
+        # treat both as "no".
+        #
+        # An escalation card is *performed* on grant.  Allow means the same
+        # thing there: answering "yes" to "may I cross this boundary" without
+        # actually crossing it would hand the agent a permission it does not
+        # have.  For a plain permission request, allow stays a plain yes and
+        # only grant appends to the grant table.
+        is_escalation = (pending.context or {}).get("kind") == "escalation"
+        if decision == "grant" or (decision == "allow" and is_escalation):
+            outcome = self._apply_grant(pending, reason)
+            if outcome is None:
+                return False
+            pending.future.set_result(outcome)
+        elif decision == "explain":
+            # Deliberately not a decision: the agent gets the operator's text
+            # and carries on.  The card is closed either way.
+            pending.future.set_result({"decision": "explain", "message": reason})
+        else:
+            pending.future.set_result(
+                {"decision": decision, "reason": reason, "rights": rights}
+            )
         self._close_question(pending, decision, reason)
         self.kernel.audit.record(
             OPERATOR,
             "approval.resolve",
-            allowed=(decision == "allow"),
+            allowed=(decision in ("allow", "grant")),
             target=pending.container,
             detail={"decision": decision, "reason": reason},
         )
         self._emit("approval.resolved", {"id": approval_id, "decision": decision})
         return True
 
+    def _apply_grant(self, pending: PendingApproval, reason: str) -> dict | None:
+        """Carry out a ``grant`` decision: answer the agent and persist it.
+
+        For a permission request the request itself is appended to the
+        container's grant table, so the same request auto-approves from now on.
+        For an escalation card the capability is granted live (network rule or
+        spawn authority).  Returns the outcome dict for the waiting agent, or
+        None when the grant cannot be applied.
+        """
+        context = pending.context or {}
+        container = self.containers.get(pending.container)
+        if container is None:
+            return None
+
+        if context.get("kind") == "escalation":
+            return self._apply_escalation_grant(container, context, reason)
+
+        pattern = _grant_pattern_from_request(context)
+        container.grants.add(pattern)
+        self.kernel.audit.record(
+            OPERATOR,
+            "grant.add",
+            allowed=True,
+            target=pending.container,
+            detail={"pattern": pattern},
+        )
+        return {
+            "decision": "allow",
+            "reason": reason or "granted in the capwrap console",
+            "grant": pattern,
+        }
+
+    def _apply_escalation_grant(
+        self, container: Container, context: dict, reason: str
+    ) -> dict:
+        """Grant an escalation card: a live capability, or refuse it.
+
+        ``network`` appends the pattern as a live rule to the container's
+        capability proxy; ``spawn`` records spawn authority the child-spawn
+        check consults.  Anything structural is refused with "respawn required"
+        -- those limits are baked into the sandbox at start and cannot be
+        granted live.
+        """
+        capability = str(context.get("capability") or "")
+        pattern = str(context.get("pattern") or "")
+        if capability == "network":
+            if not pattern:
+                return {"decision": "reject", "reason": "no pattern on the card"}
+            # The proxy's decide callback consults the kernel's net rules on
+            # every request, so minting a net_rule capability for this
+            # container takes effect immediately -- no proxy restart needed.
+            self.kernel.operator_grant(
+                container.name,
+                "net_rule",
+                f"escalated={pattern}",
+                Rights.CONNECT,
+            )
+            self.kernel.audit.record(
+                OPERATOR,
+                "escalation.grant",
+                allowed=True,
+                target=container.name,
+                detail={"capability": "network", "pattern": pattern},
+            )
+            return {
+                "decision": "allow",
+                "reason": reason or "network rule granted",
+                "grant": pattern,
+            }
+        if capability == "spawn":
+            container.spawn_grants.add(pattern)
+            self.kernel.audit.record(
+                OPERATOR,
+                "escalation.grant",
+                allowed=True,
+                target=container.name,
+                detail={"capability": "spawn", "pattern": pattern},
+            )
+            return {
+                "decision": "allow",
+                "reason": reason or "spawn authority granted",
+                "grant": pattern,
+            }
+        return {
+            "decision": "respawn_required",
+            "message": (
+                f"{capability} is a structural limit of the sandbox; "
+                "respawn the container with a wider config"
+            ),
+        }
+
     def pending_approvals(self) -> list[dict]:
         return [p.to_dict() for p in self.approvals.values() if not p.future.done()]
+
+    def container_grants(self, name: str) -> list[dict]:
+        """A container's grant table, for the console's Grants section."""
+        container = self._get(name)
+        return container.grants.list()
+
+    def revoke_grant(self, name: str, grant_id: str) -> bool:
+        """Revoke one grant.  Returns whether it was actually removed."""
+        container = self._get(name)
+        removed = container.grants.remove(grant_id)
+        if removed:
+            self.kernel.audit.record(
+                OPERATOR,
+                "grant.revoke",
+                allowed=True,
+                target=name,
+                detail={"grant_id": grant_id},
+            )
+        return removed
 
     def _close_question(
         self, pending: PendingApproval, decision: str, reason: str

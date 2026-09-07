@@ -131,6 +131,10 @@ class ContainerPaths:
         return self.root / "signing.key"
 
     @property
+    def grants(self) -> Path:
+        return self.root / "grants.json"
+
+    @property
     def proxy_socket(self) -> Path:
         return self.root / "proxy.sock"
 
