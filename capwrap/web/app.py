@@ -133,6 +133,15 @@ class SpawnBody(BaseModel):
     role: str
     persona: str
     agent: str = "claude"
+    #: Where the spawned agent's plain questions surface; compose.py emits it
+    #: into the generated config's [runtime] section.
+    routing: str = "forward"
+
+
+class RoutingBody(BaseModel):
+    """A live override of one container's question routing."""
+
+    routing: str
 
 
 class TeamBody(BaseModel):
@@ -378,7 +387,9 @@ def create_app(daemon: Daemon) -> FastAPI:
         return _compose_options(_load_compose())
 
     @app.get("/api/compose/preview")
-    async def compose_preview(role: str, persona: str, agent: str = "claude") -> dict:
+    async def compose_preview(
+        role: str, persona: str, agent: str = "claude", routing: str = "forward"
+    ) -> dict:
         """The TOML compose.py would generate, without starting anything.
 
         compose() writes the config into examples/roles-and-personas/built/
@@ -386,11 +397,12 @@ def create_app(daemon: Daemon) -> FastAPI:
         """
         module = _load_compose()
         _validate_compose(module, role, persona, agent)
-        path = module.compose(role, persona, agent)
+        path = module.compose(role, persona, agent, routing=routing)
         return {
             "role": role,
             "persona": persona,
             "agent": agent,
+            "routing": routing,
             "name": path.stem,
             "toml": path.read_text(),
         }
@@ -405,7 +417,7 @@ def create_app(daemon: Daemon) -> FastAPI:
         """
         module = _load_compose()
         _validate_compose(module, body.role, body.persona, body.agent)
-        path = module.compose(body.role, body.persona, body.agent)
+        path = module.compose(body.role, body.persona, body.agent, routing=body.routing)
 
         config = load_config(path)
         if config.name in daemon.containers:
@@ -459,6 +471,15 @@ def create_app(daemon: Daemon) -> FastAPI:
     async def signal(name: str, sig: int = 2) -> dict:
         daemon.signal_container(name, sig)
         return {"container": name, "signal": sig}
+
+    @app.post("/api/containers/{name}/routing")
+    async def set_routing(name: str, body: RoutingBody) -> dict:
+        """Override where this container's plain questions surface, live.
+
+        In-memory only: the override lives on the container object, so a
+        respawn reverts to the TOML value.
+        """
+        return daemon.set_question_routing(name, body.routing)
 
     @app.delete("/api/containers/{name}")
     async def destroy(

@@ -213,3 +213,29 @@ def test_inline_config_validates_without_touching_disk():
     config = load_config_data({"name": "child"}, base_dir=Path("/nonexistent"))
     assert isinstance(config, ContainerConfig)
     assert config.name == "child"
+
+
+def test_question_routing_defaults_to_forward(tmp_path):
+    config = load_config(write(tmp_path, 'name = "solo"\n'))
+    assert config.runtime.question_routing == "forward"
+
+
+def test_question_routing_accepts_every_position(tmp_path):
+    for routing in ("forward", "block", "auto"):
+        config = load_config(
+            write(
+                tmp_path,
+                f'name = "solo"\n[runtime]\nquestion_routing = "{routing}"\n',
+            )
+        )
+        assert config.runtime.question_routing == routing
+
+
+def test_question_routing_rejects_unknown_values(tmp_path):
+    with pytest.raises(ConfigError, match="question_routing"):
+        load_config(
+            write(
+                tmp_path,
+                'name = "solo"\n[runtime]\nquestion_routing = "sideways"\n',
+            )
+        )

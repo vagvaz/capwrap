@@ -84,6 +84,16 @@
           <div class="panel-head">
             <span id="term-title" class="mono">no container selected</span>
             <span class="spacer"></span>
+            <label
+              class="routing-select"
+              title="Where this agent's plain questions surface. Approvals and escalations always create cards regardless."
+            >
+              <select id="routing-select" disabled>
+                <option value="forward">forward</option>
+                <option value="block">block</option>
+                <option value="auto">auto</option>
+              </select>
+            </label>
             <button id="btn-start" class="ghost">Start</button>
             <button id="btn-interrupt" class="ghost">Interrupt</button>
             <button id="btn-stop" class="ghost danger">Stop</button>
@@ -269,6 +279,14 @@
             <label
               >Agent
               <select id="spawn-agent" required></select>
+            </label>
+            <label
+              >Routing
+              <select id="spawn-routing" required>
+                <option value="forward">forward</option>
+                <option value="block">block</option>
+                <option value="auto">auto</option>
+              </select>
             </label>
           </div>
           <div class="spawn-preview">

@@ -260,6 +260,16 @@ class Container:
         #: Spawn authority granted live via an escalation card (capability
         #: "spawn").  A set of patterns the container may spawn with.
         self.spawn_grants: set[str] = set()
+        #: Live override of the config's question routing; None means "use the
+        #: config's value".  Set via POST /api/containers/{name}/routing.  It
+        #: lives on the container object rather than in the config, so a
+        #: respawn reverts to the TOML value.
+        self.question_routing: str | None = None
+
+    @property
+    def effective_question_routing(self) -> str:
+        """The routing in force: the live override, or the config's value."""
+        return self.question_routing or self.config.runtime.question_routing
 
     @property
     def name(self) -> str:
@@ -287,6 +297,7 @@ class Container:
             "running": self.running,
             "mounts": self.obj.mounts,
             "session": self.session.status() if self.session else None,
+            "question_routing": self.effective_question_routing,
         }
 
 
@@ -1297,12 +1308,27 @@ class Daemon:
         wins), then the grant table (auto-approve, no card), and only then does
         a card reach the operator.  Capability requests, escalations and plain
         questions have no tool and always become cards.
+
+        A *plain question* (no tool, not an escalation) is then routed by the
+        container's `question_routing` position before any card is created:
+        "forward" posts it to the operator's console, "block" returns guidance
+        without a card, and "auto" auto-answers it and records it as already
+        answered.  Permission requests and escalations bypass routing entirely
+        -- they always create a card and are never auto-answered.
         """
         container_obj = self.containers.get(container)
         if container_obj is not None:
             decided = self._auto_decide(container_obj, context)
             if decided is not None:
                 return decided
+
+            # Question routing, for QUESTION-kind asks only.  Approvals and
+            # escalations (a tool in the context, or a structured kind) always
+            # create a card and are never auto-answered.
+            if _approval_kind(context) == "question":
+                routed = self._route_question(container_obj, question, context)
+                if routed is not None:
+                    return routed
 
         pending = PendingApproval(container, question, context)
         self.approvals[pending.id] = pending
@@ -1393,6 +1419,91 @@ class Daemon:
                 "reason": "approved by a standing grant",
             }
         return None
+
+    def _route_question(
+        self, container: Container, question: str, context: dict
+    ) -> dict | None:
+        """Apply the container's question-routing position, or None for forward.
+
+        Only plain questions reach here -- `ask_operator` gates on
+        `_approval_kind(context) == "question"`, so permission requests,
+        capability requests and escalations always fall through to a card.
+
+        "block" returns guidance without creating a card, and records the
+        blocked question in the audit log.  "auto" records the question as an
+        already-answered entry in the operator's inbox (the same way a resolved
+        question flows, so it stays out of the pending count) and returns the
+        auto-answer.  "forward" returns None and the caller creates the card.
+        """
+        routing = container.effective_question_routing
+        if routing == "forward":
+            return None
+
+        if routing == "block":
+            self.kernel.audit.record(
+                container.name,
+                "ask",
+                allowed=True,
+                target=OPERATOR,
+                detail=f"question blocked (routing=block): {question[:200]}",
+            )
+            return {
+                "decision": "block",
+                "message": (
+                    "No operator ping sent. State your questions as plain text "
+                    "in your terminal and end your turn -- the operator will "
+                    "come here and answer."
+                ),
+            }
+
+        # routing == "auto": autonomous mode.  The question is answered with
+        # "use best judgment, note it" and recorded for later review.
+        self.kernel.audit.record(
+            container.name,
+            "ask",
+            allowed=True,
+            target=OPERATOR,
+            detail=f"question auto-answered (routing=auto): {question[:200]}",
+        )
+        self._record_auto_answered(container.name, question, context)
+        return {
+            "decision": "explain",
+            "message": (
+                "Autonomous mode: use your best judgment, note the assumption, "
+                "and continue."
+            ),
+        }
+
+    def _record_auto_answered(
+        self, container: str, question: str, context: dict
+    ) -> None:
+        """Record an auto-answered question in the operator's inbox.
+
+        Resolved questions flow to the operator inbox as question-kind messages
+        with a decision stamp (see `_close_question`); an auto-answered
+        question is recorded the same way, pre-stamped, so it reads as history
+        for later review rather than as something still waiting on the operator.
+        """
+        auto_id = PendingApproval._next_id
+        PendingApproval._next_id += 1
+        message = self.mailboxes.get(OPERATOR).post(
+            {
+                "from": container,
+                "kind": "question",
+                "payload": {
+                    "id": auto_id,
+                    "question": question,
+                    "context": context,
+                    "decision": "auto",
+                    "reason": "use best judgment, note it",
+                },
+            }
+        )
+        # Posted straight to the mailbox rather than through `deliver_message`,
+        # since the operator is not a container -- so the event that a browser
+        # listens for has to be emitted here too, exactly as `ask_operator` does
+        # for a card.
+        self._emit("message", {"to": OPERATOR, "message": message.to_dict()})
 
     async def request_capability(
         self,
@@ -1706,6 +1817,27 @@ class Daemon:
                 detail={"grant_id": grant_id},
             )
         return removed
+
+    def set_question_routing(self, name: str, routing: str) -> dict:
+        """Override a running container's question routing, in memory.
+
+        The override lives on the container object, so it survives until the
+        container is respawned -- a respawn reverts to the TOML value.
+        """
+        if routing not in ("forward", "block", "auto"):
+            raise CapwrapError(
+                f"routing must be one of 'forward', 'block', 'auto', got {routing!r}"
+            )
+        container = self._get(name)
+        container.question_routing = routing
+        self.kernel.audit.record(
+            OPERATOR,
+            "routing.set",
+            allowed=True,
+            target=name,
+            detail={"routing": routing},
+        )
+        return {"container": name, "routing": routing}
 
     def _close_question(
         self, pending: PendingApproval, decision: str, reason: str

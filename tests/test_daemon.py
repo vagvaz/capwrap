@@ -475,6 +475,143 @@ async def test_a_question_answered_via_explain_gets_the_text_back(daemon, tmp_pa
     assert not daemon.pending_approvals(), "a resolved question leaves the queue"
 
 
+# ==========================================================================
+# question routing -- where plain questions surface
+# ==========================================================================
+
+
+async def test_question_routing_defaults_to_forward(daemon, tmp_path):
+    """The default position is today's behaviour: a card in the Questions tab."""
+    daemon.register(config("alpha", tmp_path))
+    c = daemon.containers["alpha"]
+    c.server = await daemon._serve_container(c)
+
+    asking = asyncio.ensure_future(
+        request(c.paths.socket, "ask", {"question": "tea or coffee?"})
+    )
+    await asyncio.sleep(0.05)
+    pending = daemon.pending_approvals()
+    assert len(pending) == 1
+    assert pending[0]["kind"] == "question"
+    daemon.resolve_approval(pending[0]["id"], "explain", "tea")
+    await asyncio.wait_for(asking, timeout=5)
+
+
+async def test_block_routing_returns_guidance_without_a_card(daemon, tmp_path):
+    """block: no operator ping, no card -- the agent is told to state its
+    question in its own terminal and end its turn."""
+    daemon.register(config("alpha", tmp_path, runtime={"question_routing": "block"}))
+    c = daemon.containers["alpha"]
+    c.server = await daemon._serve_container(c)
+
+    reply = await request(c.paths.socket, "ask", {"question": "which port?"})
+
+    assert reply.ok
+    assert reply.result["decision"] == "block"
+    assert "operator" in reply.result["message"]
+    assert "terminal" in reply.result["message"]
+    assert not daemon.pending_approvals(), "block must not create a card"
+
+    blocked = daemon.audit.tail(limit=20)
+    assert any(
+        e["op"] == "ask" and "blocked" in str(e.get("detail", "")) for e in blocked
+    ), "the blocked question should be in the audit log"
+
+
+async def test_auto_routing_answers_and_records_without_a_card(daemon, tmp_path):
+    """auto: the question is auto-answered, recorded as already answered for
+    later review, and never becomes a pending card."""
+    daemon.register(config("alpha", tmp_path, runtime={"question_routing": "auto"}))
+    c = daemon.containers["alpha"]
+    c.server = await daemon._serve_container(c)
+
+    reply = await request(c.paths.socket, "ask", {"question": "which port?"})
+
+    assert reply.ok
+    assert reply.result["decision"] == "explain"
+    assert "best judgment" in reply.result["message"]
+    assert not daemon.pending_approvals(), "auto must not create a pending card"
+
+    inbox = daemon.overview()["operator_inbox"]
+    recorded = [m for m in inbox if m["kind"] == "question"][-1]
+    assert recorded["payload"]["decision"] == "auto"
+    assert "best judgment" in recorded["payload"]["reason"]
+    assert recorded["payload"]["question"] == "which port?"
+
+
+async def test_auto_routing_never_auto_answers_a_permission_request(daemon, tmp_path):
+    """The invariant: a permission request in auto mode still creates a card.
+
+    Routing governs where *questions* surface; a request with a tool in its
+    context is a permission decision and always reaches the operator.
+    """
+    daemon.register(config("alpha", tmp_path, runtime={"question_routing": "auto"}))
+    c = daemon.containers["alpha"]
+    c.server = await daemon._serve_container(c)
+
+    asking = asyncio.ensure_future(
+        request(
+            c.paths.socket,
+            "ask",
+            {
+                "question": "Bash: git push",
+                "context": {"tool": "Bash", "input": {"command": "git push"}},
+            },
+        )
+    )
+    await asyncio.sleep(0.05)
+    pending = daemon.pending_approvals()
+    assert len(pending) == 1, "a permission request must still reach the operator"
+    assert pending[0]["kind"] == "approval"
+    daemon.resolve_approval(pending[0]["id"], "reject", "")
+    await asyncio.wait_for(asking, timeout=5)
+
+
+async def test_auto_routing_never_auto_answers_an_escalation(daemon, tmp_path):
+    """Same invariant for escalations: crossing a boundary always needs a card."""
+    daemon.register(config("alpha", tmp_path, runtime={"question_routing": "auto"}))
+    c = daemon.containers["alpha"]
+    c.server = await daemon._serve_container(c)
+
+    asking = asyncio.ensure_future(
+        request(
+            c.paths.socket,
+            "escalate",
+            {"capability": "network", "pattern": "pypi\\.org:443", "reason": ""},
+        )
+    )
+    await asyncio.sleep(0.05)
+    pending = daemon.pending_approvals()
+    assert len(pending) == 1, "an escalation must still reach the operator"
+    assert pending[0]["kind"] == "approval"
+    daemon.resolve_approval(pending[0]["id"], "reject", "")
+    await asyncio.wait_for(asking, timeout=5)
+
+
+async def test_the_routing_override_endpoint_validates_and_applies(daemon, tmp_path):
+    """POST /api/containers/{name}/routing overrides the running container's
+    routing in memory, and refuses anything that is not a routing position."""
+    from capwrap.web.app import create_app
+    from fastapi.testclient import TestClient
+
+    daemon.register(config("alpha", tmp_path))
+    client = TestClient(create_app(daemon))
+
+    ok = client.post("/api/containers/alpha/routing", json={"routing": "block"})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["routing"] == "block"
+
+    # The override takes effect immediately, without touching the config.
+    assert daemon.containers["alpha"].effective_question_routing == "block"
+    assert daemon.containers["alpha"].config.runtime.question_routing == "forward"
+
+    bad = client.post("/api/containers/alpha/routing", json={"routing": "sideways"})
+    assert bad.status_code == 400, bad.text
+
+    missing = client.post("/api/containers/ghost/routing", json={"routing": "auto"})
+    assert missing.status_code == 400, missing.text
+
+
 def test_capctl_ask_options_flag_lands_in_the_context(monkeypatch):
     """`capctl ask --options a,b` becomes an `options` list in the context.
 

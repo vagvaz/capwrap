@@ -132,6 +132,20 @@ def test_team_preamble_carries_goal_and_board(compose):
     assert "team/feature-x" in preamble
 
 
+def test_compose_emits_the_chosen_question_routing(compose, tmp_path, monkeypatch):
+    """Generated configs carry the routing position, defaulting to forward."""
+    monkeypatch.setattr(compose, "BUILT", tmp_path)
+
+    path = compose.compose("implementer", "pragmatist", routing="block")
+    assert 'question_routing = "block"' in path.read_text()
+
+    path = compose.compose("reviewer", "devils-advocate", routing="auto")
+    assert 'question_routing = "auto"' in path.read_text()
+
+    path = compose.compose("architect", "idealist")
+    assert 'question_routing = "forward"' in path.read_text()
+
+
 # ==========================================================================
 # spawning, membership and boards
 # ==========================================================================

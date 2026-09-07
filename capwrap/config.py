@@ -240,6 +240,14 @@ class RuntimeSpec(Base):
     #: blocking in its own terminal.  "native" leaves the agent to prompt in its
     #: own TUI.
     approvals: Literal["native", "capwrap"] = "native"
+    #: Where the agent's plain questions surface.  "forward" posts them to the
+    #: operator's console Questions tab (today's behaviour); "block" creates no
+    #: console card and tells the agent to state its question in its own
+    #: terminal and end its turn, so the operator comes to the agent; "auto"
+    #: (autonomous mode) auto-answers "use best judgment, note it" and records
+    #: the question as already answered for later review.  Permission requests
+    #: and escalations always create cards regardless of this setting.
+    question_routing: Literal["forward", "block", "auto"] = "forward"
     #: Which agent profile governs guest-side injection (settings paths,
     #: permission encoding, approval shim, skill location).  "opencode" is
     #: opencode v1 (permissions and skill only -- no reliable approval hook
@@ -275,6 +283,15 @@ class RuntimeSpec(Base):
     def _non_empty(cls, v: list[str]) -> list[str]:
         if not v:
             raise ValueError("runtime.command must not be empty")
+        return v
+
+    @field_validator("question_routing")
+    @classmethod
+    def _known_routing(cls, v: str) -> str:
+        if v not in ("forward", "block", "auto"):
+            raise ValueError(
+                f"question_routing must be one of 'forward', 'block', 'auto', got {v!r}"
+            )
         return v
 
 
