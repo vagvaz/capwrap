@@ -761,11 +761,17 @@ def cmd_net(args):
 
 
 def cmd_ask(args):
+    context = json.loads(args.context) if args.context else {}
+    if args.options:
+        # Comma-separated answer choices, shown to the operator as clickable
+        # chips that fill the reply box. Landed in the request context so the
+        # console can render them without any new endpoint.
+        context["options"] = [o.strip() for o in args.options.split(",") if o.strip()]
     result = call(
         "ask",
         {
             "question": args.question,
-            "context": json.loads(args.context) if args.context else {},
+            "context": context,
             "block": not args.no_wait,
             "timeout": args.timeout,
         },
@@ -1011,6 +1017,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("ask", help="ask the human operator, and wait for an answer")
     p.add_argument("question")
     p.add_argument("--context", help="JSON object of extra context")
+    p.add_argument(
+        "--options",
+        help="comma-separated answer choices, shown to the operator as chips",
+    )
     p.add_argument(
         "--no-wait", action="store_true", help="queue the question without blocking"
     )

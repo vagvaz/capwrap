@@ -144,7 +144,7 @@ const dockMax = (edge) =>
 // A badge each panel keeps beside its name. Only ever something small: the bar
 // also holds the dock control, and in a 260px panel there is no room for a
 // button with words on it.
-const PANEL_EXTRA = { inbox: "approval-count" };
+const PANEL_EXTRA = { inbox: "inbox-count" };
 
 const DOCK_BUTTONS = {
   top: { glyph: "▲", title: "Move to the top" },
@@ -1108,6 +1108,26 @@ function wireGrant() {
 
 // ------------------------------------------------------------------ approvals
 
+/** Which inbox tab a pending request belongs to.
+ *
+ * The daemon tags each pending approval with a `kind`; this is the fallback for
+ * an older daemon that has not. A permission request (a tool in its context) and
+ * every structured card -- capability request, escalation, permission escalation
+ * -- is an *approval*; a plain question is conversation.
+ */
+function approvalKind(approval) {
+  if (approval.kind) return approval.kind;
+  const ctx = approval.context || {};
+  if (ctx.tool) return "approval";
+  if (
+    ["capability_request", "escalation", "permission_escalation"].includes(
+      ctx.kind,
+    )
+  )
+    return "approval";
+  return "question";
+}
+
 /** A capability request: answered by granting, not merely by saying yes. */
 function capabilityRequestCard(approval, ctx) {
   const req = ctx.request || {};
@@ -1201,6 +1221,47 @@ function userQuestionCard(approval, ctx) {
     </div>`;
 }
 
+/** A plain question: conversation, not a permission decision.
+ *
+ * The agent asked its human something and is waiting on the reply. Answering
+ * rides the "explain" decision path -- the operator's text goes straight back
+ * to the agent as the ask's result, deciding nothing. If the ask carried an
+ * `options` list, each choice is a chip that fills the reply box.
+ */
+function questionCard(approval) {
+  const ctx = approval.context || {};
+  const options = Array.isArray(ctx.options) ? ctx.options : [];
+  const chips = options.length
+    ? `
+      <div class="chips">
+        ${options
+          .map(
+            (o) =>
+              `<button type="button" class="chip" data-option="${escapeHtml(o)}">${escapeHtml(o)}</button>`,
+          )
+          .join("")}
+      </div>`
+    : "";
+  const context = Object.keys(ctx).length
+    ? `<div class="ctx">${escapeHtml(JSON.stringify(ctx, null, 2))}</div>`
+    : "";
+  return `
+    <div class="approval question">
+      <div class="who">${escapeHtml(approval.container)} · asking you</div>
+      <div class="q">${escapeHtml(approval.question)}</div>
+      ${chips}
+      ${context}
+      <div class="reply">
+        <textarea class="reply-text" rows="3"
+                  placeholder="Type your answer — it goes straight back to the agent as text."></textarea>
+      </div>
+      <div class="actions">
+        <button class="primary small" data-question-reply="${approval.id}">Send</button>
+        <button class="ghost small" data-goto="${escapeHtml(approval.container)}">Open</button>
+      </div>
+    </div>`;
+}
+
 /** An escalation request: crossing a boundary (network / child-spawn).
  *
  * Granting performs the escalation live -- a network pattern becomes a rule in
@@ -1277,18 +1338,51 @@ async function explainApproval(id) {
 }
 
 function renderApprovals() {
-  const host = $("approvals");
-  $("approval-count").textContent = state.approvals.length;
-  $("approval-count").className = state.approvals.length
-    ? "pill pill-warn"
-    : "pill pill-quiet";
+  const approvals = state.approvals.filter(
+    (a) => approvalKind(a) === "approval",
+  );
+  const questions = state.approvals.filter(
+    (a) => approvalKind(a) === "question",
+  );
 
-  if (!state.approvals.length) {
+  const total = state.approvals.length;
+  $("inbox-count").textContent = total;
+  $("inbox-count").className = total ? "pill pill-warn" : "pill pill-quiet";
+  for (const [id, count] of [
+    ["approval-tab-count", approvals.length],
+    ["question-tab-count", questions.length],
+  ]) {
+    $(id).textContent = count;
+    $(id).className = count ? "pill pill-warn" : "pill pill-quiet";
+  }
+
+  const resolve = async (id, decision, rights = null, reason = "") => {
+    try {
+      await api(`/api/approvals/${id}`, {
+        method: "POST",
+        body: JSON.stringify({ decision, reason, rights }),
+      });
+      state.approvals = state.approvals.filter((a) => a.id !== id);
+      renderApprovals();
+      if (state.selected) loadCaps(state.selected);
+      if (state.selected) loadGrants(state.selected);
+    } catch (err) {
+      alert(`Could not answer: ${err.message}`);
+    }
+  };
+
+  renderApprovalCards($("approvals"), approvals, resolve);
+  renderQuestionCards($("questions"), questions, resolve);
+}
+
+/** The Approvals pane: permission requests and escalation cards. */
+function renderApprovalCards(host, approvals, resolve) {
+  if (!approvals.length) {
     host.innerHTML = '<div class="empty">Nothing waiting on you.</div>';
     return;
   }
 
-  host.innerHTML = state.approvals
+  host.innerHTML = approvals
     .map((approval) => {
       const ctx = approval.context || {};
       if (ctx.kind === "capability_request")
@@ -1319,21 +1413,6 @@ function renderApprovals() {
       </div>`;
     })
     .join("");
-
-  const resolve = async (id, decision, rights = null, reason = "") => {
-    try {
-      await api(`/api/approvals/${id}`, {
-        method: "POST",
-        body: JSON.stringify({ decision, reason, rights }),
-      });
-      state.approvals = state.approvals.filter((a) => a.id !== id);
-      renderApprovals();
-      if (state.selected) loadCaps(state.selected);
-      if (state.selected) loadGrants(state.selected);
-    } catch (err) {
-      alert(`Could not answer: ${err.message}`);
-    }
-  };
 
   host.querySelectorAll("[data-grant]").forEach((b) =>
     b.addEventListener("click", () => {
@@ -1417,6 +1496,66 @@ function renderApprovals() {
         explainApproval(Number(b.dataset.explain)),
       ),
     );
+}
+
+/** The Questions pane: plain asks, answered with text.
+ *
+ * Answering rides the "explain" decision path -- the operator's text goes
+ * straight back to the agent as the ask's result, deciding nothing. A chip
+ * fills the reply box with the option it names.
+ */
+function renderQuestionCards(host, questions, resolve) {
+  if (!questions.length) {
+    host.innerHTML = '<div class="empty">Nothing waiting on you.</div>';
+    return;
+  }
+
+  host.innerHTML = questions.map((approval) => questionCard(approval)).join("");
+
+  host.querySelectorAll("[data-option]").forEach((chip) =>
+    chip.addEventListener("click", () => {
+      const card = chip.closest(".approval");
+      const text = card.querySelector(".reply-text");
+      text.value = chip.dataset.option;
+      text.focus();
+    }),
+  );
+
+  host.querySelectorAll("[data-question-reply]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const card = b.closest(".approval");
+      const text = card.querySelector(".reply-text")?.value.trim();
+      if (!text) return alert("Type an answer first.");
+      await resolve(Number(b.dataset.questionReply), "explain", null, text);
+    }),
+  );
+
+  host
+    .querySelectorAll("[data-goto]")
+    .forEach((b) =>
+      b.addEventListener("click", () =>
+        select(b.dataset.goto, { focusTerminal: true }),
+      ),
+    );
+}
+
+/** The inbox's Approvals/Questions split. Default tab: Approvals. */
+function wireInboxTabs() {
+  document.querySelectorAll("[data-inbox-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const tab = button.dataset.inboxTab;
+      document
+        .querySelectorAll("[data-inbox-tab]")
+        .forEach((b) =>
+          b.classList.toggle("active", b.dataset.inboxTab === tab),
+        );
+      document
+        .querySelectorAll(".inbox-pane")
+        .forEach((pane) =>
+          pane.classList.toggle("active", pane.id === `inbox-${tab}`),
+        );
+    });
+  });
 }
 
 // A question that has been decided -- allowed, denied, timed out, or abandoned
@@ -2188,6 +2327,7 @@ function wire() {
     showAnsweredQuestions = !showAnsweredQuestions;
     renderMessages();
   });
+  wireInboxTabs();
   $("audit-denied").addEventListener("change", renderAudit);
 
   $("compose").addEventListener("submit", async (event) => {

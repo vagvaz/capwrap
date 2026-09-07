@@ -197,14 +197,29 @@
         class="panel"
         id="panel-inbox"
         data-panel="inbox"
-        data-title="Approvals"
+        data-title="Inbox"
       >
-        <span id="approval-count" class="pill pill-quiet">0</span>
+        <span id="inbox-count" class="pill pill-quiet">0</span>
+        <nav class="inbox-tabs">
+          <button data-inbox-tab="approvals" class="active">
+            Approvals
+            <span id="approval-tab-count" class="pill pill-quiet">0</span>
+          </button>
+          <button data-inbox-tab="questions">
+            Questions
+            <span id="question-tab-count" class="pill pill-quiet">0</span>
+          </button>
+        </nav>
         <p class="muted small">
-          Every agent's permission requests land here, so you never have to go
-          looking through terminals for a blocked prompt.
+          Permission requests and escalation cards land under Approvals; plain
+          questions — conversation, not permission — land under Questions.
         </p>
-        <div id="approvals" class="approvals"></div>
+        <div id="inbox-approvals" class="inbox-pane active">
+          <div id="approvals" class="approvals"></div>
+        </div>
+        <div id="inbox-questions" class="inbox-pane">
+          <div id="questions" class="approvals"></div>
+        </div>
 
         <h2>
           Operator inbox

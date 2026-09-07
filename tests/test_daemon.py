@@ -373,6 +373,133 @@ async def test_ask_times_out_rather_than_hanging_forever(daemon, tmp_path):
     assert reply.ok and reply.result["decision"] == "timeout"
 
 
+async def test_pending_approvals_carry_a_kind_for_the_inbox_tabs(daemon, tmp_path):
+    """The console splits its inbox on `kind`; the daemon tags each card.
+
+    A permission request (a tool in its context) and every structured card --
+    capability request, escalation, permission escalation -- is an *approval*;
+    a plain question is conversation.
+    """
+    daemon.register(config("alpha", tmp_path))
+    c = daemon.containers["alpha"]
+    c.server = await daemon._serve_container(c)
+
+    # A plain question: conversation, not a permission decision.
+    asking = asyncio.ensure_future(
+        request(c.paths.socket, "ask", {"question": "tea or coffee?"})
+    )
+    await asyncio.sleep(0.05)
+    pending = daemon.pending_approvals()[0]
+    assert pending["kind"] == "question"
+    daemon.resolve_approval(pending["id"], "explain", "tea")
+    await asyncio.wait_for(asking, timeout=5)
+
+    # A permission request (a tool in its context): an approval.
+    asking = asyncio.ensure_future(
+        request(
+            c.paths.socket,
+            "ask",
+            {
+                "question": "Bash: git push",
+                "context": {"tool": "Bash", "input": {"command": "git push"}},
+            },
+        )
+    )
+    await asyncio.sleep(0.05)
+    pending = daemon.pending_approvals()[0]
+    assert pending["kind"] == "approval"
+    daemon.resolve_approval(pending["id"], "reject", "")
+    await asyncio.wait_for(asking, timeout=5)
+
+    # An escalation card: an approval.
+    asking = asyncio.ensure_future(
+        request(
+            c.paths.socket,
+            "escalate",
+            {"capability": "network", "pattern": "pypi\\.org:443", "reason": ""},
+        )
+    )
+    await asyncio.sleep(0.05)
+    pending = daemon.pending_approvals()[0]
+    assert pending["kind"] == "approval"
+    daemon.resolve_approval(pending["id"], "reject", "")
+    await asyncio.wait_for(asking, timeout=5)
+
+
+async def test_an_ask_with_options_lands_them_in_the_context(daemon, tmp_path):
+    """`capctl ask --options a,b` reaches the operator as clickable chips."""
+    daemon.register(config("alpha", tmp_path))
+    c = daemon.containers["alpha"]
+    c.server = await daemon._serve_container(c)
+
+    asking = asyncio.ensure_future(
+        request(
+            c.paths.socket,
+            "ask",
+            {
+                "question": "which branch?",
+                "context": {"options": ["main", "release"]},
+            },
+        )
+    )
+    await asyncio.sleep(0.05)
+    pending = daemon.pending_approvals()[0]
+    assert pending["context"]["options"] == ["main", "release"]
+    assert pending["kind"] == "question"
+
+    daemon.resolve_approval(pending["id"], "explain", "main")
+    reply = await asyncio.wait_for(asking, timeout=5)
+    assert reply.ok and reply.result["message"] == "main"
+
+
+async def test_a_question_answered_via_explain_gets_the_text_back(daemon, tmp_path):
+    """Answering a plain question rides the explain path: the operator's text
+    goes straight back to the agent as the ask's result, deciding nothing."""
+    daemon.register(config("alpha", tmp_path))
+    c = daemon.containers["alpha"]
+    c.server = await daemon._serve_container(c)
+
+    asking = asyncio.ensure_future(
+        request(c.paths.socket, "ask", {"question": "which port?"})
+    )
+    await asyncio.sleep(0.05)
+    pending = daemon.pending_approvals()[0]
+    assert pending["kind"] == "question"
+
+    assert daemon.resolve_approval(pending["id"], "explain", "use 8080")
+    reply = await asyncio.wait_for(asking, timeout=5)
+
+    assert reply.ok
+    assert reply.result["decision"] == "explain"
+    assert reply.result["message"] == "use 8080"
+    assert not daemon.pending_approvals(), "a resolved question leaves the queue"
+
+
+def test_capctl_ask_options_flag_lands_in_the_context(monkeypatch):
+    """`capctl ask --options a,b` becomes an `options` list in the context.
+
+    The guest CLI is the only way an agent can attach answer choices to a
+    question; the console renders them as chips that fill the reply box.
+    """
+    from capwrap.guest import capctl
+
+    seen = {}
+
+    def fake_call(op, args, timeout=None):
+        seen["op"] = op
+        seen["args"] = args
+        return {"decision": "allow", "reason": "ok"}
+
+    monkeypatch.setattr(capctl, "call", fake_call)
+    args = capctl.build_parser().parse_args(
+        ["ask", "which branch?", "--options", "main, release, hotfix"]
+    )
+    capctl.cmd_ask(args)
+
+    assert seen["op"] == "ask"
+    assert seen["args"]["context"]["options"] == ["main", "release", "hotfix"]
+
+
 # ==========================================================================
 # live containers
 # ==========================================================================

@@ -113,6 +113,25 @@ def _request_rule(context: dict) -> Rule | None:
     return Rule(tool, summary)
 
 
+def _approval_kind(context: dict) -> str:
+    """Classify a pending request for the console's Approvals/Questions split.
+
+    A permission request (one whose context names a tool) and every structured
+    card -- a capability request, an escalation, a permission escalation -- is
+    an *approval*: it wants a decision.  A plain question (no tool, no
+    structured kind) is conversation: it wants an answer, not a verdict.
+    """
+    if context.get("tool"):
+        return "approval"
+    if context.get("kind") in (
+        "capability_request",
+        "escalation",
+        "permission_escalation",
+    ):
+        return "approval"
+    return "question"
+
+
 def _grant_pattern_from_request(context: dict) -> str:
     """A grant pattern covering this request, in role-allow vocabulary.
 
@@ -159,6 +178,7 @@ class PendingApproval:
             "container": self.container,
             "question": self.question,
             "context": self.context,
+            "kind": _approval_kind(self.context or {}),
             "created_at": self.created_at,
             "resolved": self.future.done(),
         }
