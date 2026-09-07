@@ -205,6 +205,18 @@ def create_app(daemon: Daemon) -> FastAPI:
             ),
         }
 
+    @app.get("/api/containers/{name}/grants")
+    async def grants(name: str) -> list[dict]:
+        """A container's grant table: the "always allow" entries."""
+        return daemon.container_grants(name)
+
+    @app.delete("/api/containers/{name}/grants/{grant_id}")
+    async def revoke_grant(name: str, grant_id: str) -> dict:
+        """Revoke one grant, so the request prompts again."""
+        if not daemon.revoke_grant(name, grant_id):
+            raise HTTPException(404, f"no grant {grant_id} for {name}")
+        return {"container": name, "revoked": grant_id}
+
     @app.get("/api/containers/{name}/screen")
     async def screen(name: str, rows: int = 12) -> dict:
         """The tail of a container's screen, for the all-agents overview.
@@ -521,8 +533,12 @@ def create_app(daemon: Daemon) -> FastAPI:
 
     @app.post("/api/approvals/{approval_id}")
     async def resolve(approval_id: int, body: ApprovalBody) -> dict:
-        if body.decision not in ("allow", "deny"):
-            raise HTTPException(400, "decision must be 'allow' or 'deny'")
+        if body.decision not in ("allow", "reject", "deny", "grant", "explain"):
+            raise HTTPException(
+                400,
+                "decision must be 'allow', 'reject', 'grant' or 'explain' "
+                "('deny' is accepted as an alias for 'reject')",
+            )
         if not daemon.resolve_approval(
             approval_id, body.decision, body.reason, body.rights
         ):

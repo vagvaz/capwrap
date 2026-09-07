@@ -782,6 +782,35 @@ def cmd_ask(args):
         sys.exit(1)
 
 
+def cmd_escalate(args):
+    """Ask the operator to cross a boundary: network or child-spawn.
+
+    Unlike `capctl ask`, approving an escalation actually performs the grant:
+    a network pattern becomes a live rule in the container's capability proxy,
+    and a spawn pattern records spawn authority the child-spawn check consults.
+    Structural capabilities (worktree writes, host mounts) are refused with
+    "respawn required" -- no card is even created for those.
+    """
+    result = call(
+        "escalate",
+        {
+            "capability": args.capability,
+            "pattern": args.pattern,
+            "reason": args.reason or "",
+            "timeout": args.timeout,
+        },
+        timeout=None,
+    )
+    if args.json:
+        emit(result, True)
+    else:
+        decision = result.get("decision", "pending")
+        message = result.get("message") or result.get("reason") or ""
+        print(f"{decision}{': ' + message if message else ''}")
+    if result.get("decision") not in ("allow", None):
+        sys.exit(1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     # --json is accepted on both sides of the subcommand. `capctl caps --json`
     # is what anyone actually types, and argparse would otherwise only accept
@@ -987,6 +1016,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--timeout", type=float, default=None)
     p.set_defaults(func=cmd_ask)
+
+    p = sub.add_parser(
+        "escalate",
+        help="ask the operator to cross a boundary: network or child-spawn",
+    )
+    p.add_argument(
+        "--capability",
+        required=True,
+        choices=["network", "spawn"],
+        help="the boundary to cross; structural limits (worktree writes, "
+        "host mounts) are refused with 'respawn required'",
+    )
+    p.add_argument(
+        "--pattern", required=True, help="what to allow, e.g. a host:port regex"
+    )
+    p.add_argument("--reason", help="why you need it -- the operator reads this")
+    p.add_argument("--timeout", type=float, default=None)
+    p.set_defaults(func=cmd_escalate)
 
     return parser
 

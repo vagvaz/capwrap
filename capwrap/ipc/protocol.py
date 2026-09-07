@@ -42,6 +42,7 @@ AGENT_OPS = frozenset(
         "ctr.spawn",
         "ds.map",
         "ask",
+        "escalate",
     }
 )
 

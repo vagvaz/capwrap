@@ -765,6 +765,7 @@ async function select(name, { focusTerminal = false } = {}) {
   renderTree();
   openTerminal(name);
   await loadCaps(name);
+  await loadGrants(name);
   await loadMailbox(name);
 }
 
@@ -962,6 +963,68 @@ function renderCaps() {
   });
 }
 
+// ------------------------------------------------------------------ grants
+
+// The selected container's grant table ("always allow" entries), shown under
+// the capability table so the operator can see -- and revoke -- what will not
+// prompt again.
+let grants = [];
+
+async function loadGrants(name) {
+  try {
+    grants = await api(`/api/containers/${name}/grants`);
+  } catch (_) {
+    grants = [];
+  }
+  renderGrants();
+}
+
+function renderGrants() {
+  const host = $("grants");
+  const list = $("grants-list");
+  if (!state.selected) {
+    host.hidden = true;
+    return;
+  }
+  if (!grants.length) {
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  $("grants-count").textContent =
+    `${grants.length} entry${grants.length === 1 ? "" : "s"}`;
+  list.innerHTML = grants
+    .map(
+      (g) => `
+    <div class="grant-item" data-id="${escapeHtml(g.id)}">
+      <span class="mono">${escapeHtml(g.pattern)}</span>
+      ${g.tool ? `<span class="pill pill-quiet">${escapeHtml(g.tool)}</span>` : ""}
+      <span class="muted small">${new Date(g.created_at * 1000).toLocaleString()}</span>
+      <span class="actions">
+        <button class="ghost small danger" data-revoke-grant="${escapeHtml(g.id)}">Revoke</button>
+      </span>
+    </div>`,
+    )
+    .join("");
+
+  list.querySelectorAll("[data-revoke-grant]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const id = b.dataset.revokeGrant;
+      if (!confirm(`Revoke grant ${id}? The request will prompt again.`))
+        return;
+      try {
+        await api(`/api/containers/${state.selected}/grants/${id}`, {
+          method: "DELETE",
+        });
+        grants = grants.filter((g) => g.id !== id);
+        renderGrants();
+      } catch (err) {
+        alert(`Could not revoke grant: ${err.message}`);
+      }
+    }),
+  );
+}
+
 // ------------------------------------------------------------------ granting
 
 // What the operator can hand out on a container capability. Ordered so the
@@ -1138,6 +1201,38 @@ function userQuestionCard(approval, ctx) {
     </div>`;
 }
 
+/** An escalation request: crossing a boundary (network / child-spawn).
+ *
+ * Granting performs the escalation live -- a network pattern becomes a rule in
+ * the container's capability proxy, a spawn pattern records spawn authority.
+ * Allow means the same thing here: answering "yes" to "may I cross this
+ * boundary" without crossing it would hand the agent a permission it does not
+ * have.
+ */
+function escalationCard(approval, ctx) {
+  return `
+    <div class="approval">
+      <div class="who">${escapeHtml(approval.container)} · escalation</div>
+      <div class="q">
+        wants <strong>${escapeHtml(ctx.capability || "?")}</strong> for
+        <span class="mono">${escapeHtml(ctx.pattern || "")}</span>
+      </div>
+      ${ctx.reason ? `<div class="ctx">${escapeHtml(ctx.reason)}</div>` : ""}
+      <div class="actions">
+        <button class="primary small" data-allow="${approval.id}">Allow</button>
+        <button class="small danger" data-deny="${approval.id}">Reject</button>
+        <button class="small" data-grant-perm="${approval.id}">Grant</button>
+        <button class="ghost small" data-goto="${escapeHtml(approval.container)}">Open</button>
+        ${explainBlock(approval)}
+      </div>
+      <div class="explain-reply">
+        <input class="explain-text" type="text"
+               placeholder="Explain instead of deciding — the agent gets this text…">
+        <button class="ghost small" data-explain-reply="${approval.id}">Send explanation</button>
+      </div>
+    </div>`;
+}
+
 // Explanations, kept out of `state` because they are the operator's working
 // notes on a card rather than daemon truth, and they have to survive the
 // re-render every event provokes.
@@ -1199,6 +1294,7 @@ function renderApprovals() {
       if (ctx.kind === "capability_request")
         return capabilityRequestCard(approval, ctx);
       if (ctx.kind === "user_question") return userQuestionCard(approval, ctx);
+      if (ctx.kind === "escalation") return escalationCard(approval, ctx);
 
       const context = Object.keys(ctx).length
         ? `<div class="ctx">${escapeHtml(JSON.stringify(ctx, null, 2))}</div>`
@@ -1210,9 +1306,15 @@ function renderApprovals() {
         ${context}
         <div class="actions">
           <button class="primary small" data-allow="${approval.id}">Allow</button>
-          <button class="small danger" data-deny="${approval.id}">Deny</button>
+          <button class="small danger" data-deny="${approval.id}">Reject</button>
+          <button class="small" data-grant-perm="${approval.id}">Grant</button>
           <button class="ghost small" data-goto="${escapeHtml(approval.container)}">Open</button>
           ${explainBlock(approval)}
+        </div>
+        <div class="explain-reply">
+          <input class="explain-text" type="text"
+                 placeholder="Explain instead of deciding — the agent gets this text…">
+          <button class="ghost small" data-explain-reply="${approval.id}">Send explanation</button>
         </div>
       </div>`;
     })
@@ -1227,6 +1329,7 @@ function renderApprovals() {
       state.approvals = state.approvals.filter((a) => a.id !== id);
       renderApprovals();
       if (state.selected) loadCaps(state.selected);
+      if (state.selected) loadGrants(state.selected);
     } catch (err) {
       alert(`Could not answer: ${err.message}`);
     }
@@ -1275,9 +1378,31 @@ function renderApprovals() {
     .querySelectorAll("[data-deny]")
     .forEach((b) =>
       b.addEventListener("click", () =>
-        resolve(Number(b.dataset.deny), "deny"),
+        resolve(Number(b.dataset.deny), "reject"),
       ),
     );
+
+  // Grant on a permission/escalation card: approve *and* persist, so the same
+  // request never prompts again (or, for an escalation, the capability is
+  // applied live).
+  host
+    .querySelectorAll("[data-grant-perm]")
+    .forEach((b) =>
+      b.addEventListener("click", () =>
+        resolve(Number(b.dataset.grantPerm), "grant"),
+      ),
+    );
+
+  // Explain: decide nothing, hand the agent the operator's text instead.
+  host.querySelectorAll("[data-explain-reply]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const card = b.closest(".approval");
+      const text = card.querySelector(".explain-text")?.value.trim();
+      if (!text) return alert("Type the explanation first.");
+      await resolve(Number(b.dataset.explainReply), "explain", null, text);
+    }),
+  );
+
   host
     .querySelectorAll("[data-goto]")
     .forEach((b) =>

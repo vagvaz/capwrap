@@ -219,8 +219,17 @@ def main() -> None:
     reason = result.get("reason") or ""
     if decision == "allow":
         respond("allow", reason or "approved in the capwrap console")
-    if decision == "deny":
+    if decision in ("deny", "reject"):
+        # "reject" is the console's word now; "deny" is its legacy alias.
         respond("deny", reason or "denied in the capwrap console")
+    if decision == "explain":
+        # The operator declined to decide and sent text instead. "ask" is the
+        # harness's native equivalent of "not decided": Claude's own prompt
+        # appears carrying the operator's explanation, and the agent continues
+        # from there. A deny would have decided; an allow would have decided.
+        respond(
+            "ask", result.get("message") or "the operator explained instead of deciding"
+        )
     respond("ask", reason or "no answer from the operator")
 
 

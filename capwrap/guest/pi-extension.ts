@@ -299,10 +299,22 @@ export default function (pi: any) {
 
       const reason = result.reason ?? "";
       if (result.decision === "allow") return undefined;
-      if (result.decision === "deny") {
+      if (result.decision === "deny" || result.decision === "reject") {
+        // "reject" is the console's word now; "deny" is its legacy alias.
         return {
           block: true,
           reason: reason || "denied in the capwrap console",
+        };
+      }
+      if (result.decision === "explain") {
+        // The operator declined to decide and sent text instead. pi has no
+        // native prompt to fall back to, so the only way to surface the
+        // explanation is to block with it as the reason -- the agent sees the
+        // text and continues from there. A silent allow would have decided.
+        return {
+          block: true,
+          reason:
+            result.message || "the operator explained instead of deciding",
         };
       }
       return { block: true, reason: reason || "no answer from the operator" };
