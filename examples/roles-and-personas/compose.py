@@ -265,6 +265,12 @@ role_prompt = "{fname}.md"
 cwd       = "/work"
 tty       = true
 approvals = "capwrap"
+# Where the agent's plain questions surface: "forward" (the operator's console
+# Questions tab), "block" (no console card; the agent states its question in
+# its own terminal and ends its turn), or "auto" (autonomous mode: the
+# question is auto-answered "use best judgment, note it" and recorded for
+# later review).  Permission requests and escalations always create cards.
+question_routing = "{routing}"
 
 auto_allow = [{auto_allow}]
 auto_deny  = [{auto_deny}]
@@ -733,6 +739,7 @@ def compose(
     generous: bool = False,
     extra_prompt: str = "",
     peers: "list[str] | None" = None,
+    routing: str = "forward",
 ) -> pathlib.Path:
     if role not in ROLES:
         sys.exit(f"unknown role {role!r}; try --list")
@@ -740,6 +747,8 @@ def compose(
         sys.exit(f"unknown persona {persona!r}; try --list")
     if agent not in AGENT_SETUP:
         sys.exit(f"unknown agent {agent!r}; try --list")
+    if routing not in ("forward", "block", "auto"):
+        sys.exit(f"unknown routing {routing!r}; try --routing forward|block|auto")
     if agent == "pi" and _PI_PACKAGE is None:
         sys.exit(
             "pi-coding-agent is not installed; "
@@ -888,6 +897,7 @@ def compose(
         persona=persona,
         fname=fname,
         agent=agent,
+        routing=routing,
         command=quote(setup["command"]),
         summary=spec["summary"],
         env=quote(setup["env"]),
@@ -940,6 +950,12 @@ def main() -> int:
         help="grant the generous shell (everything except the denylist) instead "
         "of the role's ambient baseline; read-only roles stay read-only",
     )
+    parser.add_argument(
+        "--routing",
+        default="forward",
+        choices=["forward", "block", "auto"],
+        help="where the agent's plain questions surface (default: forward)",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -961,7 +977,9 @@ def main() -> int:
         parser.error("give at least one ROLE:PERSONA, or --list")
 
     for role, persona in pairs:
-        path = compose(role, persona, args.agent, generous=args.auto_allow)
+        path = compose(
+            role, persona, args.agent, generous=args.auto_allow, routing=args.routing
+        )
         print(f"built {path.relative_to(HERE.parent.parent)}")
     return 0
 

@@ -520,6 +520,7 @@ async function dismissContainer(name) {
       term.reset();
       $("term-title").textContent = "no container selected";
       renderCaps();
+      renderRouting();
     }
     await refreshOverview();
   } catch (err) {
@@ -775,14 +776,44 @@ async function select(name, { focusTerminal = false } = {}) {
 // to read them or discard one that was posted by mistake.
 let mailbox = [];
 
+// The selected container's question routing, from the same detail endpoint.
+let routing = "forward";
+
 async function loadMailbox(name) {
   try {
     const detail = await api(`/api/containers/${name}`);
     mailbox = detail.queued || [];
+    routing = detail.question_routing || "forward";
   } catch (_) {
     mailbox = [];
   }
   renderMailbox();
+  renderRouting();
+}
+
+/** The container detail pane's three-position routing select. */
+function renderRouting() {
+  const select = $("routing-select");
+  select.disabled = !state.selected;
+  if (state.selected) select.value = routing;
+}
+
+function wireRouting() {
+  $("routing-select").addEventListener("change", async () => {
+    const name = state.selected;
+    if (!name) return;
+    const value = $("routing-select").value;
+    try {
+      await api(`/api/containers/${name}/routing`, {
+        method: "POST",
+        body: JSON.stringify({ routing: value }),
+      });
+      routing = value;
+    } catch (err) {
+      alert(`Could not set routing: ${err.message}`);
+      renderRouting();
+    }
+  });
 }
 
 function renderMailbox() {
@@ -1604,8 +1635,12 @@ function renderMessages() {
       // reload, so without showing that, a decided request looks open again.
       if (m.kind === "question" && m.payload && typeof m.payload === "object") {
         const decided = m.payload.decision;
+        // An auto-answered question (autonomous mode) is history, not a
+        // verdict: it renders muted rather than as an allow/deny outcome.
         const mark = decided
-          ? `<span class="pill ${decided === "allow" ? "pill-ok" : "pill-bad"}">${escapeHtml(decided)}</span>`
+          ? decided === "auto"
+            ? '<span class="pill pill-quiet">auto</span>'
+            : `<span class="pill ${decided === "allow" ? "pill-ok" : "pill-bad"}">${escapeHtml(decided)}</span>`
           : '<span class="pill pill-warn">waiting</span>';
         // Going to the asker's terminal is the answer to half of these, so the
         // way there belongs on the entry rather than only on the live card.
@@ -2328,13 +2363,15 @@ function refreshSpawnPreview() {
     const role = $("spawn-role").value;
     const persona = $("spawn-persona").value;
     const agent = $("spawn-agent").value;
+    const routing = $("spawn-routing").value;
     if (!role || !persona || !agent) return;
     $("spawn-preview").textContent = "Loading…";
     try {
       const data = await api(
         `/api/compose/preview?role=${encodeURIComponent(role)}` +
           `&persona=${encodeURIComponent(persona)}` +
-          `&agent=${encodeURIComponent(agent)}`,
+          `&agent=${encodeURIComponent(agent)}` +
+          `&routing=${encodeURIComponent(routing)}`,
       );
       $("spawn-preview").textContent = data.toml;
       $("spawn-error").hidden = true;
@@ -2354,7 +2391,12 @@ function wireSpawn() {
     if (event.target === $("spawn-dialog")) closeSpawnDialog();
   });
 
-  for (const id of ["spawn-role", "spawn-persona", "spawn-agent"]) {
+  for (const id of [
+    "spawn-role",
+    "spawn-persona",
+    "spawn-agent",
+    "spawn-routing",
+  ]) {
     $(id).addEventListener("change", refreshSpawnPreview);
   }
 
@@ -2362,11 +2404,12 @@ function wireSpawn() {
     const role = $("spawn-role").value;
     const persona = $("spawn-persona").value;
     const agent = $("spawn-agent").value;
+    const routing = $("spawn-routing").value;
     $("spawn-error").hidden = true;
     try {
       await api("/api/spawn", {
         method: "POST",
-        body: JSON.stringify({ role, persona, agent }),
+        body: JSON.stringify({ role, persona, agent, routing }),
       });
       closeSpawnDialog();
       await refreshOverview();
@@ -2557,6 +2600,7 @@ function wire() {
   wireTrace();
   wireSpawn();
   wireTeam();
+  wireRouting();
 }
 
 // A hidden tab should cost nothing; browsers throttle timers but still run them.
