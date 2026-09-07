@@ -139,35 +139,35 @@ ROLES: dict[str, dict] = {
     # -- write code ----------------------------------------------------
     "implementer": {
         "summary": "makes it work, in the smallest change that does",
-        "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
+        "allow": ["Read", "Glob", "Grep", "Write", "Edit"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
         "network": "auto",
     },
     "refactorer": {
         "summary": "changes how it is written, not what it does",
-        "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
+        "allow": ["Read", "Glob", "Grep", "Write", "Edit"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
         "network": "auto",
     },
     "debugger": {
         "summary": "finds out why; may watch and drive another agent's terminal",
-        "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
+        "allow": ["Read", "Glob", "Grep", "Write", "Edit"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
         "network": "auto",
     },
     "performance-engineer": {
         "summary": "measures first; every claim has a before and an after",
-        "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
+        "allow": ["Read", "Glob", "Grep", "Write", "Edit"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
         "network": "auto",
     },
     "integrator": {
         "summary": "merges branches and keeps main working",
-        "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
+        "allow": ["Read", "Glob", "Grep", "Write", "Edit"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
         "network": "auto",
@@ -188,7 +188,7 @@ ROLES: dict[str, dict] = {
     # -- tests ---------------------------------------------------------
     "test-writer": {
         "summary": "writes tests, not fixes",
-        "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
+        "allow": ["Read", "Glob", "Grep", "Write", "Edit"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
         "network": "auto",
@@ -214,7 +214,7 @@ ROLES: dict[str, dict] = {
     },
     "tech-lead": {
         "summary": "accountable for the code, and writes it; can steer its agents",
-        "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash(git:*)"],
+        "allow": ["Read", "Glob", "Grep", "Write", "Edit"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
         "network": "auto",
