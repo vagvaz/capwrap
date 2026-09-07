@@ -1852,6 +1852,64 @@ async function renderBoards() {
     .join("");
 }
 
+// ------------------------------------------------------------------ teams
+
+/** Teams: named sets of containers with a shared goal and one shared board.
+ *
+ * Each card shows the goal and success criteria recorded at creation, and the
+ * members with their running dots -- the same status vocabulary as the tree.
+ */
+async function renderTeams() {
+  const host = $("teams");
+  let teams = [];
+  try {
+    teams = await api("/api/teams");
+  } catch (err) {
+    host.innerHTML = `<div class="empty">Could not load teams: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  $("teams-count").textContent = teams.length
+    ? `${teams.length} team${teams.length === 1 ? "" : "s"}`
+    : "";
+
+  if (!teams.length) {
+    host.innerHTML = `
+      <div class="trace-off">
+        No teams yet. A team is a named set of agents with complementary roles,
+        a shared goal, peer messaging between members, and one shared board.
+        Spawn one with the <span class="mono">Team</span> button.
+      </div>`;
+    return;
+  }
+
+  host.innerHTML = teams
+    .map((team) => {
+      const members = (team.members || [])
+        .map(
+          (m) => `
+        <div class="team-member">
+          <span class="dot ${m.running ? "running" : "exited"}"></span>
+          <span>${escapeHtml(m.name)}</span>
+          <span class="role">${escapeHtml(m.role)} · ${escapeHtml(m.persona)} · ${escapeHtml(m.agent)}</span>
+        </div>`,
+        )
+        .join("");
+      return `
+      <div class="team-card">
+        <h3>${escapeHtml(team.name)}</h3>
+        <p class="goal">${escapeHtml(team.goal)}</p>
+        ${
+          team.success_criteria
+            ? `<p class="criteria">success: ${escapeHtml(team.success_criteria)}</p>`
+            : ""
+        }
+        <div class="team-members-list">${members}</div>
+      </div>`;
+    })
+    .join("");
+}
+
 // ------------------------------------------------------------------ trace
 
 // Rows held in the browser. The daemon keeps its own bounded buffer; this is
@@ -2084,6 +2142,7 @@ function showTab(name) {
   }
   if (name === "audit") renderAudit();
   if (name === "boards") renderBoards();
+  if (name === "teams") renderTeams();
   if (name === "messages") loadTrace();
   if (name === "terminal") setTimeout(syncTerminalSize, 30);
 }
@@ -2203,6 +2262,11 @@ function handleEvent(event) {
     case "container.exited":
     case "container.destroyed":
       refreshOverview();
+      if (document.querySelector("#tab-teams.active")) renderTeams();
+      break;
+
+    case "team.spawned":
+      if (document.querySelector("#tab-teams.active")) renderTeams();
       break;
   }
 }
@@ -2313,6 +2377,112 @@ function wireSpawn() {
   });
 }
 
+// ------------------------------------------------------------------ team
+
+// The role/persona/agent choices for the team dialog, shared with the spawn
+// dialog's options.
+let teamOptions = { roles: [], personas: [], agents: [] };
+
+function openTeamDialog() {
+  $("team-dialog").hidden = false;
+  $("team-error").hidden = true;
+  loadTeamOptions();
+}
+
+function closeTeamDialog() {
+  $("team-dialog").hidden = true;
+}
+
+async function loadTeamOptions() {
+  try {
+    teamOptions = await api("/api/compose/options");
+  } catch (err) {
+    $("team-error").textContent = `Could not load options: ${err.message}`;
+    $("team-error").hidden = false;
+    return;
+  }
+  if (!$("team-members").children.length) addTeamMemberRow();
+}
+
+function teamSelect(id, values, selected) {
+  return values
+    .map(
+      (v) =>
+        `<option value="${escapeHtml(v)}" ${
+          v === selected ? "selected" : ""
+        }>${escapeHtml(v)}</option>`,
+    )
+    .join("");
+}
+
+function addTeamMemberRow() {
+  const host = $("team-members");
+  const row = document.createElement("div");
+  row.className = "team-member-row";
+  row.innerHTML = `
+    <label>Role
+      <select class="tm-role" required>${teamSelect("tm-role", teamOptions.roles, "implementer")}</select>
+    </label>
+    <label>Persona
+      <select class="tm-persona" required>${teamSelect("tm-persona", teamOptions.personas, "pragmatist")}</select>
+    </label>
+    <label>Agent
+      <select class="tm-agent" required>${teamSelect("tm-agent", teamOptions.agents, "claude")}</select>
+    </label>
+    <button type="button" class="ghost remove" title="Remove member">×</button>`;
+  row.querySelector(".remove").addEventListener("click", () => {
+    row.remove();
+  });
+  host.appendChild(row);
+}
+
+function collectTeam() {
+  const name = $("team-name").value.trim();
+  const goal = $("team-goal").value.trim();
+  const success_criteria = $("team-success").value.trim();
+  const members = [
+    ...$("team-members").querySelectorAll(".team-member-row"),
+  ].map((row) => ({
+    role: row.querySelector(".tm-role").value,
+    persona: row.querySelector(".tm-persona").value,
+    agent: row.querySelector(".tm-agent").value,
+  }));
+  return { name, goal, success_criteria, members };
+}
+
+function wireTeam() {
+  $("btn-team").addEventListener("click", openTeamDialog);
+  $("team-close").addEventListener("click", closeTeamDialog);
+  $("team-cancel").addEventListener("click", closeTeamDialog);
+  $("team-dialog").addEventListener("click", (event) => {
+    if (event.target === $("team-dialog")) closeTeamDialog();
+  });
+  $("team-add-member").addEventListener("click", addTeamMemberRow);
+
+  $("team-submit").addEventListener("click", async () => {
+    const team = collectTeam();
+    $("team-error").hidden = true;
+    if (!team.name || !team.goal || !team.members.length) {
+      $("team-error").textContent =
+        "Give the team a name, a goal, and at least one member.";
+      $("team-error").hidden = false;
+      return;
+    }
+    try {
+      await api("/api/teams/spawn", {
+        method: "POST",
+        body: JSON.stringify({ team }),
+      });
+      closeTeamDialog();
+      await refreshOverview();
+      if (document.querySelector("#tab-teams.active")) renderTeams();
+    } catch (err) {
+      $("team-error").textContent = err.message;
+      $("team-error").hidden = false;
+    }
+  });
+}
+
 // ------------------------------------------------------------------ wiring
 
 function wire() {
@@ -2322,6 +2492,7 @@ function wire() {
 
   $("audit-refresh").addEventListener("click", renderAudit);
   $("boards-refresh").addEventListener("click", renderBoards);
+  $("teams-refresh").addEventListener("click", renderTeams);
 
   $("inbox-history").addEventListener("click", () => {
     showAnsweredQuestions = !showAnsweredQuestions;
@@ -2385,6 +2556,7 @@ function wire() {
   wireGrant();
   wireTrace();
   wireSpawn();
+  wireTeam();
 }
 
 // A hidden tab should cost nothing; browsers throttle timers but still run them.

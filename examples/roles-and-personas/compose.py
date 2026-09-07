@@ -727,7 +727,12 @@ def dedupe(items: list[str], key=lambda x: x) -> list[str]:
 
 
 def compose(
-    role: str, persona: str, agent: str = "claude", generous: bool = False
+    role: str,
+    persona: str,
+    agent: str = "claude",
+    generous: bool = False,
+    extra_prompt: str = "",
+    peers: "list[str] | None" = None,
 ) -> pathlib.Path:
     if role not in ROLES:
         sys.exit(f"unknown role {role!r}; try --list")
@@ -765,6 +770,8 @@ def compose(
         "pull against each other, the role wins: a reviewer with a lazy\n"
         "disposition still reviews, it just does not gold-plate the write-up.\n"
     )
+    if extra_prompt:
+        prompt += "\n\n---\n\n" + extra_prompt.rstrip() + "\n"
     (BUILT / f"{fname}.md").write_text(prompt)
     # Copied rather than referenced with `..`, so that `built/` can be moved or
     # shipped somewhere on its own and still work.
@@ -870,6 +877,12 @@ def compose(
         network_line = str(network_mode).lower()
         caps_network = ""
 
+    peers_toml = ""
+    if peers:
+        peers_toml = "\n" + "\n".join(
+            f'[[caps.peers]]\ncontainer = "{p}"\nrights = ["send"]\n' for p in peers
+        )
+
     config = TEMPLATE.format(
         role=role,
         persona=persona,
@@ -895,6 +908,7 @@ def compose(
                 else ""
             )
             + caps_network
+            + peers_toml
         ),
     )
     path = BUILT / f"{fname}.toml"

@@ -26,6 +26,13 @@
           Spawn
         </button>
         <button
+          id="btn-team"
+          class="ghost"
+          title="Build and run a whole team of agents"
+        >
+          Team
+        </button>
+        <button
           id="layout-reset"
           class="ghost"
           title="Put the panels back where they started"
@@ -66,6 +73,7 @@
         <nav class="tabs">
           <button data-tab="terminal" class="active">Terminal</button>
           <button data-tab="grid">All agents</button>
+          <button data-tab="teams">Teams</button>
           <button data-tab="caps">Capabilities</button>
           <button data-tab="boards">Boards</button>
           <button data-tab="messages">Messages</button>
@@ -89,6 +97,17 @@
             Every agent at once. Click a tile to open it full size.
           </p>
           <div id="grid" class="grid"></div>
+        </div>
+
+        <!-- Teams: named sets of containers with a shared goal and one board. -->
+        <div id="tab-teams" class="tab-panel">
+          <div class="panel-head">
+            <span class="mono">teams</span>
+            <span id="teams-count" class="muted small"></span>
+            <span class="spacer"></span>
+            <button id="teams-refresh" class="ghost">Refresh</button>
+          </div>
+          <div id="teams" class="caps"></div>
         </div>
 
         <div id="tab-caps" class="tab-panel">
@@ -260,6 +279,60 @@
           <div class="spawn-actions">
             <button id="spawn-cancel" class="ghost">Cancel</button>
             <button id="spawn-submit" class="primary">Spawn</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Team dialog: name, goal, success criteria, and a list of members. -->
+    <div id="team-dialog" class="modal" hidden>
+      <div class="modal-card">
+        <div class="panel-head">
+          <span class="mono">Spawn a team</span>
+          <span class="spacer"></span>
+          <button id="team-close" class="ghost" title="Close">×</button>
+        </div>
+        <div class="spawn-body">
+          <div class="spawn-row">
+            <label
+              >Team name
+              <input
+                id="team-name"
+                type="text"
+                placeholder="feature-x"
+                required
+              />
+            </label>
+            <label
+              >Goal
+              <input
+                id="team-goal"
+                type="text"
+                placeholder="ship the parser rewrite"
+                required
+              />
+            </label>
+            <label
+              >Success criteria
+              <input
+                id="team-success"
+                type="text"
+                placeholder="all tests green, ADR merged"
+              />
+            </label>
+          </div>
+
+          <div class="panel-head">
+            <span class="mono">Members</span>
+            <span class="spacer"></span>
+            <button id="team-add-member" class="ghost">Add member</button>
+          </div>
+          <div id="team-members" class="team-members"></div>
+
+          <div id="team-error" class="spawn-error" hidden></div>
+          <div class="spawn-actions">
+            <button id="team-cancel" class="ghost">Cancel</button>
+            <button id="team-submit" class="primary">Spawn team</button>
           </div>
         </div>
       </div>
