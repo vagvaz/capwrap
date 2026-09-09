@@ -23,10 +23,28 @@ def _guest_tools_dir() -> Path:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
+    from . import doctor as doctor_mod
+    from .config import load_config
+
     report = probe.run_all()
     print("capwrap doctor\n")
     print(probe.format_report(report, color=sys.stdout.isatty()))
-    return 0 if report.ok else 1
+
+    configs = [load_config(path) for path in (args.config or [])]
+    if configs:
+        print("\nconfig checks:")
+    else:
+        print(
+            "\n(no --config given: checking the environment-level agent "
+            "installs and the daemon only)\n"
+        )
+    groups = doctor_mod.run_checks(configs)
+    print(doctor_mod.render(groups, color=sys.stdout.isatty()), end="")
+
+    any_fail = not report.ok or any(
+        r.status == "fail" for _header, results in groups for r in results
+    )
+    return 1 if any_fail else 0
 
 
 def _resolve_backend(requested: str) -> str:
@@ -501,7 +519,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("doctor", help="check that this host can run capwrap")
-    p.set_defaults(func=cmd_doctor)
+    p.add_argument(
+        "--config",
+        action="append",
+        help="a container .toml to preflight; repeatable. Without it, only "
+        "the environment-level checks run (agent installs, daemon).",
+    )
+    p.set_defaults(func=cmd_doctor, config=[])
 
     p = sub.add_parser("run", help="prepare and enter a container in the foreground")
     p.add_argument("config", help="path to a container .toml")
