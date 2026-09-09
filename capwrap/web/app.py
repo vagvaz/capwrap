@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .. import container_files
 from ..config import load_config, load_config_data
 from ..daemon import OPERATOR, Daemon
 from ..errors import CapabilityError, CapwrapError
@@ -248,6 +249,59 @@ def create_app(daemon: Daemon) -> FastAPI:
             return {"container": name, "running": False, "styled": [], "lines": []}
         snap = c.session.snapshot(tail=max(1, min(rows, 200)))
         return {"container": name, "running": c.running, **snap.to_dict()}
+
+    @app.get("/api/containers/{name}/diff")
+    async def container_diff(name: str) -> dict:
+        """The diff that will be merged: base...branch over the worktree.
+
+        git runs in a thread: the daemon and the web server share an event
+        loop, and a large diff must not stall approvals and terminals.
+        """
+        c = daemon.containers.get(name)
+        if c is None:
+            raise HTTPException(404, f"no such container: {name}")
+        return await asyncio.to_thread(
+            container_files.container_diff, c.config, c.paths
+        )
+
+    @app.get("/api/containers/{name}/files")
+    async def container_files_listing(name: str) -> dict:
+        """What the container produced outside git, grouped by area."""
+        c = daemon.containers.get(name)
+        if c is None:
+            raise HTTPException(404, f"no such container: {name}")
+        return await asyncio.to_thread(
+            container_files.list_container_files, c.config, c.paths
+        )
+
+    @app.get("/api/containers/{name}/files/content")
+    async def file_content(name: str, path: str) -> dict:
+        """One text file's content, capped, binaries refused."""
+        c = daemon.containers.get(name)
+        if c is None:
+            raise HTTPException(404, f"no such container: {name}")
+        return await asyncio.to_thread(
+            container_files.read_container_file, c.config, c.paths, path
+        )
+
+    @app.get("/api/containers/{name}/files/raw")
+    async def file_raw(name: str, path: str) -> FileResponse:
+        """One file's bytes, for `capwrap get` and the console's copy-out.
+
+        Same traversal gate as the content endpoint; binaries are fine here,
+        which is the point -- the preview refuses them, the copy does not.
+        """
+        c = daemon.containers.get(name)
+        if c is None:
+            raise HTTPException(404, f"no such container: {name}")
+        _area, host_path = await asyncio.to_thread(
+            container_files.resolve_container_path, c.config, c.paths, path
+        )
+        if host_path.is_dir():
+            raise HTTPException(
+                400, f"{path!r} is a directory; use the files listing instead"
+            )
+        return FileResponse(host_path, filename=host_path.name)
 
     @app.get("/api/screens")
     async def screens(rows: int = 12) -> dict:
