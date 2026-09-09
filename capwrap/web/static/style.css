@@ -1118,6 +1118,71 @@ button:disabled {
   flex: 0 0 auto;
 }
 
+/* ----------------------------------------------------------------- files */
+/* What one container produced: the diff that will be merged, and everything
+   outside git. Same recessed surface as the mailbox, monospace bodies. */
+.files-diff,
+.files-tree,
+.file-view {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--bg-inset);
+}
+.diff-stat,
+.diff-body {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  overflow-x: auto;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 0 0 10px;
+}
+.diff-stat {
+  color: var(--text-dim);
+}
+.files-group {
+  margin-bottom: 12px;
+}
+.files-group .panel-head {
+  margin-bottom: 4px;
+}
+.files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.files-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.files-item:hover {
+  border-color: var(--accent);
+}
+.files-item .files-size {
+  flex: 0 0 64px;
+  text-align: right;
+}
+.files-item .files-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-all;
+}
+.files-item .actions {
+  flex: 0 0 auto;
+}
+
 /* ---------------------------------------------------------------- modal */
 .modal {
   position: fixed;

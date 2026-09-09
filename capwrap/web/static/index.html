@@ -73,6 +73,7 @@
         <nav class="tabs">
           <button data-tab="terminal" class="active">Terminal</button>
           <button data-tab="grid">All agents</button>
+          <button data-tab="files">Files</button>
           <button data-tab="teams">Teams</button>
           <button data-tab="caps">Capabilities</button>
           <button data-tab="boards">Boards</button>
@@ -107,6 +108,35 @@
             Every agent at once. Click a tile to open it full size.
           </p>
           <div id="grid" class="grid"></div>
+        </div>
+
+        <!-- Files: what the selected container produced -- the diff that will
+             be merged, and everything outside git. -->
+        <div id="tab-files" class="tab-panel">
+          <div class="panel-head">
+            <span id="files-title" class="mono">files</span>
+            <span id="files-note" class="muted small"></span>
+            <span class="spacer"></span>
+            <button id="files-view-diff" class="ghost small active">
+              Diff
+            </button>
+            <button id="files-view-tree" class="ghost small">Files</button>
+            <button id="files-refresh" class="ghost small">Refresh</button>
+          </div>
+          <div id="files-diff" class="files-diff">
+            <pre id="files-diff-stat" class="diff-stat mono" hidden></pre>
+            <pre id="files-diff-body" class="diff-body" hidden></pre>
+          </div>
+          <div id="files-tree" class="files-tree" hidden></div>
+          <div id="file-view" class="file-view" hidden>
+            <div class="panel-head">
+              <span id="file-view-path" class="mono small"></span>
+              <span class="spacer"></span>
+              <button id="file-view-copy" class="ghost small">Copy out</button>
+              <button id="file-view-close" class="ghost small">Close</button>
+            </div>
+            <pre id="file-view-body" class="diff-body"><code></code></pre>
+          </div>
         </div>
 
         <!-- Teams: named sets of containers with a shared goal and one board. -->

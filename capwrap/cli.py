@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
+from . import container_files
 from .config import load_config
 from .errors import CapwrapError
 from .paths import ContainerPaths, force_rmtree, state_root
@@ -371,6 +374,125 @@ def cmd_state(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------
+# container files: diff, listing, copy-out
+#
+# These talk to a running capwrap over its web API, like `add` and `team` do:
+# the daemon holds each container's config (base and branch of its worktree),
+# and it is the one process that knows which containers exist. The heavy
+# lifting lives in capwrap.container_files, shared with the web endpoints.
+# --------------------------------------------------------------------------
+
+
+def _daemon_url(args: argparse.Namespace, path: str) -> str:
+    return f"http://{args.host}:{args.port}{path}"
+
+
+def _fetch_json(args: argparse.Namespace, path: str) -> Any:
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(_daemon_url(args, path))
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        with contextlib.suppress(Exception):
+            body = json.loads(detail)
+            detail = body.get("error") or body.get("detail") or detail
+        raise CapwrapError(detail) from None
+    except urllib.error.URLError as exc:
+        raise CapwrapError(
+            f"no capwrap answering on http://{args.host}:{args.port} "
+            f"({exc.reason}). Start one with `capwrap up`."
+        ) from None
+
+
+def _fetch_bytes(args: argparse.Namespace, path: str) -> bytes:
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(_daemon_url(args, path)), timeout=120
+        ) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        with contextlib.suppress(Exception):
+            body = json.loads(detail)
+            detail = body.get("error") or body.get("detail") or detail
+        raise CapwrapError(detail) from None
+    except urllib.error.URLError as exc:
+        raise CapwrapError(
+            f"no capwrap answering on http://{args.host}:{args.port} "
+            f"({exc.reason}). Start one with `capwrap up`."
+        ) from None
+
+
+def _human_size(size: int | None) -> str:
+    if size is None:
+        return "?"
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.0f}{unit}" if unit == "B" else f"{value:.1f}{unit}"
+        value /= 1024
+    return f"{value:.1f}GB"  # pragma: no cover - unreachable
+
+
+def cmd_diff(args: argparse.Namespace) -> int:
+    """What the container's worktree branch adds over its base."""
+    result = _fetch_json(args, f"/api/containers/{args.name}/diff")
+    if result.get("empty"):
+        print(f"no changes vs {result['base']}")
+        return 0
+    if args.stat:
+        print(result["stat"], end="" if result["stat"].endswith("\n") else "\n")
+        return 0
+    if result.get("stat"):
+        print(result["stat"], end="" if result["stat"].endswith("\n") else "\n")
+        print()
+    print(result["diff"], end="" if result["diff"].endswith("\n") else "\n")
+    if result.get("truncated"):
+        print(f"[diff truncated at {container_files.DIFF_CAP // 1024} KB]")
+    return 0
+
+
+def cmd_files(args: argparse.Namespace) -> int:
+    """What the container produced outside git, grouped by area."""
+    result = _fetch_json(args, f"/api/containers/{args.name}/files")
+    groups = result.get("groups") or []
+    if not groups:
+        print(f"{args.name}: nothing outside git yet")
+        return 0
+    for group in groups:
+        print(f"== {group['label']} ({len(group['entries'])})")
+        for entry in group["entries"]:
+            status = f" [{entry['status']}]" if entry.get("status") else ""
+            size = _human_size(entry.get("size"))
+            print(f"  {size:>9}  {entry['path']}{status}")
+        if group.get("truncated"):
+            print(f"  ... truncated at {container_files.LISTING_CAP} entries")
+    if result.get("truncated"):
+        print(f"[listing truncated at {container_files.LISTING_CAP} entries]")
+    return 0
+
+
+def cmd_get(args: argparse.Namespace) -> int:
+    """Copy one of the container's files out to the host."""
+    from urllib.parse import quote
+
+    quoted = quote(args.path)
+    data = _fetch_bytes(args, f"/api/containers/{args.name}/files/raw?path={quoted}")
+    dest = Path(args.dest) if args.dest else Path.cwd() / Path(args.path).name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+    print(f"{args.path} -> {dest} ({_human_size(len(data))})")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="capwrap",
@@ -460,6 +582,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("state", help="print the state directory and known containers")
     p.set_defaults(func=cmd_state)
+
+    p = sub.add_parser(
+        "diff", help="what a container's worktree branch adds over its base"
+    )
+    p.add_argument("name")
+    p.add_argument("--stat", action="store_true", help="summary form only")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8420)
+    p.set_defaults(func=cmd_diff)
+
+    p = sub.add_parser("files", help="list what a container produced outside git")
+    p.add_argument("name")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8420)
+    p.set_defaults(func=cmd_files)
+
+    p = sub.add_parser("get", help="copy one of a container's files out to the host")
+    p.add_argument("name")
+    p.add_argument("path", help="relative to the worktree, home or shared dir")
+    p.add_argument("--dest", help="where on the host to put it (default: ./<name>)")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8420)
+    p.set_defaults(func=cmd_get)
 
     return parser
 

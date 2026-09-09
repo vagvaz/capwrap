@@ -763,11 +763,14 @@ async function select(name, { focusTerminal = false } = {}) {
   if (focusTerminal) showTab("terminal");
   state.selected = name;
   $("grant-form").hidden = true;
+  fileViewPath = null;
+  $("file-view").hidden = true;
   renderTree();
   openTerminal(name);
   await loadCaps(name);
   await loadGrants(name);
   await loadMailbox(name);
+  if (document.querySelector("#tab-files.active")) await loadFiles(name);
 }
 
 // ------------------------------------------------------------------ mailbox
@@ -889,6 +892,199 @@ function renderMailbox() {
       }
     }),
   );
+}
+
+// ------------------------------------------------------------------ files
+
+// What the selected container produced: the diff that will be merged, and
+// everything outside git. Loaded when the Files tab is shown, not on every
+// selection -- a container that is not being inspected owes nobody a diff.
+let filesDiff = null;
+let filesListing = null;
+let filesView = "diff";
+let fileViewPath = null;
+
+async function loadFiles(name) {
+  if (!name) return;
+  $("files-title").textContent = `files — ${name}`;
+  $("files-note").textContent = "loading…";
+  const [diff, listing] = await Promise.allSettled([
+    api(`/api/containers/${name}/diff`),
+    api(`/api/containers/${name}/files`),
+  ]);
+  filesDiff =
+    diff.status === "fulfilled" ? diff.value : { error: diff.reason.message };
+  filesListing =
+    listing.status === "fulfilled"
+      ? listing.value
+      : { error: listing.reason.message };
+  renderFiles();
+}
+
+function renderFiles() {
+  renderFilesDiff();
+  renderFilesTree();
+}
+
+function renderFilesDiff() {
+  const stat = $("files-diff-stat");
+  const body = $("files-diff-body");
+  if (!filesDiff || filesDiff.error) {
+    stat.hidden = true;
+    body.hidden = false;
+    body.textContent = filesDiff?.error
+      ? `diff unavailable: ${filesDiff.error}`
+      : "no container selected";
+    return;
+  }
+  if (filesDiff.empty) {
+    stat.hidden = true;
+    body.hidden = false;
+    body.textContent = `no changes vs ${filesDiff.base}`;
+    return;
+  }
+  stat.hidden = !filesDiff.stat;
+  stat.textContent = filesDiff.stat || "";
+  body.hidden = !filesDiff.diff;
+  body.textContent = filesDiff.diff || "";
+  $("files-note").textContent = filesDiff.truncated
+    ? "diff truncated (200 KB cap)"
+    : `${filesDiff.base}...${filesDiff.branch}`;
+}
+
+function renderFilesTree() {
+  const host = $("files-tree");
+  if (!filesListing || filesListing.error) {
+    host.hidden = false;
+    host.innerHTML = `<p class="muted pad">${
+      filesListing?.error
+        ? escapeHtml(filesListing.error)
+        : "no container selected"
+    }</p>`;
+    return;
+  }
+  const groups = filesListing.groups || [];
+  if (!groups.length) {
+    host.hidden = false;
+    host.innerHTML =
+      '<p class="muted pad">Nothing outside git yet: no uncommitted worktree ' +
+      "files, and an empty home and shared dir.</p>";
+    return;
+  }
+  host.hidden = false;
+  host.innerHTML = groups
+    .map(
+      (group) => `
+      <div class="files-group">
+        <div class="panel-head">
+          <span class="mono small">${escapeHtml(group.label)}</span>
+          <span class="muted small">${group.entries.length}${
+            group.truncated ? "+ (truncated)" : ""
+          }</span>
+        </div>
+        <div class="files-list">
+          ${group.entries
+            .map(
+              (entry) => `
+            <div class="files-item" data-path="${escapeHtml(entry.path)}">
+              <span class="files-size muted small">${formatSize(entry.size)}</span>
+              <span class="files-path mono">${escapeHtml(entry.path)}</span>
+              ${entry.status ? `<span class="pill pill-quiet">${escapeHtml(entry.status)}</span>` : ""}
+              <span class="actions">
+                <button class="ghost small" data-copy="${escapeHtml(entry.path)}">Copy out</button>
+              </span>
+            </div>`,
+            )
+            .join("")}
+        </div>
+      </div>`,
+    )
+    .join("");
+  if (filesListing.truncated) {
+    host.insertAdjacentHTML(
+      "beforeend",
+      '<p class="muted small pad">Listing truncated at 200 entries.</p>',
+    );
+  }
+
+  host.querySelectorAll(".files-item").forEach((item) => {
+    item.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      openFileView(item.dataset.path);
+    });
+  });
+  host
+    .querySelectorAll("[data-copy]")
+    .forEach((b) => b.addEventListener("click", () => copyOut(b.dataset.copy)));
+}
+
+function formatSize(size) {
+  if (size === null || size === undefined) return "?";
+  if (size < 1024) return `${size}B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)}KB`;
+  return `${(size / 1024 / 1024).toFixed(1)}MB`;
+}
+
+async function openFileView(path) {
+  fileViewPath = path;
+  $("file-view-path").textContent = path;
+  $("file-view").hidden = false;
+  const body = $("file-view-body");
+  body.textContent = "loading…";
+  try {
+    const detail = await api(
+      `/api/containers/${state.selected}/files/content?path=${encodeURIComponent(path)}`,
+    );
+    if (fileViewPath !== path) return; // another click won the race
+    body.textContent =
+      detail.content + (detail.truncated ? "\n… truncated at 100 KB" : "");
+  } catch (err) {
+    if (fileViewPath !== path) return;
+    body.textContent = `cannot preview: ${err.message}`;
+  }
+}
+
+async function copyOut(path) {
+  try {
+    const res = await fetch(
+      `/api/containers/${state.selected}/files/raw?path=${encodeURIComponent(path)}`,
+    );
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || body.detail || `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = path.split("/").pop() || "file";
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert(`Copy out failed: ${err.message}`);
+  }
+}
+
+function setFilesView(which) {
+  filesView = which;
+  $("files-view-diff").classList.toggle("active", which === "diff");
+  $("files-view-tree").classList.toggle("active", which === "tree");
+  $("files-diff").hidden = which !== "diff";
+  $("files-tree").hidden = which !== "tree";
+  $("file-view").hidden = which !== "tree" || !fileViewPath;
+}
+
+function wireFiles() {
+  $("files-view-diff").addEventListener("click", () => setFilesView("diff"));
+  $("files-view-tree").addEventListener("click", () => setFilesView("tree"));
+  $("files-refresh").addEventListener("click", () => loadFiles(state.selected));
+  $("file-view-close").addEventListener("click", () => {
+    fileViewPath = null;
+    $("file-view").hidden = true;
+  });
+  $("file-view-copy").addEventListener("click", () => {
+    if (fileViewPath) copyOut(fileViewPath);
+  });
 }
 
 // ------------------------------------------------------------------ caps
@@ -2179,6 +2375,7 @@ function showTab(name) {
   if (name === "boards") renderBoards();
   if (name === "teams") renderTeams();
   if (name === "messages") loadTrace();
+  if (name === "files") loadFiles(state.selected);
   if (name === "terminal") setTimeout(syncTerminalSize, 30);
 }
 
@@ -2601,6 +2798,7 @@ function wire() {
   wireSpawn();
   wireTeam();
   wireRouting();
+  wireFiles();
 }
 
 // A hidden tab should cost nothing; browsers throttle timers but still run them.
