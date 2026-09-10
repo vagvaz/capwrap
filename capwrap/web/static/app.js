@@ -2136,9 +2136,17 @@ async function renderTeams() {
             : ""
         }
         <div class="team-members-list">${members}</div>
+        <button type="button" class="ghost team-edit" data-team="${escapeHtml(team.name)}">Edit</button>
       </div>`;
     })
     .join("");
+
+  host.querySelectorAll(".team-edit").forEach((button) => {
+    button.addEventListener("click", () => {
+      const team = teams.find((t) => t.name === button.dataset.team);
+      if (team) openTeamDialog(team);
+    });
+  });
 }
 
 // ------------------------------------------------------------------ trace
@@ -2498,6 +2506,7 @@ function handleEvent(event) {
       break;
 
     case "team.spawned":
+    case "team.edited":
       if (document.querySelector("#tab-teams.active")) renderTeams();
       break;
   }
@@ -2623,23 +2632,46 @@ function wireSpawn() {
 // dialog's options.
 let teamOptions = { roles: [], personas: [], agents: [] };
 
-function openTeamDialog() {
+// The team being edited, or null when the dialog is spawning a new one.
+let editingTeam = null;
+
+function openTeamDialog(team = null) {
+  editingTeam = team;
   $("team-dialog").hidden = false;
   $("team-error").hidden = true;
-  loadTeamOptions();
+  $("team-results").hidden = true;
+  $("team-dialog-title").textContent = team
+    ? `Edit team: ${team.name}`
+    : "Spawn a team";
+  $("team-submit").textContent = team ? "Save changes" : "Spawn team";
+  // The name is the team's identity (and the edit endpoint's address), so in
+  // edit mode it is shown but not changeable -- renaming a team is a respawn,
+  // not an edit.
+  $("team-name").value = team ? team.name : "";
+  $("team-name").readOnly = Boolean(team);
+  $("team-goal").value = team ? team.goal : "";
+  $("team-success").value = team ? team.success_criteria || "" : "";
+  $("team-members").innerHTML = "";
+  loadTeamOptions(team);
 }
 
 function closeTeamDialog() {
   $("team-dialog").hidden = true;
+  editingTeam = null;
 }
 
-async function loadTeamOptions() {
+async function loadTeamOptions(team = null) {
   try {
     teamOptions = await api("/api/compose/options");
   } catch (err) {
     $("team-error").textContent = `Could not load options: ${err.message}`;
     $("team-error").hidden = false;
     return;
+  }
+  if (team) {
+    for (const member of team.members || []) {
+      addTeamMemberRow(member.role, member.persona, member.agent);
+    }
   }
   if (!$("team-members").children.length) addTeamMemberRow();
 }
@@ -2655,19 +2687,23 @@ function teamSelect(id, values, selected) {
     .join("");
 }
 
-function addTeamMemberRow() {
+function addTeamMemberRow(
+  role = "implementer",
+  persona = "pragmatist",
+  agent = "claude",
+) {
   const host = $("team-members");
   const row = document.createElement("div");
   row.className = "team-member-row";
   row.innerHTML = `
     <label>Role
-      <select class="tm-role" required>${teamSelect("tm-role", teamOptions.roles, "implementer")}</select>
+      <select class="tm-role" required>${teamSelect("tm-role", teamOptions.roles, role)}</select>
     </label>
     <label>Persona
-      <select class="tm-persona" required>${teamSelect("tm-persona", teamOptions.personas, "pragmatist")}</select>
+      <select class="tm-persona" required>${teamSelect("tm-persona", teamOptions.personas, persona)}</select>
     </label>
     <label>Agent
-      <select class="tm-agent" required>${teamSelect("tm-agent", teamOptions.agents, "claude")}</select>
+      <select class="tm-agent" required>${teamSelect("tm-agent", teamOptions.agents, agent)}</select>
     </label>
     <button type="button" class="ghost remove" title="Remove member">×</button>`;
   row.querySelector(".remove").addEventListener("click", () => {
@@ -2691,7 +2727,7 @@ function collectTeam() {
 }
 
 function wireTeam() {
-  $("btn-team").addEventListener("click", openTeamDialog);
+  $("btn-team").addEventListener("click", () => openTeamDialog());
   $("team-close").addEventListener("click", closeTeamDialog);
   $("team-cancel").addEventListener("click", closeTeamDialog);
   $("team-dialog").addEventListener("click", (event) => {
@@ -2702,18 +2738,49 @@ function wireTeam() {
   $("team-submit").addEventListener("click", async () => {
     const team = collectTeam();
     $("team-error").hidden = true;
+    $("team-results").hidden = true;
     if (!team.name || !team.goal || !team.members.length) {
       $("team-error").textContent =
         "Give the team a name, a goal, and at least one member.";
       $("team-error").hidden = false;
       return;
     }
+    const editing = editingTeam;
+    const path = editing
+      ? `/api/teams/${encodeURIComponent(editing.name)}/edit`
+      : "/api/teams/spawn";
     try {
-      await api("/api/teams/spawn", {
+      const result = await api(path, {
         method: "POST",
         body: JSON.stringify({ team }),
       });
-      closeTeamDialog();
+      if (result && result.ok === false) {
+        // The edit was refused in validation, before anything was applied.
+        // One line per offending member, in the dialog's feedback area.
+        const lines = (result.errors || []).map((e) =>
+          e.member ? `${e.member}: ${e.error}` : e.error,
+        );
+        $("team-error").textContent = lines.join("\n") || "Edit refused.";
+        $("team-error").hidden = false;
+        return;
+      }
+      if (editing && result && Array.isArray(result.members)) {
+        // Show what the edit did, per member, and leave the dialog open so
+        // the operator can read it; the Teams tab behind is already fresh.
+        const results = $("team-results");
+        results.innerHTML = result.members
+          .map((m) => {
+            const detail =
+              m.action === "replaced" && m.old
+                ? ` (${escapeHtml(m.old)} → ${escapeHtml(m.name)})`
+                : "";
+            return `<span class="${escapeHtml(m.action)}">${escapeHtml(m.action)}: ${escapeHtml(m.name)}${detail}</span>`;
+          })
+          .join("");
+        results.hidden = false;
+      } else {
+        closeTeamDialog();
+      }
       await refreshOverview();
       if (document.querySelector("#tab-teams.active")) renderTeams();
     } catch (err) {

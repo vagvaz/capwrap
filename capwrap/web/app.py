@@ -506,6 +506,17 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         team = parse_team_data(body.team, load_team_compose())
         return await daemon.spawn_team(team)
 
+    @app.post("/api/teams/{name}/edit")
+    async def edit_team(name: str, body: TeamBody) -> dict:
+        """Edit a team: replace, add or remove members, restate goal/criteria.
+
+        Same body shape as spawn. Validation runs first, so a refused edit
+        comes back as `ok: false` with a per-member error list and nothing
+        applied; a successful edit returns a per-member result summary
+        (replaced/added/removed/kept).
+        """
+        return await daemon.edit_team(name, body.team)
+
     @app.post("/api/teams/{name}/stop")
     async def stop_team(name: str) -> dict:
         """Stop every member of a team."""

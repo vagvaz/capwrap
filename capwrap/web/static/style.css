@@ -1241,6 +1241,29 @@ button:disabled {
   padding: 8px;
   background: var(--bg-inset);
 }
+.team-results {
+  font-family: var(--mono);
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  background: var(--bg-inset);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.team-results .replaced {
+  color: var(--accent);
+}
+.team-results .removed {
+  color: var(--danger);
+}
+.team-results .added {
+  color: var(--ok);
+}
+.team-results .kept {
+  color: var(--text-dim);
+}
 .spawn-actions {
   display: flex;
   justify-content: flex-end;
