@@ -174,7 +174,7 @@ ROLES: dict[str, dict] = {
     },
     "build-engineer": {
         "summary": "owns the toolchain; needs the network, so says what it pulled in",
-        "allow": ["Read", "Glob", "Grep", "Write", "Edit", "Bash"],
+        "allow": ["Read", "Glob", "Grep", "Write", "Edit"],
         "deny": ["Bash(sudo *)"],
         "work": "worktree",
         "network": "auto",
@@ -195,7 +195,7 @@ ROLES: dict[str, dict] = {
     },
     "tester": {
         "summary": "runs it and tries to break it; changes no source",
-        "allow": ["Read", "Glob", "Grep", "Bash"],
+        "allow": ["Read", "Glob", "Grep"],
         "deny": ["Write", "Edit", "Bash(sudo *)"],
         "work": "worktree",
         "network": "auto",
@@ -365,6 +365,19 @@ WORK_SHELL_ROLES = {
 }
 WORK_SHELL = [
     "make*",
+    "cargo*",
+    "go*",
+    "just*",
+    "cmake*",
+    "ninja*",
+    "meson*",
+    "gradle*",
+    "./gradlew*",
+    "mvn*",
+    "./mvnw*",
+    "dotnet*",
+    "mix*",
+    "./scripts/*",
     "pytest*",
     "python*",
     "python3*",
