@@ -56,9 +56,10 @@ _VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #: Question-routing positions, same vocabulary as [runtime] question_routing.
 ROUTINGS = ("forward", "block", "auto")
 
-#: Extra mounts are plain binds; the worktree/overlay machinery is compose's
-#: own business and a project only adds ordinary binds.
-MOUNT_MODES = ("ro", "rw")
+#: Extra mounts may be plain binds (ro/rw), a copied-in directory the agent
+#: may modify privately, or a tmpfs scratch dir. The worktree stays out: it
+#: is the one-per-container working directory, expressed by `source`/`base`.
+MOUNT_MODES = ("ro", "rw", "copy", "tmpfs")
 
 
 @dataclass
