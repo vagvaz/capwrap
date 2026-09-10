@@ -551,7 +551,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "up", help="run containers under the daemon, with the web interface"
     )
-    p.add_argument("configs", nargs="+", help="one or more container .toml files")
+    p.add_argument(
+        "configs",
+        nargs="*",
+        help="container .toml files; give none to start the daemon empty and "
+        "spawn everything from the web console",
+    )
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8420)
     p.add_argument(
