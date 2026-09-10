@@ -2533,10 +2533,25 @@ async function refreshOverview() {
 // The role/persona/agent choices for the spawn dialog, and the current preview.
 let spawnOptions = { roles: [], personas: [], agents: [] };
 let spawnPreviewTimer = null;
+// Whether the operator has edited the config textarea. The dirty state is the
+// whole switch: a dirty textarea is spawned verbatim (POST {config}), and
+// preview refreshes stop touching it until Regenerate is clicked.
+let spawnDirty = false;
+
+function markSpawnDirty() {
+  spawnDirty = true;
+  $("spawn-dirty").hidden = false;
+}
+
+function clearSpawnDirty() {
+  spawnDirty = false;
+  $("spawn-dirty").hidden = true;
+}
 
 function openSpawnDialog() {
   $("spawn-dialog").hidden = false;
   $("spawn-error").hidden = true;
+  clearSpawnDirty();
   loadSpawnOptions();
 }
 
@@ -2593,7 +2608,10 @@ async function loadProjectChoices() {
   }
 }
 
-function refreshSpawnPreview() {
+function refreshSpawnPreview(force = false) {
+  // An edited textarea is never overwritten silently: only an explicit
+  // Regenerate (or a freshly opened dialog) refetches over it.
+  if (spawnDirty && !force) return;
   clearTimeout(spawnPreviewTimer);
   spawnPreviewTimer = setTimeout(async () => {
     const role = $("spawn-role").value;
@@ -2601,28 +2619,52 @@ function refreshSpawnPreview() {
     const agent = $("spawn-agent").value;
     const routing = $("spawn-routing").value;
     const project = $("spawn-project").value;
+    const extra = $("spawn-extra").value;
     if (!role || !persona || !agent) return;
-    $("spawn-preview").textContent = "Loading…";
+    $("spawn-preview").value = "Loading…";
     try {
       const data = await api(
         `/api/compose/preview?role=${encodeURIComponent(role)}` +
           `&persona=${encodeURIComponent(persona)}` +
           `&agent=${encodeURIComponent(agent)}` +
           `&routing=${encodeURIComponent(routing)}` +
-          (project ? `&project=${encodeURIComponent(project)}` : ""),
+          (project ? `&project=${encodeURIComponent(project)}` : "") +
+          (extra ? `&extra_prompt=${encodeURIComponent(extra)}` : ""),
       );
-      $("spawn-preview").textContent = data.toml;
+      // The operator may have started typing while the fetch ran; their text
+      // wins either way.
+      if (spawnDirty) return;
+      $("spawn-preview").value = data.toml;
       // A project carries a routing default; the preview is where it shows
       // up, so the select follows it (an explicit pick still wins, since the
       // select's value is what gets sent).
       if (project && data.routing) $("spawn-routing").value = data.routing;
       $("spawn-error").hidden = true;
     } catch (err) {
-      $("spawn-preview").textContent = "";
+      if (spawnDirty) return;
+      $("spawn-preview").value = "";
       $("spawn-error").textContent = err.message;
       $("spawn-error").hidden = false;
     }
   }, 150);
+}
+
+/** The role/persona library overlay: one document's markdown. */
+async function openDoc(kind, name) {
+  if (!name) return;
+  try {
+    const data = await api(`/api/compose/${kind}/${encodeURIComponent(name)}`);
+    $("doc-title").textContent = `${kind}: ${data.name}`;
+    $("doc-body").textContent = data.markdown;
+    $("doc-overlay").hidden = false;
+  } catch (err) {
+    $("spawn-error").textContent = err.message;
+    $("spawn-error").hidden = false;
+  }
+}
+
+function closeDoc() {
+  $("doc-overlay").hidden = true;
 }
 
 function wireSpawn() {
@@ -2642,24 +2684,57 @@ function wireSpawn() {
   ]) {
     $(id).addEventListener("change", refreshSpawnPreview);
   }
+  // Custom instructions shape the generated prompt, so they refresh the
+  // preview too (debounced like everything else).
+  $("spawn-extra").addEventListener("input", refreshSpawnPreview);
+  // Editing the config marks it dirty: refreshes stop touching it, and spawn
+  // posts the edited text verbatim.
+  $("spawn-preview").addEventListener("input", markSpawnDirty);
+  $("spawn-regen").addEventListener("click", () => {
+    clearSpawnDirty();
+    refreshSpawnPreview(true);
+  });
+
+  // The role and persona names are clickable: their markdown opens in the
+  // library overlay.
+  $("spawn-role-doc").addEventListener("click", () =>
+    openDoc("role", $("spawn-role").value),
+  );
+  $("spawn-persona-doc").addEventListener("click", () =>
+    openDoc("persona", $("spawn-persona").value),
+  );
+  $("doc-close").addEventListener("click", closeDoc);
+  $("doc-overlay").addEventListener("click", (event) => {
+    if (event.target === $("doc-overlay")) closeDoc();
+  });
 
   $("spawn-submit").addEventListener("click", async () => {
-    const role = $("spawn-role").value;
-    const persona = $("spawn-persona").value;
-    const agent = $("spawn-agent").value;
-    const routing = $("spawn-routing").value;
-    const project = $("spawn-project").value;
     $("spawn-error").hidden = true;
     try {
-      await api("/api/spawn", {
-        method: "POST",
-        body: JSON.stringify({
+      let body;
+      if (spawnDirty) {
+        // The operator edited the TOML: spawn exactly what the textarea
+        // holds, form fields notwithstanding.
+        body = { config: $("spawn-preview").value };
+      } else {
+        const role = $("spawn-role").value;
+        const persona = $("spawn-persona").value;
+        const agent = $("spawn-agent").value;
+        const routing = $("spawn-routing").value;
+        const project = $("spawn-project").value;
+        const extra = $("spawn-extra").value;
+        body = {
           role,
           persona,
           agent,
           routing,
           ...(project ? { project } : {}),
-        }),
+          ...(extra ? { extra_prompt: extra } : {}),
+        };
+      }
+      await api("/api/spawn", {
+        method: "POST",
+        body: JSON.stringify(body),
       });
       closeSpawnDialog();
       await refreshOverview();

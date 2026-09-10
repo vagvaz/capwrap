@@ -21,6 +21,9 @@ import asyncio
 import contextlib
 import importlib.util
 import json
+import os
+import tempfile
+import tomllib
 from pathlib import Path
 from typing import Any, Callable
 
@@ -30,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import container_files
-from ..config import load_config, load_config_data
+from ..config import ContainerConfig, load_config, load_config_data
 from ..daemon import OPERATOR, Daemon
 from ..errors import CapabilityError, CapwrapError
 from ..explain import ExplainError
@@ -129,10 +132,16 @@ class InputBody(BaseModel):
 
 
 class SpawnBody(BaseModel):
-    """A role×persona×agent to build and run, as the operator."""
+    """A role×persona×agent to build and run, as the operator.
 
-    role: str
-    persona: str
+    Two shapes share this endpoint: the form shape (role/persona/agent,
+    composed daemon-side exactly as before) and an edited config -- `config`
+    holding TOML text, e.g. from the spawn dialog's editable preview -- which
+    is validated through the same loader and spawned as-is.
+    """
+
+    role: str | None = None
+    persona: str | None = None
     agent: str = "claude"
     #: Where the spawned agent's plain questions surface; compose.py emits it
     #: into the generated config's [runtime] section. None means "no opinion":
@@ -141,6 +150,12 @@ class SpawnBody(BaseModel):
     #: An optional Project: where the worktree forks from, extra mounts, extra
     #: env, and the routing default. Resolved daemon-side; unknown → 400.
     project: str | None = None
+    #: Custom instructions appended to the role+persona prompt. Form shape
+    #: only: an edited config carries its own prompt file already.
+    extra_prompt: str = ""
+    #: An edited config, as TOML text. When present it is the whole request:
+    #: role/persona/agent are ignored.
+    config: str | None = None
 
 
 class RoutingBody(BaseModel):
@@ -464,6 +479,75 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         except CapwrapError as exc:
             raise HTTPException(400, str(exc)) from None
 
+    def _compose_generated(
+        module: Any,
+        role: str,
+        persona: str,
+        agent: str,
+        routing: str | None,
+        project: str | None,
+        extra_prompt: str = "",
+    ) -> tuple[Path, str]:
+        """Run compose() for a role×persona×agent; return (config path, routing).
+
+        The one place preview and the form-path spawn build a config, so the
+        two cannot drift. An optional project supplies the worktree
+        source/base, extra mounts, extra env and the routing default;
+        extra_prompt is custom instructions appended to the role+persona prompt.
+        """
+        resolved = _resolve_project(project)
+        chosen = routing or (resolved.routing if resolved else "") or "forward"
+        kwargs = resolved.compose_kwargs() if resolved else {}
+        path = module.compose(
+            role, persona, agent, routing=chosen, extra_prompt=extra_prompt, **kwargs
+        )
+        return path, chosen
+
+    def _config_from_text(module: Any, text: str) -> ContainerConfig:
+        """Parse an edited TOML body into a validated config.
+
+        The text is written to a temp file inside compose's BUILT directory
+        before `load_config` reads it back, so the config's relative paths --
+        [[files]] srcs like pi-mcp.json, the role_prompt markdown -- resolve
+        against the same directory compose wrote them to, exactly as they would
+        for a config compose() itself had generated. The temp file is always
+        removed again; parse errors surface as a clean 400 with the parser's
+        message, validation errors as a 400 from the config loader.
+        """
+        try:
+            tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            raise HTTPException(400, f"invalid TOML: {exc}") from None
+        built = Path(module.BUILT)
+        built.mkdir(exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=built, prefix=".spawn-", suffix=".toml")
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write(text)
+            return load_config(tmp_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    async def _spawn_registered(config: ContainerConfig) -> dict:
+        """Register and start a config through the operator path.
+
+        The one spawn core, shared by the form shape and the edited-config
+        shape of POST /api/spawn: both are the same operator path as
+        POST /api/containers -- an authority grant from the human, not a
+        kernel factory spawn.
+        """
+        if config.name in daemon.containers:
+            raise HTTPException(
+                409,
+                f"a container named {config.name} already exists; "
+                "dismiss it or pick a different role/persona/agent",
+            )
+        container = daemon.register(config)
+        daemon.link_all_peers()
+        await daemon.start(config.name)
+        return {**container.status(), "started": True}
+
     @app.get("/api/compose/preview")
     async def compose_preview(
         role: str,
@@ -471,20 +555,23 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         agent: str = "claude",
         routing: str | None = None,
         project: str | None = None,
+        extra_prompt: str = "",
     ) -> dict:
         """The TOML compose.py would generate, without starting anything.
 
         compose() writes the config into examples/roles-and-personas/built/
         (gitignored) and returns the path to it; we read that back for preview.
         An optional project supplies the worktree source/base, extra mounts,
-        extra env and the routing default.
+        extra env and the routing default. extra_prompt is custom instructions
+        appended to the role+persona prompt; it changes the generated prompt
+        file, which is returned alongside the TOML so the preview shows what
+        would actually run.
         """
         module = _load_compose()
         _validate_compose(module, role, persona, agent)
-        resolved = _resolve_project(project)
-        routing = routing or (resolved.routing if resolved else "") or "forward"
-        kwargs = resolved.compose_kwargs() if resolved else {}
-        path = module.compose(role, persona, agent, routing=routing, **kwargs)
+        path, routing = _compose_generated(
+            module, role, persona, agent, routing, project, extra_prompt
+        )
         return {
             "role": role,
             "persona": persona,
@@ -493,37 +580,65 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
             "project": project or "",
             "name": path.stem,
             "toml": path.read_text(),
+            "prompt": path.with_suffix(".md").read_text(),
         }
+
+    @app.get("/api/compose/role/{role}")
+    async def compose_role(role: str) -> dict:
+        """One role's markdown, for the spawn dialog's library reading."""
+        module = _load_compose()
+        if role not in module.ROLES:
+            raise HTTPException(404, f"no such role: {role!r}")
+        path = Path(module.HERE) / "roles" / f"{role}.md"
+        if not path.is_file():
+            raise HTTPException(404, f"no markdown for role {role!r}")
+        return {"name": role, "markdown": path.read_text()}
+
+    @app.get("/api/compose/persona/{persona}")
+    async def compose_persona(persona: str) -> dict:
+        """One persona's markdown, for the spawn dialog's library reading."""
+        module = _load_compose()
+        if persona not in module.PERSONAS:
+            raise HTTPException(404, f"no such persona: {persona!r}")
+        path = Path(module.HERE) / "personas" / f"{persona}.md"
+        if not path.is_file():
+            raise HTTPException(404, f"no markdown for persona {persona!r}")
+        return {"name": persona, "markdown": path.read_text()}
 
     @app.post("/api/spawn")
     async def spawn(body: SpawnBody) -> dict:
         """Build a role×persona config and run it, as the operator.
 
-        This is the same operator path as POST /api/containers -- an authority
-        grant from the human, not a kernel factory spawn -- so the newcomer is
-        registered under the operator and started like any other container.
+        Two shapes: the form shape composes role×persona×agent daemon-side
+        exactly as before; an edited config (`config` holding TOML text, from
+        the spawn dialog's editable preview) is validated and spawned as-is.
+        Both register and start through the same operator path as
+        POST /api/containers -- an authority grant from the human, not a
+        kernel factory spawn.
         """
         module = _load_compose()
-        _validate_compose(module, body.role, body.persona, body.agent)
-        resolved = _resolve_project(body.project)
-        routing = body.routing or (resolved.routing if resolved else "") or "forward"
-        kwargs = resolved.compose_kwargs() if resolved else {}
-        path = module.compose(
-            body.role, body.persona, body.agent, routing=routing, **kwargs
-        )
+        if body.config is not None:
+            if not body.config.strip():
+                raise HTTPException(
+                    400, "config is empty; paste TOML or use the form fields"
+                )
+            return await _spawn_registered(_config_from_text(module, body.config))
 
-        config = load_config(path)
-        if config.name in daemon.containers:
+        if not body.role or not body.persona:
             raise HTTPException(
-                409,
-                f"a container named {config.name} already exists; "
-                "dismiss it or pick a different role/persona/agent",
+                400, "spawn needs either a config (TOML text) or a role and persona"
             )
-
-        container = daemon.register(config)
-        daemon.link_all_peers()
-        await daemon.start(config.name)
-        return {**container.status(), "started": True}
+        _validate_compose(module, body.role, body.persona, body.agent)
+        path, _ = _compose_generated(
+            module,
+            body.role,
+            body.persona,
+            body.agent,
+            body.routing,
+            body.project,
+            body.extra_prompt,
+        )
+        return await _spawn_registered(load_config(path))
 
     # ------------------------------------------------------------------
     # projects
