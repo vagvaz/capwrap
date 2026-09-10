@@ -336,7 +336,7 @@
     <div id="team-dialog" class="modal" hidden>
       <div class="modal-card">
         <div class="panel-head">
-          <span class="mono">Spawn a team</span>
+          <span id="team-dialog-title" class="mono">Spawn a team</span>
           <span class="spacer"></span>
           <button id="team-close" class="ghost" title="Close">×</button>
         </div>
@@ -378,6 +378,7 @@
           <div id="team-members" class="team-members"></div>
 
           <div id="team-error" class="spawn-error" hidden></div>
+          <div id="team-results" class="team-results" hidden></div>
           <div class="spawn-actions">
             <button id="team-cancel" class="ghost">Cancel</button>
             <button id="team-submit" class="primary">Spawn team</button>

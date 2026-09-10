@@ -42,7 +42,7 @@ from .runtime import bwrap as bwrap_mod
 from .runtime import fsprep, mapper as mapper_mod
 from .runtime import probe
 from .runtime.supervisor import PtySession
-from .teams import Team, load_compose, parse_team_data, team_preamble
+from .teams import Team, TeamMember, load_compose, parse_team_data, team_preamble
 
 OPERATOR = "operator"
 
@@ -476,6 +476,30 @@ class Daemon:
             for member in team.members:
                 self._grant_board_if_needed(member.name, team.board_topic)
 
+    async def _spawn_team_member(
+        self,
+        compose: Any,
+        member: Any,
+        peer_names: list[str],
+        preamble: str,
+    ) -> Container:
+        """Generate, register (not start) one team member's container.
+
+        The one member-spawn path, shared by `spawn_team` and `edit_team`:
+        compose() regenerates the config into examples/roles-and-personas/built/
+        (team members are generated, never hand-patched), with peer caps to
+        every other current member and the team preamble folded into the prompt.
+        """
+        path = compose.compose(
+            member.role,
+            member.persona,
+            member.agent,
+            extra_prompt=preamble,
+            peers=[p for p in peer_names if p != member.name],
+        )
+        config = load_config(path)
+        return self.register(config)
+
     async def spawn_team(self, team: Team) -> dict:
         """Register, start and record a whole team, atomically.
 
@@ -499,15 +523,9 @@ class Daemon:
         spawned: list[Container] = []
         try:
             for member in team.members:
-                path = compose.compose(
-                    member.role,
-                    member.persona,
-                    member.agent,
-                    extra_prompt=preamble,
-                    peers=[p for p in peer_names if p != member.name],
+                spawned.append(
+                    await self._spawn_team_member(compose, member, peer_names, preamble)
                 )
-                config = load_config(path)
-                spawned.append(self.register(config))
 
             self.link_all_peers()
             self._ensure_team_board(team)
@@ -531,6 +549,229 @@ class Daemon:
                 with contextlib.suppress(Exception):
                     await self.destroy(container.name, force=True)
             raise
+
+    def _validate_team_edit(
+        self, name: str, raw: dict, compose: Any
+    ) -> tuple[Team | None, list[dict]]:
+        """Validate a team edit up front, collecting one error per bad member.
+
+        Two-phase editing: nothing is applied until every member parses and
+        every generated container name is free. A member's role IS its
+        capability grant, so a member edit replaces its container, and a name
+        that would collide with an unrelated container must refuse the whole
+        edit before anything is stopped.
+
+        A new member name is allowed to collide with an existing container only
+        when that container is the member at the same slot being replaced --
+        which cannot happen, since a replaced member generates a different name.
+        So in practice any collision with a live container refuses the edit.
+        """
+        team = self.teams.get(name)
+        if team is None:
+            raise CapwrapError(f"no such team: {name}")
+
+        errors: list[dict] = []
+        goal = str(raw.get("goal", "")).strip()
+        if not goal:
+            errors.append({"member": None, "error": "a team needs a goal"})
+        success_criteria = str(raw.get("success_criteria", "")).strip()
+
+        members_raw = raw.get("members")
+        if not isinstance(members_raw, list) or not members_raw:
+            errors.append({"member": None, "error": "a team needs at least one member"})
+            members_raw = []
+
+        new_members: list[TeamMember] = []
+        seen: set[str] = set()
+        for index, entry in enumerate(members_raw):
+            label = f"member {index + 1}"
+            if not isinstance(entry, dict):
+                errors.append({"member": label, "error": "each member must be a table"})
+                continue
+            role = str(entry.get("role", ""))
+            persona = str(entry.get("persona", ""))
+            agent = str(entry.get("agent", "claude"))
+            if role not in compose.ROLES:
+                errors.append({"member": label, "error": f"unknown role {role!r}"})
+                continue
+            if persona not in compose.PERSONAS:
+                errors.append(
+                    {"member": label, "error": f"unknown persona {persona!r}"}
+                )
+                continue
+            if agent not in compose.AGENT_SETUP:
+                errors.append({"member": label, "error": f"unknown agent {agent!r}"})
+                continue
+            member = TeamMember(role=role, persona=persona, agent=agent)
+            if member.name in seen:
+                errors.append(
+                    {
+                        "member": label,
+                        "error": (
+                            f"two members both generate the container name "
+                            f"{member.name!r}"
+                        ),
+                    }
+                )
+                continue
+            seen.add(member.name)
+            new_members.append(member)
+
+        # A generated name that belongs to some other live container -- not a
+        # member of this team -- would clash with it at spawn time.
+        for member in new_members:
+            if member.name in self.containers and member.name not in {
+                m.name for m in team.members
+            }:
+                errors.append(
+                    {
+                        "member": member.name,
+                        "error": (
+                            f"a container named {member.name!r} already exists; "
+                            "pick a different role/persona/agent"
+                        ),
+                    }
+                )
+
+        if errors:
+            return None, errors
+        return (
+            Team(
+                name=name,
+                goal=goal,
+                success_criteria=success_criteria,
+                members=new_members,
+            ),
+            [],
+        )
+
+    def _link_team_peers(self, team: Team) -> None:
+        """Make sure every current member can message every other current one.
+
+        Peer caps normally come from each member's generated config at spawn
+        time, so a member added or replaced later is not in the untouched
+        members' configs. After any membership change, this grants the missing
+        direction explicitly (the same `peer:<name>` capability the config path
+        mints), so messaging is symmetric across the new member set.
+        """
+        self.link_all_peers()
+        names = [m.name for m in team.members if m.name in self.containers]
+        for holder in names:
+            held = {c.label for c in self.kernel.cap_list(holder)}
+            for peer in names:
+                if peer == holder or f"peer:{peer}" in held:
+                    continue
+                self.kernel.operator_grant(holder, "container", peer, Rights.SEND)
+
+    async def edit_team(self, name: str, raw: dict) -> dict:
+        """Edit a team in place: replace, add or remove members, restate goals.
+
+        Two-phase. VALIDATE first (`_validate_team_edit`): on any error nothing
+        is stopped, spawned or persisted, and the per-member error list comes
+        back. APPLY then diffs the new definition against the current team
+        record by slot index:
+
+        - changed member (same slot, different role/persona/agent): the old
+          container is stopped and unregistered through the ordinary destroy
+          path (keep-worktree semantics -- its state directory survives), and
+          the replacement is spawned through the same member-spawn helper
+          `spawn_team` uses, with peers to every *current* member and the team
+          preamble carrying the NEW goal/criteria.
+        - added member: spawned, linked and granted the board.
+        - removed member: stopped and unregistered; its peer caps and board
+          access die with the container (`forget_container` revokes what
+          others held on it too).
+        - goal / success_criteria edits: recorded on the team immediately, but
+          they reach member prompts only on (re)spawn -- an untouched member
+          keeps the preamble it was generated with until it is replaced.
+        - unchanged members: their containers are untouched; peer caps are
+          re-linked (`_link_team_peers`) so messaging stays symmetric when the
+          member set changed, and the board is re-granted to whoever lacks it.
+
+        Returns a per-member result summary; `ok: false` means the edit was
+        refused in validation and nothing was applied.
+        """
+        compose = load_compose()
+        team, errors = self._validate_team_edit(name, raw, compose)
+        if team is None:
+            return {"team": name, "ok": False, "errors": errors, "members": []}
+
+        old = self.teams[name]
+        old_members = old.members
+        new_members = team.members
+        preamble = team_preamble(team)
+        peer_names = [m.name for m in new_members]
+
+        results: list[dict] = []
+        spawned: list[Container] = []
+        # Slot-wise diff. A member whose generated name is unchanged keeps its
+        # container untouched; a different name at the same slot is a replace.
+        common = min(len(old_members), len(new_members))
+        for index in range(common):
+            old_m, new_m = old_members[index], new_members[index]
+            if old_m.name == new_m.name:
+                results.append({"action": "kept", "name": new_m.name})
+                continue
+            results.append(
+                {
+                    "action": "replaced",
+                    "name": new_m.name,
+                    "old": old_m.name,
+                }
+            )
+        for index in range(common, len(new_members)):
+            results.append({"action": "added", "name": new_members[index].name})
+        for index in range(common, len(old_members)):
+            results.append({"action": "removed", "name": old_members[index].name})
+
+        replaced = [r for r in results if r["action"] == "replaced"]
+        added = [r for r in results if r["action"] == "added"]
+        removed = [r for r in results if r["action"] == "removed"]
+
+        try:
+            # Stop and unregister what is going away. `force`, because a member
+            # being replaced is usually still running; `remove_state=False`,
+            # because the worktree and its committed work outlive the edit.
+            # A member whose container is not registered right now (the daemon
+            # restarted and `up` has not re-registered it) has nothing to stop.
+            for record in (*replaced, *removed):
+                target = record.get("old", record["name"])
+                if target in self.containers:
+                    await self.destroy(target, force=True)
+
+            # Spawn the replacements and additions through the shared
+            # member-spawn path, with peers to every current member.
+            new_by_name = {m.name: m for m in new_members}
+            for record in (*replaced, *added):
+                member = new_by_name[record["name"]]
+                container = await self._spawn_team_member(
+                    compose, member, peer_names, preamble
+                )
+                spawned.append(container)
+
+            # Peer messaging and the shared board, across the new member set.
+            self._link_team_peers(team)
+            self._ensure_team_board(team)
+            for member in new_members:
+                self._grant_board_if_needed(member.name, team.board_topic)
+
+            for record in (*replaced, *added):
+                await self.start(record["name"])
+        except Exception:
+            # Undo the spawns this edit made; what was destroyed stays
+            # destroyed -- the team record is left as it was, so a retry
+            # re-derives the same diff against the surviving members.
+            for container in spawned:
+                with contextlib.suppress(Exception):
+                    await self.destroy(container.name, force=True)
+            raise
+
+        # The new goal/criteria are live in the record now; existing members'
+        # prompts still carry the old preamble until each is (re)spawned.
+        self.teams[name] = team
+        self._persist_teams()
+        self._emit("team.edited", {"team": name})
+        return {"team": name, "ok": True, "errors": [], "members": results}
 
     def teams_view(self) -> list[dict]:
         """Every team, with each member's running state, for the console."""

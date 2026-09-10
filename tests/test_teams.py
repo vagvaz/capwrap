@@ -176,7 +176,10 @@ async def _spawn(daemon, data, monkeypatch):
     async def fake_start(name):
         container = daemon.containers[name]
         container.session = _FakeSession()
-        container.obj.state = "running"
+        # Not stamping the kernel object "running": the real destroy path
+        # (which edit_team runs on replaced members) refuses to forget a
+        # container whose object still says running, and the fake session's
+        # terminate() has no watcher to move the state on.
         return container
 
     monkeypatch.setattr(daemon, "start", fake_start)
@@ -377,3 +380,265 @@ async def test_teams_api_stop(daemon, tmp_path, monkeypatch):
         "implementer-pragmatist",
         "reviewer-devils-advocate",
     }
+
+
+# ==========================================================================
+# editing
+# ==========================================================================
+
+
+def _caps(daemon, name):
+    """A member's capabilities, by label."""
+    return {c.label: c for c in daemon.kernel.cap_list(name)}
+
+
+def _board_caps(daemon, name, topic="team/feature-x"):
+    return [
+        c
+        for c in daemon.kernel.cap_list(name)
+        if c.kind == "board" and c.detail.get("topic") == topic
+    ]
+
+
+async def _edit(daemon, name, data, monkeypatch):
+    """Edit a team with `daemon.start` mocked so no sandbox is needed.
+
+    Unlike `_spawn`, the fake start does not stamp the kernel object
+    "running" -- the real destroy path refuses to forget a container whose
+    object still says running, and edit runs that path on replaced members.
+    """
+
+    async def fake_start(name):
+        container = daemon.containers[name]
+        container.session = _FakeSession()
+        return container
+
+    monkeypatch.setattr(daemon, "start", fake_start)
+    return await daemon.edit_team(name, data)
+
+
+async def test_edit_refuses_an_unknown_role_and_applies_nothing(
+    daemon, tmp_path, monkeypatch
+):
+    await _spawn(daemon, team_data(), monkeypatch)
+    before = set(daemon.containers)
+
+    result = await _edit(
+        daemon,
+        "feature-x",
+        team_data(members=[{"role": "nope", "persona": "pragmatist"}]),
+        monkeypatch,
+    )
+    assert result["ok"] is False
+    assert any("unknown role" in e["error"] for e in result["errors"])
+
+    # Nothing was stopped, spawned or persisted.
+    assert set(daemon.containers) == before
+    assert daemon.teams["feature-x"].members[0].role == "implementer"
+    assert "implementer-pragmatist" in daemon.teams["feature-x"].members[0].name
+
+
+async def test_edit_refuses_a_name_collision_and_applies_nothing(
+    daemon, tmp_path, monkeypatch
+):
+    from capwrap.config import load_config_data
+
+    await _spawn(daemon, team_data(), monkeypatch)
+    # An unrelated container already holds the name the edit would generate.
+    daemon.register(load_config_data({"name": "architect-idealist"}, base_dir=tmp_path))
+    before = set(daemon.containers)
+
+    result = await _edit(
+        daemon,
+        "feature-x",
+        team_data(
+            members=[
+                {"role": "architect", "persona": "idealist"},
+                {"role": "reviewer", "persona": "devils-advocate"},
+            ]
+        ),
+        monkeypatch,
+    )
+    assert result["ok"] is False
+    assert any("architect-idealist" in e["error"] for e in result["errors"])
+    assert set(daemon.containers) == before
+    assert daemon.teams["feature-x"].members[0].name == "implementer-pragmatist"
+
+
+async def test_edit_replaces_a_changed_member(daemon, tmp_path, monkeypatch):
+    await _spawn(daemon, team_data(), monkeypatch)
+
+    result = await _edit(
+        daemon,
+        "feature-x",
+        team_data(
+            members=[
+                {"role": "architect", "persona": "idealist"},
+                {"role": "reviewer", "persona": "devils-advocate"},
+            ]
+        ),
+        monkeypatch,
+    )
+    assert result["ok"] is True
+    assert result["members"] == [
+        {
+            "action": "replaced",
+            "name": "architect-idealist",
+            "old": "implementer-pragmatist",
+        },
+        {"action": "kept", "name": "reviewer-devils-advocate"},
+    ]
+
+    # The old container is gone; the new one is registered, running, same slot.
+    assert "implementer-pragmatist" not in daemon.containers
+    assert "architect-idealist" in daemon.containers
+    assert daemon.containers["architect-idealist"].running
+    team = daemon.teams["feature-x"]
+    assert [m.name for m in team.members] == [
+        "architect-idealist",
+        "reviewer-devils-advocate",
+    ]
+
+    # Peer messaging is symmetric across the new member set, and nothing
+    # points at the replaced container any more.
+    arch = _caps(daemon, "architect-idealist")
+    rev = _caps(daemon, "reviewer-devils-advocate")
+    assert "send" in arch["peer:reviewer-devils-advocate"].rights
+    assert "send" in rev["peer:architect-idealist"].rights
+    assert "peer:implementer-pragmatist" not in rev
+
+    # Board access followed the membership.
+    assert len(_board_caps(daemon, "architect-idealist")) == 1
+    assert len(_board_caps(daemon, "reviewer-devils-advocate")) == 1
+
+    # teams.json records the new membership.
+    import json
+
+    persisted = json.loads((daemon.state / "teams.json").read_text())
+    assert [m["name"] for m in persisted["feature-x"]["members"]] == [
+        "architect-idealist",
+        "reviewer-devils-advocate",
+    ]
+
+
+async def test_edit_goal_reaches_replaced_members_prompts_only(
+    daemon, tmp_path, monkeypatch
+):
+    from capwrap.teams import load_compose
+
+    await _spawn(daemon, team_data(), monkeypatch)
+    built = load_compose().BUILT
+    old_prompt = (built / "reviewer-devils-advocate.md").read_text()
+    assert "ship the parser rewrite" in old_prompt
+
+    result = await _edit(
+        daemon,
+        "feature-x",
+        team_data(
+            goal="ship the formatter rewrite",
+            members=[
+                {"role": "architect", "persona": "idealist"},
+                {"role": "reviewer", "persona": "devils-advocate"},
+            ],
+        ),
+        monkeypatch,
+    )
+    assert result["ok"] is True
+
+    # The replacement was generated with the NEW goal in its preamble...
+    new_prompt = (built / "architect-idealist.md").read_text()
+    assert "ship the formatter rewrite" in new_prompt
+    assert "ship the parser rewrite" not in new_prompt
+
+    # ...while the untouched member's prompt still carries the old one: goal
+    # edits reach member prompts only on (re)spawn.
+    assert (built / "reviewer-devils-advocate.md").read_text() == old_prompt
+
+    # The team record itself is updated either way.
+    assert daemon.teams["feature-x"].goal == "ship the formatter rewrite"
+
+
+async def test_edit_adds_and_removes_members_with_peer_messaging_both_ways(
+    daemon, tmp_path, monkeypatch
+):
+    await _spawn(
+        daemon,
+        team_data(members=[{"role": "implementer", "persona": "pragmatist"}]),
+        monkeypatch,
+    )
+
+    # Add a reviewer: both directions of messaging are granted.
+    result = await _edit(
+        daemon,
+        "feature-x",
+        team_data(
+            members=[
+                {"role": "implementer", "persona": "pragmatist"},
+                {"role": "reviewer", "persona": "devils-advocate"},
+            ]
+        ),
+        monkeypatch,
+    )
+    assert result["ok"] is True
+    assert [m["action"] for m in result["members"]] == ["kept", "added"]
+    impl = _caps(daemon, "implementer-pragmatist")
+    rev = _caps(daemon, "reviewer-devils-advocate")
+    assert "send" in impl["peer:reviewer-devils-advocate"].rights
+    assert "send" in rev["peer:implementer-pragmatist"].rights
+    assert len(_board_caps(daemon, "reviewer-devils-advocate")) == 1
+
+    # Remove the reviewer again: its container, peer caps and board access
+    # all go with it.
+    result = await _edit(
+        daemon,
+        "feature-x",
+        team_data(members=[{"role": "implementer", "persona": "pragmatist"}]),
+        monkeypatch,
+    )
+    assert result["ok"] is True
+    assert [m["action"] for m in result["members"]] == ["kept", "removed"]
+    assert "reviewer-devils-advocate" not in daemon.containers
+    impl = _caps(daemon, "implementer-pragmatist")
+    assert "peer:reviewer-devils-advocate" not in impl
+    assert daemon.teams["feature-x"].members[0].name == "implementer-pragmatist"
+
+
+async def test_edit_api_returns_per_member_results(daemon, tmp_path, monkeypatch):
+    from capwrap.web.app import create_app
+    from fastapi.testclient import TestClient
+
+    await _spawn(daemon, team_data(), monkeypatch)
+
+    async def fake_start(name):
+        container = daemon.containers[name]
+        container.session = _FakeSession()
+        return container
+
+    monkeypatch.setattr(daemon, "start", fake_start)
+    client = TestClient(create_app(daemon))
+
+    response = client.post(
+        "/api/teams/feature-x/edit",
+        json={
+            "team": team_data(
+                members=[
+                    {"role": "architect", "persona": "idealist"},
+                    {"role": "reviewer", "persona": "devils-advocate"},
+                ]
+            )
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert [m["action"] for m in body["members"]] == ["replaced", "kept"]
+
+    # A refused edit comes back with the per-member errors and no changes.
+    response = client.post(
+        "/api/teams/feature-x/edit",
+        json={"team": team_data(members=[{"role": "nope", "persona": "x"}])},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is False
+    assert any("unknown role" in e["error"] for e in body["errors"])
