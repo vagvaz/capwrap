@@ -264,7 +264,7 @@ command = [{command}]
 role_prompt = "{fname}.md"
 cwd       = "/work"
 tty       = true
-approvals = "capwrap"
+approvals = "{approvals}"
 # Where the agent's plain questions surface: "forward" (the operator's console
 # Questions tab), "block" (no console card; the agent states its question in
 # its own terminal and ends its turn), or "auto" (autonomous mode: the
@@ -508,6 +508,7 @@ def _pi_setup() -> dict:
 AGENT_SETUP: dict[str, dict] = {
     "claude": {
         "command": ["/opt/claude/claude"],
+        "approvals": "capwrap",
         "native_permissions": True,
         "bash_tool": "Bash",
         "mounts": [
@@ -519,6 +520,7 @@ AGENT_SETUP: dict[str, dict] = {
     },
     "opencode": {
         "command": ["/opt/opencode/opencode"],
+        "approvals": "native",
         "native_permissions": True,
         "bash_tool": "Bash",
         "mounts": [
@@ -531,6 +533,7 @@ AGENT_SETUP: dict[str, dict] = {
     },
     "opencode2": {
         "command": ["/opt/opencode/opencode2", "--standalone"],
+        "approvals": "capwrap",
         "native_permissions": True,
         "bash_tool": "Shell",
         "mounts": [
@@ -911,6 +914,7 @@ def compose(
         fname=fname,
         agent=agent,
         routing=routing,
+        approvals=setup.get("approvals", "capwrap"),
         command=quote(setup["command"]),
         summary=spec["summary"],
         env=quote(setup["env"]),
