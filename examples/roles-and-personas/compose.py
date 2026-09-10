@@ -549,11 +549,11 @@ AGENT_SETUP: dict[str, dict] = {
 
 WORKTREE = """
 [[mounts]]
-src        = "~/capwrap-demo/repo"
+src        = "{src}"
 dest       = "/work"
 mode       = "worktree"
 branch     = "capwrap/{name}"
-base       = "main"
+base       = "{base}"
 on_destroy = "keep"
 """
 
@@ -756,7 +756,19 @@ def compose(
     extra_prompt: str = "",
     peers: "list[str] | None" = None,
     routing: str = "forward",
+    source: str | None = None,
+    base: str | None = None,
+    extra_mounts: "list[dict] | None" = None,
+    extra_env: "list[str] | None" = None,
 ) -> pathlib.Path:
+    """Build one config.
+
+    The optional project parameters (``source``, ``base``, ``extra_mounts``,
+    ``extra_env``) come from a capwrap Project: where the worktree forks from
+    instead of the demo default, extra binds appended after the standard
+    mounts, and extra host env vars merged into ``env_from_host``. Every one
+    is optional and the defaults are exactly today's behaviour.
+    """
     if role not in ROLES:
         sys.exit(f"unknown role {role!r}; try --list")
     if persona not in PERSONAS:
@@ -806,6 +818,15 @@ def compose(
         f'\n[[mounts]]\nsrc  = "{src}"\ndest = "{dest}"\nmode = "{mode}"\n'
         for src, dest, mode in setup["mounts"]
     )
+    # Extra binds a Project asked for, appended after the standard mounts and
+    # the worktree mount, before any [[files]] entries.
+    extra_mounts_toml = "".join(
+        f'\n[[mounts]]\nsrc  = "{m["src"]}"\ndest = "{m["dest"]}"\nmode = "{m["mode"]}"\n'
+        for m in extra_mounts or []
+    )
+    # Extra env_from_host vars, merged with the agent's own (first occurrence
+    # wins, so an agent's own list keeps priority).
+    env_vars = dedupe([*setup["env"], *(extra_env or [])])
     files = (
         '\n[[files]]\ndest = "/work/CLAUDE.md"\nsrc  = "house.md"\n\n'
         if setup["files"]
@@ -917,14 +938,23 @@ def compose(
         approvals=setup.get("approvals", "capwrap"),
         command=quote(setup["command"]),
         summary=spec["summary"],
-        env=quote(setup["env"]),
+        env=quote(env_vars),
         auto_allow=quote(auto_allow),
         auto_deny=quote(auto_deny),
         permissions=permissions,
         network=network_line,
         mounts=mounts,
         files=files,
-        work=(WORKTREE.format(name=name) if spec["work"] == "worktree" else NO_REPO),
+        work=(
+            WORKTREE.format(
+                name=name,
+                src=source or "~/capwrap-demo/repo",
+                base=base or "main",
+            )
+            + extra_mounts_toml
+            if spec["work"] == "worktree"
+            else NO_REPO + extra_mounts_toml
+        ),
         caps=(
             (
                 FACTORY.format(

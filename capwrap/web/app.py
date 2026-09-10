@@ -135,8 +135,12 @@ class SpawnBody(BaseModel):
     persona: str
     agent: str = "claude"
     #: Where the spawned agent's plain questions surface; compose.py emits it
-    #: into the generated config's [runtime] section.
-    routing: str = "forward"
+    #: into the generated config's [runtime] section. None means "no opinion":
+    #: a selected Project's routing is the default, else compose's own.
+    routing: str | None = None
+    #: An optional Project: where the worktree forks from, extra mounts, extra
+    #: env, and the routing default. Resolved daemon-side; unknown → 400.
+    project: str | None = None
 
 
 class RoutingBody(BaseModel):
@@ -146,9 +150,20 @@ class RoutingBody(BaseModel):
 
 
 class TeamBody(BaseModel):
-    """A whole team to spawn: the team TOML, as a mapping."""
+    """A whole team to spawn: the team TOML, as a mapping.
+
+    `project` is an optional Project name applied to every member; it may also
+    be carried inside the team mapping itself (the CLI's shape).
+    """
 
     team: dict
+    project: str | None = None
+
+
+class ProjectBody(BaseModel):
+    """A project to create or update: the project TOML, as a mapping."""
+
+    project: dict
 
 
 class ResizeBody(BaseModel):
@@ -440,23 +455,42 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         """What the spawn dialog can offer: every role, persona and agent."""
         return _compose_options(_load_compose())
 
+    def _resolve_project(name: str | None):
+        """Look a named project up daemon-side; unknown names are a clean 400."""
+        if not name:
+            return None
+        try:
+            return daemon.resolve_project(name)
+        except CapwrapError as exc:
+            raise HTTPException(400, str(exc)) from None
+
     @app.get("/api/compose/preview")
     async def compose_preview(
-        role: str, persona: str, agent: str = "claude", routing: str = "forward"
+        role: str,
+        persona: str,
+        agent: str = "claude",
+        routing: str | None = None,
+        project: str | None = None,
     ) -> dict:
         """The TOML compose.py would generate, without starting anything.
 
         compose() writes the config into examples/roles-and-personas/built/
         (gitignored) and returns the path to it; we read that back for preview.
+        An optional project supplies the worktree source/base, extra mounts,
+        extra env and the routing default.
         """
         module = _load_compose()
         _validate_compose(module, role, persona, agent)
-        path = module.compose(role, persona, agent, routing=routing)
+        resolved = _resolve_project(project)
+        routing = routing or (resolved.routing if resolved else "") or "forward"
+        kwargs = resolved.compose_kwargs() if resolved else {}
+        path = module.compose(role, persona, agent, routing=routing, **kwargs)
         return {
             "role": role,
             "persona": persona,
             "agent": agent,
             "routing": routing,
+            "project": project or "",
             "name": path.stem,
             "toml": path.read_text(),
         }
@@ -471,7 +505,12 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         """
         module = _load_compose()
         _validate_compose(module, body.role, body.persona, body.agent)
-        path = module.compose(body.role, body.persona, body.agent, routing=body.routing)
+        resolved = _resolve_project(body.project)
+        routing = body.routing or (resolved.routing if resolved else "") or "forward"
+        kwargs = resolved.compose_kwargs() if resolved else {}
+        path = module.compose(
+            body.role, body.persona, body.agent, routing=routing, **kwargs
+        )
 
         config = load_config(path)
         if config.name in daemon.containers:
@@ -485,6 +524,30 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         daemon.link_all_peers()
         await daemon.start(config.name)
         return {**container.status(), "started": True}
+
+    # ------------------------------------------------------------------
+    # projects
+    # ------------------------------------------------------------------
+
+    @app.get("/api/projects")
+    async def list_projects() -> list[dict]:
+        """Every project: named, predefined spawn configurations."""
+        return daemon.projects_view()
+
+    @app.post("/api/projects")
+    async def save_project(body: ProjectBody) -> dict:
+        """Create or update a project: validate, write its TOML file, keep it.
+
+        The file lands in the daemon's projects directory, named after the
+        project, so it stays reviewable like every other capwrap config.
+        """
+        project = daemon.save_project(body.project)
+        return {"name": project.name, "saved": True}
+
+    @app.delete("/api/projects/{name}")
+    async def delete_project(name: str) -> dict:
+        daemon.delete_project(name)
+        return {"name": name, "deleted": True}
 
     # ------------------------------------------------------------------
     # teams
@@ -501,10 +564,12 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         start them, create the shared board and record the team.
 
         A name collision on any member refuses the whole team with no partial
-        spawns.
+        spawns. An optional project (top-level in the body, or inside the team
+        mapping) applies to every member.
         """
         team = parse_team_data(body.team, load_team_compose())
-        return await daemon.spawn_team(team)
+        project_name = body.project or str(body.team.get("project", "") or "")
+        return await daemon.spawn_team(team, project_name=project_name)
 
     @app.post("/api/teams/{name}/edit")
     async def edit_team(name: str, body: TeamBody) -> dict:
@@ -513,9 +578,11 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         Same body shape as spawn. Validation runs first, so a refused edit
         comes back as `ok: false` with a per-member error list and nothing
         applied; a successful edit returns a per-member result summary
-        (replaced/added/removed/kept).
+        (replaced/added/removed/kept). An optional project applies to every
+        member this edit spawns.
         """
-        return await daemon.edit_team(name, body.team)
+        project_name = body.project or str(body.team.get("project", "") or "")
+        return await daemon.edit_team(name, body.team, project_name=project_name)
 
     @app.post("/api/teams/{name}/stop")
     async def stop_team(name: str) -> dict:

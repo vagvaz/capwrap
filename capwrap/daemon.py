@@ -43,6 +43,7 @@ from .runtime import fsprep, mapper as mapper_mod
 from .runtime import probe
 from .runtime.supervisor import PtySession
 from .teams import Team, TeamMember, load_compose, parse_team_data, team_preamble
+from . import projects as projects_mod
 
 OPERATOR = "operator"
 
@@ -309,6 +310,7 @@ class Daemon:
         audit_path: Path | None = None,
         trace_messages: bool = False,
         instance_name: str = "",
+        projects_dir: Path | None = None,
     ) -> None:
         #: What this whole capwrap is *for* -- "FastPath HashTable", say. Purely
         #: a label, but a load-bearing one: several of these run at once on
@@ -326,6 +328,15 @@ class Daemon:
         #: restart; membership (peer caps + shared board) is re-linked on boot.
         self.teams: dict[str, Team] = {}
         self._load_teams()
+        #: Projects, keyed by name. Loaded from the projects directory at
+        #: boot; a missing directory is simply no projects. CRUD goes straight
+        #: to the files, so the memory copy and the directory stay in step.
+        self.projects_dir = (
+            Path(projects_dir).expanduser()
+            if projects_dir is not None
+            else projects_mod.default_projects_dir()
+        )
+        self.projects: dict[str, Any] = projects_mod.load_projects(self.projects_dir)
         #: Opt-in, and off by default: a trace holds whole message payloads,
         #: which are the agents' working content, not metadata. The audit log
         #: records that a message was sent; this records what was in it.
@@ -476,12 +487,48 @@ class Daemon:
             for member in team.members:
                 self._grant_board_if_needed(member.name, team.board_topic)
 
+    # ==================================================================
+    # projects
+    # ==================================================================
+
+    def projects_view(self) -> list[dict]:
+        """Every project, for the console and `capwrap projects list`."""
+        return [p.to_dict() for p in self.projects.values()]
+
+    def resolve_project(self, name: str) -> Any:
+        """Look a project up by name and check its base resolves.
+
+        The base check is the lazy half of project validation: git is slow, so
+        it runs here -- at spawn time -- rather than at save time. An unknown
+        name is a CapwrapError, which the web layer turns into a clean 400.
+        """
+        project = self.projects.get(name)
+        if project is None:
+            raise CapwrapError(f"no such project: {name!r}")
+        project.validate_base()
+        return project
+
+    def save_project(self, raw: dict) -> Any:
+        """Validate a project mapping, write its file and keep it in memory."""
+        project = projects_mod.parse_project_data(raw)
+        projects_mod.save_project(project, self.projects_dir)
+        self.projects[project.name] = project
+        return project
+
+    def delete_project(self, name: str) -> None:
+        """Remove a project's file and drop it from memory."""
+        if name not in self.projects:
+            raise CapwrapError(f"no such project: {name!r}")
+        projects_mod.delete_project(name, self.projects_dir)
+        del self.projects[name]
+
     async def _spawn_team_member(
         self,
         compose: Any,
         member: Any,
         peer_names: list[str],
         preamble: str,
+        project: Any = None,
     ) -> Container:
         """Generate, register (not start) one team member's container.
 
@@ -489,24 +536,33 @@ class Daemon:
         compose() regenerates the config into examples/roles-and-personas/built/
         (team members are generated, never hand-patched), with peer caps to
         every other current member and the team preamble folded into the prompt.
+
+        An optional Project applies to every member (a member-level override
+        can come later): its source/base/extra mounts/env are passed straight
+        through to compose().
         """
+        kwargs = project.compose_kwargs() if project is not None else {}
         path = compose.compose(
             member.role,
             member.persona,
             member.agent,
             extra_prompt=preamble,
             peers=[p for p in peer_names if p != member.name],
+            **kwargs,
         )
         config = load_config(path)
         return self.register(config)
 
-    async def spawn_team(self, team: Team) -> dict:
+    async def spawn_team(self, team: Team, project_name: str = "") -> dict:
         """Register, start and record a whole team, atomically.
 
         Every member is generated via compose(), registered and started through
         the operator path (the same flow `capwrap add` uses -- an authority
         grant from the human, not a kernel factory spawn). A name collision on
         any member refuses the whole team with no partial spawns.
+
+        An optional project name applies to every member; an unknown name is
+        refused before anything is spawned.
         """
         if team.name in self.teams:
             raise CapwrapError(f"a team named {team.name!r} already exists")
@@ -518,13 +574,16 @@ class Daemon:
                 )
 
         compose = load_compose()
+        project = self.resolve_project(project_name) if project_name else None
         peer_names = [m.name for m in team.members]
         preamble = team_preamble(team)
         spawned: list[Container] = []
         try:
             for member in team.members:
                 spawned.append(
-                    await self._spawn_team_member(compose, member, peer_names, preamble)
+                    await self._spawn_team_member(
+                        compose, member, peer_names, preamble, project=project
+                    )
                 )
 
             self.link_all_peers()
@@ -663,7 +722,7 @@ class Daemon:
                     continue
                 self.kernel.operator_grant(holder, "container", peer, Rights.SEND)
 
-    async def edit_team(self, name: str, raw: dict) -> dict:
+    async def edit_team(self, name: str, raw: dict, project_name: str = "") -> dict:
         """Edit a team in place: replace, add or remove members, restate goals.
 
         Two-phase. VALIDATE first (`_validate_team_edit`): on any error nothing
@@ -688,6 +747,9 @@ class Daemon:
           re-linked (`_link_team_peers`) so messaging stays symmetric when the
           member set changed, and the board is re-granted to whoever lacks it.
 
+        An optional project name (top-level in the team body) applies to every
+        member spawned by this edit; a member-level override can come later.
+
         Returns a per-member result summary; `ok: false` means the edit was
         refused in validation and nothing was applied.
         """
@@ -695,6 +757,8 @@ class Daemon:
         team, errors = self._validate_team_edit(name, raw, compose)
         if team is None:
             return {"team": name, "ok": False, "errors": errors, "members": []}
+
+        project = self.resolve_project(project_name) if project_name else None
 
         old = self.teams[name]
         old_members = old.members
@@ -745,7 +809,7 @@ class Daemon:
             for record in (*replaced, *added):
                 member = new_by_name[record["name"]]
                 container = await self._spawn_team_member(
-                    compose, member, peer_names, preamble
+                    compose, member, peer_names, preamble, project=project
                 )
                 spawned.append(container)
 

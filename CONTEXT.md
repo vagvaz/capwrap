@@ -71,3 +71,8 @@ The per-container choice of where agent questions surface: **forward** (the
 operator's console), **block** (the harness's own TUI — operator comes to
 the agent), or **auto** (autonomous mode).
 _Avoid_: mode (alone — it is one toggle with three positions)
+
+**Project**:
+A named, predefined configuration for where agents work: the source repo,
+the base branch, extra mounts, host env vars, and a routing default.
+_Avoid_: template, workspace

@@ -15,6 +15,7 @@ const state = {
   messages: [],
   selected: null,
   caps: {},
+  projects: [],
 };
 
 let term = null;
@@ -2382,6 +2383,7 @@ function showTab(name) {
   if (name === "audit") renderAudit();
   if (name === "boards") renderBoards();
   if (name === "teams") renderTeams();
+  if (name === "projects") renderProjects();
   if (name === "messages") loadTrace();
   if (name === "files") loadFiles(state.selected);
   if (name === "terminal") setTimeout(syncTerminalSize, 30);
@@ -2560,7 +2562,35 @@ async function loadSpawnOptions() {
   fill("spawn-role", spawnOptions.roles);
   fill("spawn-persona", spawnOptions.personas);
   fill("spawn-agent", spawnOptions.agents);
+  await loadProjectChoices();
   refreshSpawnPreview();
+}
+
+/** Fill both the spawn and team dialogs' Project dropdowns.
+ *
+ * One fetch serves both; the empty choice means "no project" -- compose's own
+ * defaults, exactly today's behaviour.
+ */
+async function loadProjectChoices() {
+  let projects = [];
+  try {
+    projects = await api("/api/projects");
+  } catch (_) {
+    projects = [];
+  }
+  state.projects = projects;
+  const markup =
+    '<option value="">(default)</option>' +
+    projects
+      .map(
+        (p) =>
+          `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}</option>`,
+      )
+      .join("");
+  for (const id of ["spawn-project", "team-project"]) {
+    const select = $(id);
+    if (select.innerHTML !== markup) select.innerHTML = markup;
+  }
 }
 
 function refreshSpawnPreview() {
@@ -2570,6 +2600,7 @@ function refreshSpawnPreview() {
     const persona = $("spawn-persona").value;
     const agent = $("spawn-agent").value;
     const routing = $("spawn-routing").value;
+    const project = $("spawn-project").value;
     if (!role || !persona || !agent) return;
     $("spawn-preview").textContent = "Loading…";
     try {
@@ -2577,9 +2608,14 @@ function refreshSpawnPreview() {
         `/api/compose/preview?role=${encodeURIComponent(role)}` +
           `&persona=${encodeURIComponent(persona)}` +
           `&agent=${encodeURIComponent(agent)}` +
-          `&routing=${encodeURIComponent(routing)}`,
+          `&routing=${encodeURIComponent(routing)}` +
+          (project ? `&project=${encodeURIComponent(project)}` : ""),
       );
       $("spawn-preview").textContent = data.toml;
+      // A project carries a routing default; the preview is where it shows
+      // up, so the select follows it (an explicit pick still wins, since the
+      // select's value is what gets sent).
+      if (project && data.routing) $("spawn-routing").value = data.routing;
       $("spawn-error").hidden = true;
     } catch (err) {
       $("spawn-preview").textContent = "";
@@ -2602,6 +2638,7 @@ function wireSpawn() {
     "spawn-persona",
     "spawn-agent",
     "spawn-routing",
+    "spawn-project",
   ]) {
     $(id).addEventListener("change", refreshSpawnPreview);
   }
@@ -2611,11 +2648,18 @@ function wireSpawn() {
     const persona = $("spawn-persona").value;
     const agent = $("spawn-agent").value;
     const routing = $("spawn-routing").value;
+    const project = $("spawn-project").value;
     $("spawn-error").hidden = true;
     try {
       await api("/api/spawn", {
         method: "POST",
-        body: JSON.stringify({ role, persona, agent, routing }),
+        body: JSON.stringify({
+          role,
+          persona,
+          agent,
+          routing,
+          ...(project ? { project } : {}),
+        }),
       });
       closeSpawnDialog();
       await refreshOverview();
@@ -2652,6 +2696,7 @@ function openTeamDialog(team = null) {
   $("team-goal").value = team ? team.goal : "";
   $("team-success").value = team ? team.success_criteria || "" : "";
   $("team-members").innerHTML = "";
+  $("team-project").value = "";
   loadTeamOptions(team);
 }
 
@@ -2668,6 +2713,7 @@ async function loadTeamOptions(team = null) {
     $("team-error").hidden = false;
     return;
   }
+  await loadProjectChoices();
   if (team) {
     for (const member of team.members || []) {
       addTeamMemberRow(member.role, member.persona, member.agent);
@@ -2749,10 +2795,13 @@ function wireTeam() {
     const path = editing
       ? `/api/teams/${encodeURIComponent(editing.name)}/edit`
       : "/api/teams/spawn";
+    // The project is a top-level body field, applying to every member; a
+    // member-level override can come later.
+    const project = $("team-project").value;
     try {
       const result = await api(path, {
         method: "POST",
-        body: JSON.stringify({ team }),
+        body: JSON.stringify({ team, ...(project ? { project } : {}) }),
       });
       if (result && result.ok === false) {
         // The edit was refused in validation, before anything was applied.
@@ -2786,6 +2835,186 @@ function wireTeam() {
     } catch (err) {
       $("team-error").textContent = err.message;
       $("team-error").hidden = false;
+    }
+  });
+}
+
+// ------------------------------------------------------------------ projects
+
+/** Projects: named, predefined spawn configurations.
+ *
+ * Each card shows where agents work -- the source repo, the base branch, and
+ * how much the project adds on top (extra mounts, extra env vars). Edit opens
+ * the same dialog as create, filled in.
+ */
+async function renderProjects() {
+  const host = $("projects");
+  let projects = [];
+  try {
+    projects = await api("/api/projects");
+  } catch (err) {
+    host.innerHTML = `<div class="empty">Could not load projects: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  state.projects = projects;
+
+  $("projects-count").textContent = projects.length
+    ? `${projects.length} project${projects.length === 1 ? "" : "s"}`
+    : "";
+
+  if (!projects.length) {
+    host.innerHTML = `
+      <div class="trace-off">
+        No projects yet. A project is a named, predefined configuration for
+        where agents work: a source repo, the branch worktrees fork from,
+        optional extra mounts, env vars and a routing default. Create one with
+        the <span class="mono">New project</span> button.
+      </div>`;
+    return;
+  }
+
+  host.innerHTML = projects
+    .map((p) => {
+      const mounts = (p.extra_mounts || []).length;
+      const envs = (p.env || []).length;
+      return `
+      <div class="team-card">
+        <h3>${escapeHtml(p.name)}</h3>
+        <p class="goal mono">${escapeHtml(p.source)}</p>
+        <p class="criteria">base: ${escapeHtml(p.base)} · ${mounts} extra mount${mounts === 1 ? "" : "s"} · ${envs} env var${envs === 1 ? "" : "s"}${p.routing ? ` · routing: ${escapeHtml(p.routing)}` : ""}</p>
+        <button type="button" class="ghost project-edit" data-project="${escapeHtml(p.name)}">Edit</button>
+        <button type="button" class="ghost danger project-delete" data-project="${escapeHtml(p.name)}">Delete</button>
+      </div>`;
+    })
+    .join("");
+
+  host.querySelectorAll(".project-edit").forEach((button) => {
+    button.addEventListener("click", () => {
+      const project = projects.find((p) => p.name === button.dataset.project);
+      if (project) openProjectDialog(project);
+    });
+  });
+  host.querySelectorAll(".project-delete").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const name = button.dataset.project;
+      if (!confirm(`Delete project ${name}?`)) return;
+      try {
+        await api(`/api/projects/${encodeURIComponent(name)}`, {
+          method: "DELETE",
+        });
+        await renderProjects();
+      } catch (err) {
+        alert(`Could not delete the project: ${err.message}`);
+      }
+    });
+  });
+}
+
+// The project being edited, or null when the dialog is creating a new one.
+let editingProject = null;
+
+function openProjectDialog(project = null) {
+  editingProject = project;
+  $("project-dialog").hidden = false;
+  $("project-error").hidden = true;
+  $("project-dialog-title").textContent = project
+    ? `Edit project: ${project.name}`
+    : "New project";
+  $("project-submit").textContent = project ? "Save changes" : "Save project";
+  $("project-name").value = project ? project.name : "";
+  $("project-name").readOnly = Boolean(project);
+  $("project-source").value = project ? project.source : "";
+  $("project-base").value = project ? project.base : "main";
+  $("project-routing").value = project ? project.routing || "" : "";
+  $("project-env").value = project ? (project.env || []).join(", ") : "";
+  $("project-mounts").innerHTML = "";
+  if (project && (project.extra_mounts || []).length) {
+    for (const m of project.extra_mounts) {
+      addProjectMountRow(m.src, m.dest, m.mode);
+    }
+  }
+}
+
+function closeProjectDialog() {
+  $("project-dialog").hidden = true;
+  editingProject = null;
+}
+
+function addProjectMountRow(src = "", dest = "", mode = "ro") {
+  const host = $("project-mounts");
+  const row = document.createElement("div");
+  row.className = "team-member-row";
+  row.innerHTML = `
+    <label>Source
+      <input class="pm-src" type="text" placeholder="~/.foo" value="${escapeHtml(src)}" />
+    </label>
+    <label>Destination
+      <input class="pm-dest" type="text" placeholder="/foo" value="${escapeHtml(dest)}" />
+    </label>
+    <label>Mode
+      <select class="pm-mode">
+        <option value="ro" ${mode === "ro" ? "selected" : ""}>ro</option>
+        <option value="rw" ${mode === "rw" ? "selected" : ""}>rw</option>
+      </select>
+    </label>
+    <button type="button" class="ghost remove" title="Remove mount">×</button>`;
+  row.querySelector(".remove").addEventListener("click", () => {
+    row.remove();
+  });
+  host.appendChild(row);
+}
+
+function collectProject() {
+  const mounts = [...$("project-mounts").querySelectorAll(".team-member-row")]
+    .map((row) => ({
+      src: row.querySelector(".pm-src").value.trim(),
+      dest: row.querySelector(".pm-dest").value.trim(),
+      mode: row.querySelector(".pm-mode").value,
+    }))
+    .filter((m) => m.src || m.dest);
+  const env = $("project-env")
+    .value.split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+  return {
+    name: $("project-name").value.trim(),
+    source: $("project-source").value.trim(),
+    base: $("project-base").value.trim() || "main",
+    routing: $("project-routing").value,
+    extra_mounts: mounts,
+    env,
+  };
+}
+
+function wireProjects() {
+  $("btn-project").addEventListener("click", () => openProjectDialog());
+  $("projects-refresh").addEventListener("click", renderProjects);
+  $("project-close").addEventListener("click", closeProjectDialog);
+  $("project-cancel").addEventListener("click", closeProjectDialog);
+  $("project-dialog").addEventListener("click", (event) => {
+    if (event.target === $("project-dialog")) closeProjectDialog();
+  });
+  $("project-add-mount").addEventListener("click", () => addProjectMountRow());
+
+  $("project-submit").addEventListener("click", async () => {
+    const project = collectProject();
+    $("project-error").hidden = true;
+    if (!project.name || !project.source) {
+      $("project-error").textContent =
+        "Give the project a name and a source repo.";
+      $("project-error").hidden = false;
+      return;
+    }
+    try {
+      await api("/api/projects", {
+        method: "POST",
+        body: JSON.stringify({ project }),
+      });
+      closeProjectDialog();
+      await renderProjects();
+    } catch (err) {
+      $("project-error").textContent = err.message;
+      $("project-error").hidden = false;
     }
   });
 }
@@ -2864,6 +3093,7 @@ function wire() {
   wireTrace();
   wireSpawn();
   wireTeam();
+  wireProjects();
   wireRouting();
   wireFiles();
 }

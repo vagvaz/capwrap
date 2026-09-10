@@ -1299,6 +1299,17 @@ button:disabled {
 .team-member-row .remove {
   margin-left: auto;
 }
+.team-member-row input {
+  min-width: 140px;
+}
+.project-env {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 12px;
+}
 .team-card {
   margin-bottom: 22px;
 }
