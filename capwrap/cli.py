@@ -235,7 +235,13 @@ def cmd_up(args: argparse.Namespace) -> int:
     instance_name = args.name or os.environ.get("CAPWRAP_NAME", "")
 
     async def run() -> None:
-        daemon = Daemon(trace_messages=args.trace, instance_name=instance_name)
+        daemon = Daemon(
+            trace_messages=args.trace,
+            instance_name=instance_name,
+            projects_dir=Path(args.projects_dir).expanduser()
+            if args.projects_dir
+            else None,
+        )
         for config in configs:
             daemon.register(config)
         # Two passes, so configs may refer to each other in any order.
@@ -398,6 +404,74 @@ def cmd_team(args: argparse.Namespace) -> int:
 
     print(f"team {result['team']}: spawned {', '.join(result['members'])}")
     return 0
+
+
+def cmd_projects(args: argparse.Namespace) -> int:
+    """Manage projects: named, predefined spawn configurations.
+
+    Thin HTTP client against a running capwrap, like `team`: `add` validates
+    the TOML locally (so a typo is reported against the file you just edited,
+    before anything is sent) and POSTs it; the daemon writes it into its
+    projects directory.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    from .projects import parse_project
+
+    base = f"http://{args.host}:{args.port}"
+
+    def _request(path: str, method: str = "GET", payload: bytes | None = None):
+        request = urllib.request.Request(
+            f"{base}{path}",
+            data=payload,
+            method=method,
+            headers={"Content-Type": "application/json"} if payload else {},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")
+            with contextlib.suppress(Exception):
+                body = json.loads(detail)
+                detail = body.get("error") or body.get("detail") or detail
+            raise CapwrapError(detail) from None
+        except urllib.error.URLError as exc:
+            raise CapwrapError(
+                f"no capwrap answering on {base} ({exc.reason}). "
+                "Start one with `capwrap up`, or pass --port."
+            ) from None
+
+    if args.projects_command == "list":
+        for project in _request("/api/projects"):
+            mounts = len(project.get("extra_mounts") or [])
+            envs = len(project.get("env") or [])
+            routing = f" routing={project['routing']}" if project.get("routing") else ""
+            print(
+                f"{project['name']:<20} {project['source']}  "
+                f"(base {project['base']}, {mounts} mount(s), "
+                f"{envs} env var(s){routing})"
+            )
+        return 0
+
+    if args.projects_command == "add":
+        project = parse_project(args.file)
+        _request(
+            "/api/projects",
+            method="POST",
+            payload=json.dumps({"project": project.to_dict()}).encode(),
+        )
+        print(f"project {project.name}: saved")
+        return 0
+
+    if args.projects_command == "remove":
+        _request(f"/api/projects/{args.name}", method="DELETE")
+        print(f"project {args.name}: removed")
+        return 0
+
+    raise CapwrapError(f"unknown projects command {args.projects_command!r}")
 
 
 def cmd_tui(args: argparse.Namespace) -> int:
@@ -603,6 +677,12 @@ def build_parser() -> argparse.ArgumentParser:
         "payloads included, for the Messages tab (also "
         "switchable there while running)",
     )
+    p.add_argument(
+        "--projects-dir",
+        default="",
+        help="where project TOMLs live (env: CAPWRAP_PROJECTS; default "
+        "~/.local/state/capwrap/projects/)",
+    )
     p.set_defaults(func=cmd_up)
 
     p = sub.add_parser(
@@ -635,6 +715,27 @@ def build_parser() -> argparse.ArgumentParser:
     tp.add_argument("--host", default="127.0.0.1")
     tp.add_argument("--port", type=int, default=8420)
     tp.set_defaults(func=cmd_team)
+
+    p = sub.add_parser(
+        "projects", help="manage projects: predefined spawn configurations"
+    )
+    projects_sub = p.add_subparsers(dest="projects_command", required=True)
+    pp = projects_sub.add_parser("list", help="list every project")
+    pp.add_argument("--host", default="127.0.0.1")
+    pp.add_argument("--port", type=int, default=8420)
+    pp.set_defaults(func=cmd_projects)
+    pp = projects_sub.add_parser(
+        "add", help="add (or update) a project from a project TOML file"
+    )
+    pp.add_argument("file", help="path to a project .toml")
+    pp.add_argument("--host", default="127.0.0.1")
+    pp.add_argument("--port", type=int, default=8420)
+    pp.set_defaults(func=cmd_projects)
+    pp = projects_sub.add_parser("remove", help="remove a project by name")
+    pp.add_argument("name")
+    pp.add_argument("--host", default="127.0.0.1")
+    pp.add_argument("--port", type=int, default=8420)
+    pp.set_defaults(func=cmd_projects)
 
     p = sub.add_parser("clean", help="remove a container's host-side state")
     p.add_argument("name")

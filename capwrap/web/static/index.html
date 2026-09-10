@@ -75,6 +75,7 @@
           <button data-tab="grid">All agents</button>
           <button data-tab="files">Files</button>
           <button data-tab="teams">Teams</button>
+          <button data-tab="projects">Projects</button>
           <button data-tab="caps">Capabilities</button>
           <button data-tab="boards">Boards</button>
           <button data-tab="messages">Messages</button>
@@ -148,6 +149,19 @@
             <button id="teams-refresh" class="ghost">Refresh</button>
           </div>
           <div id="teams" class="caps"></div>
+        </div>
+
+        <!-- Projects: named, predefined spawn configurations -- where agents
+             work, so a spawn is a pick rather than a hand-patch. -->
+        <div id="tab-projects" class="tab-panel">
+          <div class="panel-head">
+            <span class="mono">projects</span>
+            <span id="projects-count" class="muted small"></span>
+            <span class="spacer"></span>
+            <button id="btn-project" class="ghost">New project…</button>
+            <button id="projects-refresh" class="ghost">Refresh</button>
+          </div>
+          <div id="projects" class="caps"></div>
         </div>
 
         <div id="tab-caps" class="tab-panel">
@@ -311,6 +325,12 @@
               <select id="spawn-agent" required></select>
             </label>
             <label
+              >Project
+              <select id="spawn-project">
+                <option value="">(default)</option>
+              </select>
+            </label>
+            <label
               >Routing
               <select id="spawn-routing" required>
                 <option value="forward">forward</option>
@@ -368,6 +388,12 @@
                 placeholder="all tests green, ADR merged"
               />
             </label>
+            <label
+              >Project
+              <select id="team-project">
+                <option value="">(default)</option>
+              </select>
+            </label>
           </div>
 
           <div class="panel-head">
@@ -382,6 +408,75 @@
           <div class="spawn-actions">
             <button id="team-cancel" class="ghost">Cancel</button>
             <button id="team-submit" class="primary">Spawn team</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Project dialog: name, source repo, base branch, extra mounts, env,
+         routing -- the predefined spawn configuration, reviewable as TOML. -->
+    <div id="project-dialog" class="modal" hidden>
+      <div class="modal-card">
+        <div class="panel-head">
+          <span id="project-dialog-title" class="mono">New project</span>
+          <span class="spacer"></span>
+          <button id="project-close" class="ghost" title="Close">×</button>
+        </div>
+        <div class="spawn-body">
+          <div class="spawn-row">
+            <label
+              >Name
+              <input
+                id="project-name"
+                type="text"
+                placeholder="capwrap"
+                required
+              />
+            </label>
+            <label
+              >Source repo
+              <input
+                id="project-source"
+                type="text"
+                placeholder="/home/me/Projects/my-repo"
+                required
+              />
+            </label>
+            <label
+              >Base branch
+              <input id="project-base" type="text" placeholder="main" />
+            </label>
+            <label
+              >Routing
+              <select id="project-routing">
+                <option value="">(default)</option>
+                <option value="forward">forward</option>
+                <option value="block">block</option>
+                <option value="auto">auto</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="panel-head">
+            <span class="mono">Extra mounts</span>
+            <span class="spacer"></span>
+            <button id="project-add-mount" class="ghost">Add mount</button>
+          </div>
+          <div id="project-mounts" class="team-members"></div>
+
+          <label class="project-env"
+            >Extra env vars (comma-separated)
+            <input
+              id="project-env"
+              type="text"
+              placeholder="MY_TOKEN, OTHER_VAR"
+            />
+          </label>
+
+          <div id="project-error" class="spawn-error" hidden></div>
+          <div class="spawn-actions">
+            <button id="project-cancel" class="ghost">Cancel</button>
+            <button id="project-submit" class="primary">Save project</button>
           </div>
         </div>
       </div>
