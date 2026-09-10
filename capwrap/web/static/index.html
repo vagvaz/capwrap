@@ -74,6 +74,7 @@
           <button data-tab="terminal" class="active">Terminal</button>
           <button data-tab="grid">All agents</button>
           <button data-tab="files">Files</button>
+          <button data-tab="authority">Authority</button>
           <button data-tab="teams">Teams</button>
           <button data-tab="projects">Projects</button>
           <button data-tab="caps">Capabilities</button>
@@ -138,6 +139,19 @@
             </div>
             <pre id="file-view-body" class="diff-body"><code></code></pre>
           </div>
+        </div>
+
+        <!-- Authority: what the selected container may actually do -- the
+             config's permission groups, grant table, network rules, peers,
+             boards and routing, assembled in one place. -->
+        <div id="tab-authority" class="tab-panel">
+          <div class="panel-head">
+            <span id="authority-title" class="mono">authority</span>
+            <span id="authority-note" class="muted small"></span>
+            <span class="spacer"></span>
+            <button id="authority-refresh" class="ghost small">Refresh</button>
+          </div>
+          <div id="authority" class="caps"></div>
         </div>
 
         <!-- Teams: named sets of containers with a shared goal and one board. -->

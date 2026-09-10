@@ -772,6 +772,8 @@ async function select(name, { focusTerminal = false } = {}) {
   await loadGrants(name);
   await loadMailbox(name);
   if (document.querySelector("#tab-files.active")) await loadFiles(name);
+  if (document.querySelector("#tab-authority.active"))
+    await loadAuthority(name);
 }
 
 // ------------------------------------------------------------------ mailbox
@@ -1253,6 +1255,150 @@ function renderGrants() {
   );
 }
 
+// ------------------------------------------------------------------ authority
+
+// One assembled view of what the selected container may actually do: the
+// config's permission groups, the grant table, network rules, peers, boards
+// and routing. The capability graph shows kernel objects only, which is
+// nearly empty for operator-spawned containers; this is the rest of it.
+// Loaded when the tab is shown, not on every selection.
+let authority = null;
+
+async function loadAuthority(name) {
+  if (!name) {
+    authority = null;
+    renderAuthority();
+    return;
+  }
+  try {
+    authority = await api(`/api/containers/${name}/authority`);
+  } catch (_) {
+    authority = null;
+  }
+  renderAuthority();
+}
+
+/** A compact monospace pill list, the same chip style the inbox uses. */
+function authorityPills(items) {
+  if (!items || !items.length) return '<span class="muted small">none</span>';
+  return items
+    .map(
+      (p) =>
+        `<span class="pill pill-quiet mono">${escapeHtml(
+          typeof p === "string" ? p : JSON.stringify(p),
+        )}</span>`,
+    )
+    .join(" ");
+}
+
+function authoritySection(title, body, note = "") {
+  return `
+    <div class="authority-section">
+      <div class="panel-head">
+        <span class="mono">${title}</span>
+        ${note ? `<span class="muted small">${note}</span>` : ""}
+      </div>
+      ${body}
+    </div>`;
+}
+
+function renderAuthority() {
+  const host = $("authority");
+  if (!state.selected || !authority) {
+    host.innerHTML =
+      '<p class="muted pad">Select a container to see its authority.</p>';
+    $("authority-note").textContent = "";
+    return;
+  }
+  $("authority-title").textContent = `authority · ${state.selected}`;
+  const allow = authority.allow || {};
+  const network = authority.network || { open: false, rules: [] };
+  const routing = authority.routing || {};
+  const grants = authority.grants || [];
+
+  const networkNote = network.open
+    ? "open, unproxied (host network)"
+    : network.rules.length
+      ? "through the capability proxy"
+      : "closed";
+  const routingNote =
+    routing.override && routing.override !== routing.config
+      ? `live override (config: ${escapeHtml(routing.config || "")})`
+      : "from config";
+
+  host.innerHTML = `
+    ${authoritySection(
+      "Allow · ambient",
+      `<div class="chips">${authorityPills(allow.ambient)}</div>`,
+      "the read-only baseline every role starts from",
+    )}
+    ${authoritySection(
+      "Allow · work-shell",
+      `<div class="chips">${authorityPills(allow.work_shell)}</div>`,
+      "the dev toolchain and git work verbs",
+    )}
+    ${authoritySection(
+      "Allow · role",
+      `<div class="chips">${authorityPills(allow.role)}</div>`,
+      "tool grants and role-specific patterns",
+    )}
+    ${authoritySection(
+      "Deny",
+      `<div class="chips">${authorityPills(authority.deny)}</div>`,
+      "auto_deny and permissions.deny, merged",
+    )}
+    ${authoritySection(
+      "Grants",
+      `<div class="chips">${authorityPills(grants.map((g) => g.pattern))}</div>
+       ${
+         grants.length
+           ? '<p class="muted small">Always-allow entries. Revoke them from the <button type="button" class="linkish" data-authority-caps>Capabilities</button> tab.</p>'
+           : ""
+       }`,
+      `${grants.length} entr${grants.length === 1 ? "y" : "ies"}`,
+    )}
+    ${authoritySection(
+      "Network",
+      `<div class="chips">${authorityPills(
+        network.rules.map((r) => `${r.name}: ${r.pattern}`),
+      )}</div>`,
+      networkNote,
+    )}
+    ${authoritySection(
+      "Peers",
+      `<div class="chips">${authorityPills(
+        (authority.peers || []).map(
+          (p) => `${p.container} (${(p.rights || []).join(", ")})`,
+        ),
+      )}</div>`,
+      "peer messaging targets",
+    )}
+    ${authoritySection(
+      "Boards",
+      `<div class="chips">${authorityPills(
+        (authority.boards || []).map(
+          (b) => `${b.topic} (${(b.rights || []).join(", ")})`,
+        ),
+      )}</div>`,
+      "team and shared boards",
+    )}
+    ${authoritySection(
+      "Routing",
+      `<div class="chips"><span class="pill pill-quiet mono">${escapeHtml(
+        routing.effective || "forward",
+      )}</span></div>`,
+      routingNote,
+    )}`;
+
+  const link = host.querySelector("[data-authority-caps]");
+  if (link)
+    link.addEventListener("click", () => {
+      showTab("caps");
+      const panel = document.querySelector("#grants");
+      if (panel) panel.scrollIntoView({ behavior: "smooth" });
+    });
+}
+
 // ------------------------------------------------------------------ granting
 
 // What the operator can hand out on a container capability. Ordered so the
@@ -1594,6 +1740,8 @@ function renderApprovals() {
       renderApprovals();
       if (state.selected) loadCaps(state.selected);
       if (state.selected) loadGrants(state.selected);
+      if (document.querySelector("#tab-authority.active"))
+        loadAuthority(state.selected);
     } catch (err) {
       alert(`Could not answer: ${err.message}`);
     }
@@ -2386,6 +2534,7 @@ function showTab(name) {
   if (name === "projects") renderProjects();
   if (name === "messages") loadTrace();
   if (name === "files") loadFiles(state.selected);
+  if (name === "authority") loadAuthority(state.selected);
   if (name === "terminal") setTimeout(syncTerminalSize, 30);
 }
 
@@ -2505,6 +2654,8 @@ function handleEvent(event) {
     case "container.destroyed":
       refreshOverview();
       if (document.querySelector("#tab-teams.active")) renderTeams();
+      if (document.querySelector("#tab-authority.active"))
+        loadAuthority(state.selected);
       break;
 
     case "team.spawned":
@@ -3104,6 +3255,9 @@ function wire() {
   $("audit-refresh").addEventListener("click", renderAudit);
   $("boards-refresh").addEventListener("click", renderBoards);
   $("teams-refresh").addEventListener("click", renderTeams);
+  $("authority-refresh").addEventListener("click", () =>
+    loadAuthority(state.selected),
+  );
 
   $("inbox-history").addEventListener("click", () => {
     showAnsweredQuestions = !showAnsweredQuestions;

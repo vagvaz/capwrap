@@ -65,6 +65,105 @@ def _load_compose():
 
 
 # --------------------------------------------------------------------------
+# authority view
+# --------------------------------------------------------------------------
+
+
+def _pattern_inner(pattern: str) -> str | None:
+    """The glob inside a ``Tool(glob)`` permission pattern, or None.
+
+    ``Bash(git log:*)`` -> ``git log:*``; a bare tool name like ``Read`` has no
+    inner glob and returns None.
+    """
+    if pattern.endswith(")"):
+        open_paren = pattern.find("(")
+        if open_paren > 0:
+            return pattern[open_paren + 1 : -1]
+    return None
+
+
+def authority_view(daemon: Daemon, container: Any, compose: Any) -> dict:
+    """One assembled view of what a container may actually do.
+
+    The capability graph shows only kernel capability objects, which is nearly
+    empty for operator-spawned containers: their real authority lives in the
+    config's permission lists, the daemon-side grant table, the network rules,
+    the peer caps and the team boards. This assembles all of it, lazily, per
+    request -- nothing here is cached, because grants and routing change live.
+    """
+    config = container.config
+    runtime = config.runtime
+
+    def dedupe(items: list[str]) -> list[str]:
+        return list(dict.fromkeys(items))
+
+    allow = dedupe([*runtime.auto_allow, *runtime.permissions.allow])
+    ambient_set = set(compose.AMBIENT_SHELL)
+    work_set = set(compose.WORK_SHELL) | set(compose.GIT_WORK)
+    ambient: list[str] = []
+    work_shell: list[str] = []
+    role: list[str] = []
+    for pattern in allow:
+        inner = _pattern_inner(pattern)
+        # compose.py emits shell rules as exactly ``Tool(<table entry>)``, so
+        # membership in the tables is the classification; everything else --
+        # bare tool names, role-specific Bash globs, retagged bash_tool rules
+        # shown as they appear in the config -- is role authority.
+        if inner is not None and inner in ambient_set:
+            ambient.append(pattern)
+        elif inner is not None and inner in work_set:
+            work_shell.append(pattern)
+        else:
+            role.append(pattern)
+
+    deny = dedupe([*runtime.auto_deny, *runtime.permissions.deny])
+
+    peers = []
+    seen_peers: set[str] = set()
+    for cap in daemon.kernel.cap_list(container.name):
+        if cap.kind == "container" and cap.label.startswith("peer:"):
+            target = cap.label[len("peer:") :]
+            peers.append({"container": target, "rights": cap.rights})
+            seen_peers.add(target)
+    # Peer caps that named a container never registered stay config-only.
+    for peer in config.caps.peers:
+        if peer.container not in seen_peers:
+            peers.append({"container": peer.container, "rights": peer.rights})
+
+    boards = [
+        {
+            "topic": cap.detail.get("topic") or cap.label,
+            "rights": cap.rights,
+        }
+        for cap in daemon.kernel.cap_list(container.name)
+        if cap.kind == "board"
+    ]
+
+    return {
+        "container": container.name,
+        "allow": {"ambient": ambient, "work_shell": work_shell, "role": role},
+        "deny": deny,
+        "grants": daemon.container_grants(container.name),
+        "network": {
+            # sandbox.network = true hands over the host's network namespace
+            # wholesale: open and unproxied, which no rule list can constrain.
+            "open": config.sandbox.network,
+            "rules": [
+                {"name": rule.name, "pattern": rule.pattern}
+                for rule in config.caps.network
+            ],
+        },
+        "peers": peers,
+        "boards": boards,
+        "routing": {
+            "effective": container.effective_question_routing,
+            "config": runtime.question_routing,
+            "override": container.question_routing,
+        },
+    }
+
+
+# --------------------------------------------------------------------------
 # request bodies
 # --------------------------------------------------------------------------
 
@@ -257,6 +356,21 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
     async def grants(name: str) -> list[dict]:
         """A container's grant table: the "always allow" entries."""
         return daemon.container_grants(name)
+
+    @app.get("/api/containers/{name}/authority")
+    async def authority(name: str) -> dict:
+        """One assembled view of a container's real authority.
+
+        The capability graph renders kernel objects only, which is nearly empty
+        for operator-spawned containers; this adds the config's permission
+        allow/deny lists (grouped ambient / work-shell / role), the grant
+        table, the network rules, peer messaging, team boards and the effective
+        question routing. Computed lazily per request; never cached.
+        """
+        container = daemon.containers.get(name)
+        if container is None:
+            raise HTTPException(404, f"no such container: {name}")
+        return authority_view(daemon, container, _load_compose())
 
     @app.delete("/api/containers/{name}/grants/{grant_id}")
     async def revoke_grant(name: str, grant_id: str) -> dict:
