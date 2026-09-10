@@ -248,7 +248,7 @@ def cmd_up(args: argparse.Namespace) -> int:
             for config in configs:
                 await daemon.start(config.name)
 
-        app = create_app(daemon)
+        app = create_app(daemon, shutdown=lambda: setattr(server, "should_exit", True))
         server = uvicorn.Server(
             uvicorn.Config(
                 app,
@@ -330,6 +330,31 @@ def cmd_add(args: argparse.Namespace) -> int:
     for entry in added:
         state = "started" if entry.get("started") else "registered, not started"
         print(f"{entry['name']}: {state}")
+    return 0
+
+
+def cmd_down(args: argparse.Namespace) -> int:
+    """Stop every running container and shut the daemon down.
+
+    The counterpart of `up`: one command ends the whole session. Container
+    state on disk survives; the next `up` re-registers everything.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    base = f"http://{args.host}:{args.port}"
+    request = urllib.request.Request(f"{base}/api/down", method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        raise CapwrapError(f"down failed: {detail}") from None
+    except urllib.error.URLError as exc:
+        print(f"nothing answering on {base} ({exc.reason}) — already down.")
+        return 0
+    print(f"stopped {result.get('stopped', 0)} container(s); daemon is exiting.")
     return 0
 
 
@@ -590,6 +615,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-start", action="store_true", help="register it but do not launch it"
     )
     p.set_defaults(func=cmd_add)
+
+    p = sub.add_parser(
+        "down", help="stop every running container and shut the daemon down"
+    )
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8420)
+    p.set_defaults(func=cmd_down)
 
     p = sub.add_parser("tui", help="the terminal console: approvals, screens, attach")
     p.add_argument("--host", default="127.0.0.1")
