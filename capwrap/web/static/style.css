@@ -1228,10 +1228,52 @@ button:disabled {
 .spawn-row select {
   min-width: 160px;
 }
-.spawn-preview pre {
+.spawn-preview textarea {
   margin: 4px 0 0;
   max-height: 40vh;
+  min-height: 12em;
+  width: 100%;
   overflow: auto;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: pre;
+}
+.preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.preview-head .spacer {
+  flex: 1;
+}
+.dirty {
+  color: var(--warn);
+  font-size: 11px;
+}
+.with-doc {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.linkish {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.spawn-extra input {
+  width: 100%;
+}
+.doc-card {
+  width: min(560px, 90vw);
+}
+.doc-body {
+  max-height: 60vh;
+  white-space: pre-wrap;
 }
 .spawn-error {
   color: var(--danger);

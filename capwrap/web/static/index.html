@@ -314,11 +314,31 @@
           <div class="spawn-row">
             <label
               >Role
-              <select id="spawn-role" required></select>
+              <span class="with-doc">
+                <select id="spawn-role" required></select>
+                <button
+                  type="button"
+                  id="spawn-role-doc"
+                  class="linkish"
+                  title="Read this role's brief"
+                >
+                  read
+                </button>
+              </span>
             </label>
             <label
               >Persona
-              <select id="spawn-persona" required></select>
+              <span class="with-doc">
+                <select id="spawn-persona" required></select>
+                <button
+                  type="button"
+                  id="spawn-persona-doc"
+                  class="linkish"
+                  title="Read this persona's brief"
+                >
+                  read
+                </button>
+              </span>
             </label>
             <label
               >Agent
@@ -339,15 +359,50 @@
               </select>
             </label>
           </div>
+          <label class="spawn-extra"
+            >Custom instructions
+            <input
+              id="spawn-extra"
+              type="text"
+              placeholder="appended to the role+persona prompt"
+            />
+          </label>
           <div class="spawn-preview">
-            <div class="muted small">Config preview</div>
-            <pre id="spawn-preview" class="trace-payload">Loading…</pre>
+            <div class="preview-head">
+              <span class="muted small">Config</span>
+              <span id="spawn-dirty" class="dirty" hidden>edited</span>
+              <span class="spacer"></span>
+              <button type="button" id="spawn-regen" class="ghost small">
+                Regenerate
+              </button>
+            </div>
+            <textarea
+              id="spawn-preview"
+              class="trace-payload"
+              spellcheck="false"
+              rows="16"
+            ></textarea>
           </div>
           <div id="spawn-error" class="spawn-error" hidden></div>
           <div class="spawn-actions">
             <button id="spawn-cancel" class="ghost">Cancel</button>
             <button id="spawn-submit" class="primary">Spawn</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Role/persona library overlay: the markdown behind the spawn dialog's
+         picks, fetched from /api/compose/{role,persona}/{name}. -->
+    <div id="doc-overlay" class="modal" hidden>
+      <div class="modal-card doc-card">
+        <div class="panel-head">
+          <span id="doc-title" class="mono"></span>
+          <span class="spacer"></span>
+          <button id="doc-close" class="ghost" title="Close">×</button>
+        </div>
+        <div class="spawn-body">
+          <pre id="doc-body" class="trace-payload doc-body"></pre>
         </div>
       </div>
     </div>
