@@ -652,6 +652,20 @@ class Daemon:
         code = await container.session.terminate(grace=grace)
         return code
 
+    async def down(self) -> int:
+        """Stop every running container. The web layer exits the server after.
+
+        Returns how many containers were actually running. Registered but
+        stopped containers are left as they are: their state survives, and
+        the next `up` re-registers them anyway.
+        """
+        stopped = 0
+        for container in list(self.containers.values()):
+            if container.running:
+                await self.stop(container.name)
+                stopped += 1
+        return stopped
+
     async def destroy(
         self, name: str, remove_state: bool = False, force: bool = False
     ) -> dict:

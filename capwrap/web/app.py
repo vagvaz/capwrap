@@ -22,7 +22,7 @@ import contextlib
 import importlib.util
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
@@ -156,7 +156,7 @@ class ResizeBody(BaseModel):
     rows: int
 
 
-def create_app(daemon: Daemon) -> FastAPI:
+def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> FastAPI:
     app = FastAPI(
         title="capwrap", docs_url="/api/docs", openapi_url="/api/openapi.json"
     )
@@ -520,6 +520,19 @@ def create_app(daemon: Daemon) -> FastAPI:
     async def stop(name: str) -> dict:
         code = await daemon.stop(name)
         return {"container": name, "exit_code": code}
+
+    @app.post("/api/down")
+    async def down() -> dict:
+        """Stop every running container, then exit the server.
+
+        `capwrap down` calls this. The shutdown hook is the uvicorn server's
+        should_exit flag, passed in by `up`; without it (tests, embedded
+        uses) the containers still stop and the response reports the count.
+        """
+        stopped = await daemon.down()
+        if shutdown is not None:
+            shutdown()
+        return {"stopped": stopped, "shutdown": shutdown is not None}
 
     @app.post("/api/containers/{name}/signal")
     async def signal(name: str, sig: int = 2) -> dict:
