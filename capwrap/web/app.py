@@ -246,6 +246,10 @@ class SpawnBody(BaseModel):
     #: into the generated config's [runtime] section. None means "no opinion":
     #: a selected Project's routing is the default, else compose's own.
     routing: str | None = None
+    #: Optional model pin for this spawn only. Empty/None = the agent's own
+    #: current configuration decides (the live config is copied at spawn and
+    #: capwrap merges only policy on top). No capwrap-side model logic.
+    model: str | None = None
     #: An optional Project: where the worktree forks from, extra mounts, extra
     #: env, and the routing default. Resolved daemon-side; unknown → 400.
     project: str | None = None
@@ -601,6 +605,7 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         routing: str | None,
         project: str | None,
         extra_prompt: str = "",
+        model: str | None = None,
     ) -> tuple[Path, str]:
         """Run compose() for a role×persona×agent; return (config path, routing).
 
@@ -613,7 +618,13 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         chosen = routing or (resolved.routing if resolved else "") or "forward"
         kwargs = resolved.compose_kwargs() if resolved else {}
         path = module.compose(
-            role, persona, agent, routing=chosen, extra_prompt=extra_prompt, **kwargs
+            role,
+            persona,
+            agent,
+            routing=chosen,
+            extra_prompt=extra_prompt,
+            model=model,
+            **kwargs,
         )
         return path, chosen
 
@@ -670,6 +681,7 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         routing: str | None = None,
         project: str | None = None,
         extra_prompt: str = "",
+        model: str | None = None,
     ) -> dict:
         """The TOML compose.py would generate, without starting anything.
 
@@ -684,7 +696,7 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         module = _load_compose()
         _validate_compose(module, role, persona, agent)
         path, routing = _compose_generated(
-            module, role, persona, agent, routing, project, extra_prompt
+            module, role, persona, agent, routing, project, extra_prompt, model
         )
         return {
             "role": role,
@@ -751,6 +763,7 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
             body.routing,
             body.project,
             body.extra_prompt,
+            body.model,
         )
         return await _spawn_registered(load_config(path))
 

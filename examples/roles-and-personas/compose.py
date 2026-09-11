@@ -265,6 +265,7 @@ role_prompt = "{fname}.md"
 cwd       = "/work"
 tty       = true
 approvals = "{approvals}"
+{model}
 # Where the agent's plain questions surface: "forward" (the operator's console
 # Questions tab), "block" (no console card; the agent states its question in
 # its own terminal and ends its turn), or "auto" (autonomous mode: the
@@ -760,6 +761,7 @@ def compose(
     base: str | None = None,
     extra_mounts: "list[dict] | None" = None,
     extra_env: "list[str] | None" = None,
+    model: str | None = None,
 ) -> pathlib.Path:
     """Build one config.
 
@@ -929,6 +931,9 @@ def compose(
             f'[[caps.peers]]\ncontainer = "{p}"\nrights = ["send"]\n' for p in peers
         )
 
+    # A model line only when the operator chose one at spawn; absent, the
+    # agent's own current configuration (merged at prepare) decides.
+    model_line = f'model     = "{model}"' if model else ""
     config = TEMPLATE.format(
         role=role,
         persona=persona,
@@ -936,6 +941,7 @@ def compose(
         agent=agent,
         routing=routing,
         approvals=setup.get("approvals", "capwrap"),
+        model=model_line,
         command=quote(setup["command"]),
         summary=spec["summary"],
         env=quote(env_vars),

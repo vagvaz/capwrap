@@ -2771,6 +2771,7 @@ function refreshSpawnPreview(force = false) {
     const routing = $("spawn-routing").value;
     const project = $("spawn-project").value;
     const extra = $("spawn-extra").value;
+    const model = $("spawn-model").value;
     if (!role || !persona || !agent) return;
     $("spawn-preview").value = "Loading…";
     try {
@@ -2780,7 +2781,8 @@ function refreshSpawnPreview(force = false) {
           `&agent=${encodeURIComponent(agent)}` +
           `&routing=${encodeURIComponent(routing)}` +
           (project ? `&project=${encodeURIComponent(project)}` : "") +
-          (extra ? `&extra_prompt=${encodeURIComponent(extra)}` : ""),
+          (extra ? `&extra_prompt=${encodeURIComponent(extra)}` : "") +
+          (model ? `&model=${encodeURIComponent(model)}` : ""),
       );
       // The operator may have started typing while the fetch ran; their text
       // wins either way.
@@ -2874,6 +2876,7 @@ function wireSpawn() {
         const routing = $("spawn-routing").value;
         const project = $("spawn-project").value;
         const extra = $("spawn-extra").value;
+        const model = $("spawn-model").value;
         body = {
           role,
           persona,
@@ -2881,6 +2884,7 @@ function wireSpawn() {
           routing,
           ...(project ? { project } : {}),
           ...(extra ? { extra_prompt: extra } : {}),
+          ...(model ? { model } : {}),
         };
       }
       await api("/api/spawn", {
