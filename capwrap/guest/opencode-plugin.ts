@@ -213,6 +213,57 @@ function askDaemon(
 export default {
   id: "capwrap",
   setup: async (ctx: any) => {
+    // The agent's native `question` tool asks in the local TUI, which no
+    // routing can see: the question never reaches the daemon, so the
+    // container's question routing (forward / block / auto) cannot act on
+    // it and the console's Questions tab never shows it. Intercept the
+    // call before execution and route it through the daemon instead. The
+    // answer text -- the operator's reply, the auto-answer, or the block
+    // guidance -- rides back as the tool's error message, which is what
+    // the model reads. pi has no native question tool (its questions are
+    // `capctl ask` and already reach the daemon); claude's AskUserQuestion
+    // stays native by design.
+    try {
+      await ctx.tool.hook("execute.before", async (input: any, output: any) => {
+        if (String(input?.tool ?? "") !== "question") return;
+        const questions = Array.isArray(output?.args?.questions)
+          ? output.args.questions
+          : [];
+        if (!questions.length) return;
+        const text = questions
+          .map((q: any) =>
+            typeof q === "string" ? q : String(q?.question ?? ""),
+          )
+          .filter(Boolean)
+          .join("\n");
+        if (!text) return;
+        const options = questions.flatMap((q: any) => {
+          if (typeof q !== "object" || q === null || !Array.isArray(q.options))
+            return [];
+          return q.options.map((o: any) =>
+            typeof o === "string" ? o : String(o?.label ?? o ?? ""),
+          );
+        });
+        let result: any;
+        try {
+          result = await askDaemon(text, {
+            container: CONTAINER,
+            session: String(input?.sessionID ?? ""),
+            ...(options.length ? { options } : {}),
+          });
+        } catch {
+          return; // daemon unreachable: fall through to the native question UI
+        }
+        const answer = result?.message || result?.reason || "";
+        // Any routed answer (operator text, auto-answer, block guidance)
+        // becomes the tool's error message. A timeout with no text falls
+        // through to the native UI.
+        if (answer) throw new Error(answer);
+      });
+    } catch {
+      // Older builds may not expose the tool hook; questions stay native.
+    }
+
     await ctx.permission.hook("evaluate", async (event: any) => {
       const tool = String(event.action ?? "?");
       const resources = Array.isArray(event.resources)
