@@ -55,6 +55,11 @@ class AgentProfile:
     hook_protocol: str | None  # "claude" | "opencode2" | "pi" | None
     #: Guest dest for the capctl skill, or None if unknown/unread.
     skill_path: str | None
+    #: Guest dest for a v1 question shim plugin, or None. v1's plugin API
+    #: exposes tool hooks but no permission hooks, so this shim routes the
+    #: native `question` tool to the daemon (question routing and the
+    #: console's Questions tab) while permissions stay native.
+    plugin_path: str | None
     #: Host-side, non-interactive command that explains a permission request
     #: with this agent's own harness -- the binary and credentials the
     #: operator already has, never a new dependency.  "{prompt}" and
@@ -70,6 +75,7 @@ _PROFILES: dict[str, AgentProfile] = {
         permission_encoder="claude",
         hook_protocol="claude",
         skill_path=f"{GUEST_HOME}/.claude/skills/capwrap/SKILL.md",
+        plugin_path=None,
         # Print mode with the mutating tools denied: the explainer describes,
         # it must not act.  Best-effort deny-list, not a sandbox -- a tool
         # added to a future claude version is not covered until it is listed
@@ -95,6 +101,7 @@ _PROFILES: dict[str, AgentProfile] = {
         permission_encoder="opencode",
         hook_protocol=None,
         skill_path=f"{GUEST_HOME}/.config/opencode/skills/capwrap/SKILL.md",
+        plugin_path=f"{GUEST_HOME}/.config/opencode/plugins/capwrap.ts",
         # v1's CLI has no tools-off flag for `run`; the explainer runs it in a
         # scratch cwd with a prompt that demands a direct answer (see
         # explain.py).  v2 has no `run` subcommand at all, so both opencode
@@ -117,6 +124,7 @@ _PROFILES: dict[str, AgentProfile] = {
         permission_encoder="opencode",
         hook_protocol="opencode2",
         skill_path=f"{GUEST_HOME}/.config/opencode2/skills/capwrap/SKILL.md",
+        plugin_path=None,
         explain_argv=("opencode", "run", "--model", "{model}", "{prompt}"),
     ),
     "pi": AgentProfile(
@@ -125,6 +133,7 @@ _PROFILES: dict[str, AgentProfile] = {
         permission_encoder=None,
         hook_protocol="pi",
         skill_path=f"{GUEST_HOME}/.pi/agent/skills/capwrap/SKILL.md",
+        plugin_path=None,
         # --no-tools is the hard guarantee: the explainer must not act.
         # --thinking mirrors the example's runtime command: some models
         # (glm-5.3-flash) refuse to run without an explicit level.
@@ -146,6 +155,7 @@ _PROFILES: dict[str, AgentProfile] = {
         permission_encoder=None,
         hook_protocol=None,
         skill_path=None,
+        plugin_path=None,
         explain_argv=None,
     ),
 }
