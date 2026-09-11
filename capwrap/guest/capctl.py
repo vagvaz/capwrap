@@ -781,10 +781,16 @@ def cmd_ask(args):
         emit(result, True)
     else:
         decision = result.get("decision", "pending")
-        reason = result.get("reason") or ""
-        print(f"{decision}{': ' + reason if reason else ''}")
-    # Exit non-zero on denial, so `capctl ask ... && do-the-thing` works.
-    if result.get("decision") not in ("allow", None):
+        # The operator's answer text rides in `message` (the explain path);
+        # `reason` is the legacy field for allow/reject.  Print whichever is
+        # present so a question's answer is not silently dropped.
+        message = result.get("message") or result.get("reason") or ""
+        print(f"{decision}{': ' + message if message else ''}")
+    # Exit non-zero on a real denial or no-answer, so
+    # `capctl ask ... && do-the-thing` works.  "explain" (the operator's
+    # answer text) and routing guidance ("block"/"auto") are answers, not
+    # denials — the agent should read them and carry on.
+    if result.get("decision") in ("reject", "deny", "timeout", "abandoned"):
         sys.exit(1)
 
 

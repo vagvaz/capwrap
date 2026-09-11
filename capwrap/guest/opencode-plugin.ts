@@ -226,8 +226,13 @@ export default {
     try {
       await ctx.tool.hook("execute.before", async (input: any, output: any) => {
         if (String(input?.tool ?? "") !== "question") return;
-        const questions = Array.isArray(output?.args?.questions)
-          ? output.args.questions
+        // v2 invokes the hook with a single event payload ({tool, sessionID,
+        // agent, messageID, id, input}) — the tool's arguments ride in the
+        // payload's `input` field.  The v1-style contract passed them as
+        // `output.args`.  Accept both so the interception fires on either.
+        const args = (output && output.args) || (input && input.input) || {};
+        const questions = Array.isArray(args && args.questions)
+          ? args.questions
           : [];
         if (!questions.length) return;
         const text = questions
