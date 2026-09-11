@@ -969,6 +969,22 @@ def compose(
         ),
     )
     path = BUILT / f"{fname}.toml"
+    # The host ~/.pi/agent copy carries host-specific breakage (a dead serena
+    # MCP that kills a fresh boot, a stale defaultModel), patched by two
+    # override files that live in built/ next to the generated configs. Emit
+    # the overrides automatically so a regeneration cannot silently lose
+    # them -- the recurring failure was hand-patches wiped by a re-run.
+    if agent == "pi" and (BUILT / "pi-settings.json").is_file():
+        config += (
+            "\n# Local overrides (host-specific, kept out of this file):\n"
+            "# - the host ~/.pi/agent copy references a dead local MCP (serena)\n"
+            "#   that kills a fresh pi boot, and its defaultModel is failing\n"
+            "#   provider-side.\n"
+            '[[files]]\ndest = "/home/agent/.pi/agent/mcp.json"\n'
+            'src  = "pi-mcp.json"\n\n'
+            '[[files]]\ndest = "/home/agent/.pi/agent/settings.json"\n'
+            'src  = "pi-settings.json"\n'
+        )
     path.write_text(config)
     return path
 

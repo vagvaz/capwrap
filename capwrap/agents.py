@@ -55,10 +55,12 @@ class AgentProfile:
     hook_protocol: str | None  # "claude" | "opencode2" | "pi" | None
     #: Guest dest for the capctl skill, or None if unknown/unread.
     skill_path: str | None
-    #: Guest dest for a v1 question shim plugin, or None. v1's plugin API
-    #: exposes tool hooks but no permission hooks, so this shim routes the
-    #: native `question` tool to the daemon (question routing and the
-    #: console's Questions tab) while permissions stay native.
+    #: Whether the v1 question shim applies to this profile: v1's plugin
+    #: API exposes tool hooks but no permission hooks, so its shim routes
+    #: the native `question` tool to the daemon (question routing, the
+    #: console's Questions tab) while permissions stay native. The shim
+    #: file ships inside the bound guest dir at /opt/capwrap; the profile
+    #: value doubles as the marker that the settings entry should name it.
     plugin_path: str | None
     #: Host-side, non-interactive command that explains a permission request
     #: with this agent's own harness -- the binary and credentials the
@@ -433,6 +435,15 @@ def _opencode_settings(profile: AgentProfile, config: ContainerConfig) -> Inject
             name: {"model": config.runtime.model}
             for name in ("build", "plan", "general", "orchestrator")
         }
+    if profile.plugin_path:
+        # v1 loads plugins only from its config's `plugins` array (file://
+        # entries) or the project's .opencode/plugins/ dir — never the global
+        # plugins dir. The shim is already visible in-container at /opt/capwrap
+        # (the guest dir binds there in every sandbox), so the entry points at
+        # that copy. v1's plugin API has tool hooks but no permission hooks:
+        # this routes the native `question` tool to the daemon (question
+        # routing, the console's Questions tab); permissions stay native.
+        settings["plugins"] = ["file:///opt/capwrap/opencode-v1-plugin.ts"]
 
     assert profile.settings_path is not None, "opencode encoder implies a settings file"
     user = _read_user_settings(config, profile.settings_path)
@@ -441,6 +452,12 @@ def _opencode_settings(profile: AgentProfile, config: ContainerConfig) -> Inject
         for key, value in settings.items():
             if key == "instructions" and isinstance(merged.get("instructions"), list):
                 merged["instructions"] = list(merged["instructions"]) + list(value)
+            elif key == "plugins" and isinstance(merged.get("plugins"), list):
+                # The operator's plugins join the user's own list, deduped, in
+                # theirs first: capwrap adds a shim, never takes the slot.
+                merged["plugins"] = list(merged["plugins"]) + [
+                    entry for entry in value if entry not in merged["plugins"]
+                ]
             elif (
                 key == "agent"
                 and isinstance(merged.get("agent"), dict)
