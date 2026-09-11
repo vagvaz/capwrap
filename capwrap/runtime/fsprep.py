@@ -105,16 +105,6 @@ def prepare(
             # agent config dir for credentials does not shadow it.
             prepared.files.append((skill, profile.skill_path))
 
-    if profile.plugin_path:
-        # v1's question shim: the plugin API intercepts the native `question`
-        # tool and routes it through the daemon, so the container's question
-        # routing governs it and the console's Questions tab shows it.
-        plugin = (
-            Path(__file__).resolve().parent.parent / "guest" / "opencode-v1-plugin.ts"
-        )
-        if plugin.is_file():
-            prepared.files.append((plugin, profile.plugin_path))
-
     return prepared
 
 

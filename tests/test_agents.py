@@ -230,6 +230,7 @@ def test_opencode_permission_injection_lowercases_tools(tmp_path):
     assert len(injections) == 1
     assert injections[0].dest == f"{GUEST_HOME}/.config/opencode/opencode.json"
     assert loads(injections[0]) == {
+        "plugins": ["file:///opt/capwrap/opencode-v1-plugin.ts"],
         "permission": {
             "read": "allow",
             "bash": {"git *": "allow", "sudo *": "deny"},
@@ -365,7 +366,9 @@ def test_opencode2_capwrap_permissions_compose_with_opencode_json(tmp_path):
 
     settings = [i for i in injections if i.dest.endswith("opencode.json")]
     assert len(settings) == 1
-    assert loads(settings[0]) == {"permission": {"read": "allow"}}
+    assert loads(settings[0]) == {
+        "permission": {"read": "allow"},
+    }
 
 
 def test_opencode2_capwrap_role_prompt_gets_instructions_only(tmp_path):
@@ -400,6 +403,7 @@ def test_opencode_native_permissions_and_role_prompt_share_one_file(tmp_path):
     settings = [i for i in injections if i.dest.endswith("opencode.json")]
     assert len(settings) == 1
     assert loads(settings[0]) == {
+        "plugins": ["file:///opt/capwrap/opencode-v1-plugin.ts"],
         "permission": {"read": "allow"},
         "instructions": [GUEST_ROLE_PROMPT],
     }
