@@ -487,14 +487,34 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
                     **board.describe(),
                     "holders": daemon.kernel.board_holders(board.oid),
                     "recent": board.posts[-max(1, limit) :],
-                    # No per-operator "last seen" state exists, so unread is
-                    # pragmatically the whole topic: a dot that says "there is
-                    # something here you have not necessarily read".
-                    "unread": len(board.posts),
+                    # Real cursors now: unread is "newer than the highest post
+                    # the operator marked seen", over all retained posts, not
+                    # just this page -- see daemon.boards_seen_summary.
+                    **daemon.boards_seen_summary(board),
                 }
                 for board in daemon.kernel.boards()
             ],
+            # Root total so the tab pill (when one exists) does not have to
+            # sum per-board numbers client-side on every render.
+            "total_unread": sum(
+                daemon.boards_seen_summary(board)["unread"]
+                for board in daemon.kernel.boards()
+            ),
         }
+
+    @app.post("/api/boards/{oid}/seen")
+    async def board_seen(oid: int, body: dict) -> dict:
+        """Mark the operator as having seen board posts through `through`.
+
+        `through` is an explicit post id -- the UI sends the highest id it is
+        showing, so the acknowledgement matches exactly what the operator saw
+        rather than "whatever exists now" (which could include a post that
+        arrived between render and click).
+        """
+        try:
+            return daemon.mark_board_seen(oid, body.get("through", 0))
+        except KeyError:
+            raise HTTPException(404, f"no such board: {oid}") from None
 
     @app.get("/api/caps/{name}")
     async def caps(name: str) -> list[dict]:

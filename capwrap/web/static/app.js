@@ -2200,7 +2200,14 @@ async function renderBoards() {
           .join("") ||
         '<span class="muted small">nobody but the operator</span>';
 
-      const posts = (board.recent || [])
+      const recent = board.recent || [];
+      // The one post that "mark seen" can acknowledge: the newest one the
+      // operator is actually looking at, so the click means exactly what it
+      // says rather than "whatever has arrived by now".
+      const highestShown = recent.length
+        ? Math.max(...recent.map((p) => p.id))
+        : 0;
+      const posts = recent
         .slice()
         .reverse()
         .map(
@@ -2214,12 +2221,24 @@ async function renderBoards() {
         )
         .join("");
 
+      // Badge matches the mailbox pill: dot + count only when there is
+      // something genuinely newer than the operator's cursor, quiet otherwise.
+      const badge = board.unread
+        ? `<span class="mail-badge board-unread">● ${board.unread} new</span>`
+        : "";
+      const markSeen = highestShown
+        ? `<button class="ghost small board-mark-seen" data-oid="${board.oid}"
+             data-through="${highestShown}">mark seen through #${highestShown}</button>`
+        : "";
+
       return `
       <div class="cap-group">
-        <h3>${escapeHtml(board.topic)}</h3>
+        <h3>${escapeHtml(board.topic)} ${badge}</h3>
         <p class="muted small">
           created by ${escapeHtml(board.created_by || "?")} ·
-          ${board.posts} post${board.posts === 1 ? "" : "s"}
+          ${board.posts} post${board.posts === 1 ? "" : "s"} ·
+          seen through #${board.seen_through || 0}
+          ${markSeen}
         </p>
         <div class="rights-picker">${holders}</div>
         ${
@@ -2230,6 +2249,25 @@ async function renderBoards() {
       </div>`;
     })
     .join("");
+
+  // Wire the mark-seen buttons after the innerHTML reset, and re-render on
+  // success so the badge and cursor line move together with the server's
+  // view of what happened. No background fetching: the boards tab only
+  // refreshes when the operator opens or explicitly re-renders it.
+  host.querySelectorAll(".board-mark-seen").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const { oid, through } = btn.dataset;
+      try {
+        await api(`/api/boards/${oid}/seen`, {
+          method: "POST",
+          body: JSON.stringify({ through: Number(through) }),
+        });
+        renderBoards();
+      } catch (err) {
+        alert(`Could not mark seen: ${err.message}`);
+      }
+    });
+  });
 }
 
 // ------------------------------------------------------------------ teams

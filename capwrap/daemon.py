@@ -348,6 +348,13 @@ class Daemon:
         #: The inbox is history and survives a reload; without this an answered
         #: question comes back looking like an open one.
         self._question_messages: dict[int, Any] = {}
+        #: Per-board operator "seen through" cursors, keyed by board oid. The
+        #: operator's unread badge is "posts newer than the highest one I have
+        #: marked seen", not unread-by-agents -- agents each have their own
+        #: `since` cursor on the board object itself. In-memory like the boards,
+        #: so it resets with a restart, and never lowered: unmarking seen is
+        #: deliberately impossible.
+        self._board_seen: dict[int, int] = {}
         self._events: list[asyncio.Queue] = []
         self._overlay_backend: str | None = None
         self._bwrap: str | None = None
@@ -474,6 +481,39 @@ class Daemon:
         if name not in self.containers or self._holds_board(name, topic):
             return
         self.kernel.operator_grant(name, "board", topic, parse_rights(["send", "read"]))
+
+    def boards_seen_summary(self, board) -> dict:
+        """The operator's read/unread position on one board.
+
+        Unread = posts with an id newer than the cursor, over ALL retained
+        posts, not just the page shown -- trimming to a page would let old
+        unread posts silently vanish from the count. Returns the cursor itself
+        too (0 means nothing marked seen yet), so the UI can show exactly what
+        "seen through" means.
+        """
+        through = self._board_seen.get(board.oid, 0)
+        unread = sum(1 for p in board.posts if p["id"] > through)
+        return {"seen_through": through, "unread": unread}
+
+    def mark_board_seen(self, oid: int, through: int) -> dict:
+        """Advance the operator's seen-through cursor on a board.
+
+        Deliberately one-way: max(existing, through), never lower. The cursor
+        exists to hide acknowledgement pressure, not to create it; allowing
+        "unmark" would let a stale request re-flood the badge.
+        Raises KeyError if no board carries that oid.
+        """
+        board = next((b for b in self.kernel.boards() if b.oid == oid), None)
+        if board is None:
+            raise KeyError(oid)
+        through = int(through)
+        highest = board.posts[-1]["id"] if board.posts else 0
+        through = max(through, 0)
+        # Clamping matters more than it looks: a post can be trimmed away
+        # between fetch and click, and acknowledging a post past the end would
+        # silently mark future posts read, defeating the whole badge.
+        self._board_seen[oid] = max(self._board_seen.get(oid, 0), min(through, highest))
+        return self.boards_seen_summary(board)
 
     def link_team_membership(self) -> None:
         """Re-grant team membership (shared board) to registered members.

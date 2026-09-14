@@ -341,6 +341,14 @@ h2:first-child {
   color: var(--text);
   white-space: nowrap;
 }
+/* Board unread pill: same pill shape as the mailbox badge, but loud enough
+   to say "someone posted since you last looked" -- a dot plus a count, on
+   the header line of the board that has it. */
+.board-unread {
+  background: var(--bg-inset);
+  border-color: var(--accent);
+  color: var(--text);
+}
 .node .meta {
   margin-left: auto;
   font-size: 11px;
