@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>capwrap — example B</title>
+    <style>
+      :root {
+        --bg: #0e1116;
+        --bg-raised: #161b22;
+        --bg-inset: #0a0d12;
+        --border: #262d38;
+        --text: #d7dee8;
+        --text-dim: #8b95a5;
+        --accent: #4c9aff;
+        --ok: #3fb950;
+        --warn: #d29922;
+        --danger: #f85149;
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas,
+          monospace;
+        --radius: 7px;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .mono { font-family: var(--mono); font-size: 13px; }
+      .muted { color: var(--text-dim); }
+      .small { font-size: 12px; }
+      .hint { color: var(--text-dim); font-size: 11.5px; line-height: 1.5; margin: 6px 0 0; }
+      a { color: var(--accent); }
+
+      button, select, textarea, input[type="text"] {
+        font: inherit; color: var(--text); background: var(--bg-inset);
+        border: 1px solid var(--border); border-radius: var(--radius);
+        padding: 6px 10px; font-size: 12.5px;
+      }
+      button { cursor: pointer; }
+      button:hover { border-color: var(--accent); }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button.ghost { background: none; font-size: 12.5px; padding: 5px 10px; }
+      button.small { font-size: 11.5px; padding: 3px 8px; }
+      .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-inset); }
+      .pill-ok { color: var(--ok); border-color: var(--ok); }
+      .pill-quiet { color: var(--text-dim); }
+
+      .reviewbar {
+        flex: 0 0 auto; display: flex; gap: 10px; align-items: center;
+        padding: 4px 16px; background: var(--bg-inset);
+        border-bottom: 1px solid var(--border);
+        color: var(--text-dim); font-size: 11.5px;
+      }
+      .topbar {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 8px 16px; background: var(--bg-raised);
+        border-bottom: 1px solid var(--border); flex: 0 0 auto;
+      }
+      .brand { display: flex; align-items: center; gap: 10px; }
+      .logo { color: var(--accent); font-size: 18px; }
+      .topbar-right { display: flex; align-items: center; gap: 10px; }
+
+      .layout { flex: 1 1 auto; display: flex; min-height: 0; min-width: 0; }
+      .dock-left, .dock-right { background: var(--bg-raised); overflow-y: auto; padding: 0 14px 14px; }
+      .dock-left { flex: 0 0 260px; border-right: 1px solid var(--border); }
+      .dock-right { flex: 0 0 320px; border-left: 1px solid var(--border); }
+      .content {
+        flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column;
+        background: var(--bg-raised);
+      }
+      .panel-bar {
+        position: sticky; top: 0; z-index: 2; display: flex; align-items: center;
+        gap: 8px; margin: 0 -14px 8px; padding: 7px 12px;
+        background: var(--bg-raised); border-bottom: 1px solid var(--border);
+        font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em;
+        color: var(--text-dim);
+      }
+      h2 {
+        font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em;
+        color: var(--text-dim); margin: 18px 0 8px;
+        display: flex; align-items: center; gap: 8px;
+      }
+      .node {
+        display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+        border-radius: var(--radius); cursor: pointer; border: 1px solid transparent;
+      }
+      .node:hover { background: var(--bg-inset); }
+      .node.selected { background: var(--bg-inset); border-color: var(--accent); }
+      .node .name { font-family: var(--mono); font-size: 13px; }
+      .node .meta { margin-left: auto; font-size: 11px; color: var(--text-dim); }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); flex: 0 0 auto; }
+      .dot.running { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+      .compose { display: flex; flex-direction: column; gap: 6px; }
+      .compose textarea { resize: vertical; }
+      .targets { display: flex; flex-wrap: wrap; gap: 6px; }
+      .target {
+        display: flex; gap: 5px; align-items: center; padding: 2px 7px;
+        border: 1px solid var(--border); border-radius: 999px;
+        background: var(--bg-inset); font-family: var(--mono); font-size: 11.5px;
+        color: var(--text-dim); cursor: pointer;
+      }
+      .target.on { color: var(--text); border-color: var(--accent); }
+      .target input { accent-color: var(--accent); margin: 0; }
+
+      /* inbox */
+      .inbox-tabs { display: flex; gap: 4px; margin: 8px 0; }
+      .inbox-tabs button {
+        flex: 1; display: flex; align-items: center; justify-content: center;
+        gap: 6px; background: none; border: 1px solid var(--border);
+        border-radius: var(--radius); color: var(--text-dim); font-size: 12px;
+        padding: 5px 8px; cursor: pointer; white-space: nowrap;
+      }
+      .inbox-tabs button.active { color: var(--text); border-color: var(--accent); background: var(--bg-inset); }
+      .approval {
+        background: var(--bg-inset); border: 1px solid var(--accent);
+        border-radius: var(--radius); padding: 10px;
+      }
+      .approval .who { font-family: var(--mono); font-size: 12px; color: var(--accent); margin-bottom: 5px; }
+      .approval .q { margin-bottom: 8px; word-break: break-word; }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+      .chip {
+        font-family: var(--mono); font-size: 11.5px; padding: 3px 9px;
+        border-radius: 999px; background: var(--bg); border: 1px solid var(--border);
+        color: var(--text); cursor: pointer;
+      }
+      .chip:hover { border-color: var(--accent); color: var(--accent); }
+      details.raw { margin: 0 0 8px; }
+      details.raw summary { cursor: pointer; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+      details.raw summary:hover { color: var(--text); }
+      details.raw pre {
+        margin: 6px 0 0; font-family: var(--mono); font-size: 11px;
+        color: var(--text-dim); background: var(--bg); border: 1px solid var(--border);
+        border-radius: 4px; padding: 6px; overflow: auto;
+      }
+      .reply-text { width: 100%; resize: vertical; margin: 0 0 8px; }
+      .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+      .messages { color: var(--text-dim); font-size: 12.5px; }
+
+      /* the stepped flow */
+      .flow-head {
+        display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+        border-bottom: 1px solid var(--border); flex: 0 0 auto;
+      }
+      .steps {
+        display: flex; gap: 6px; padding: 10px 12px;
+        border-bottom: 1px solid var(--border); flex: 0 0 auto;
+      }
+      .step {
+        flex: 1; min-width: 0; text-align: left; background: var(--bg-inset);
+        border: 1px solid var(--border); border-radius: var(--radius);
+        padding: 7px 10px; cursor: pointer; display: flex;
+        flex-direction: column; gap: 2px;
+      }
+      .step:hover { border-color: var(--text-dim); }
+      .step .n {
+        font-family: var(--mono); font-size: 10.5px; color: var(--text-dim);
+        text-transform: uppercase; letter-spacing: 0.07em;
+      }
+      .step .t { font-size: 13px; color: var(--text); }
+      .step .sum {
+        font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .step.active { border-color: var(--accent); background: var(--bg-raised); }
+      .step.done .n::after { content: " ✓"; color: var(--ok); }
+
+      .flow { flex: 1 1 auto; min-height: 0; display: flex; gap: 14px; padding: 12px; }
+      .flow-main {
+        flex: 1 1 auto; min-width: 0; overflow-y: auto;
+        display: flex; flex-direction: column;
+      }
+      .flow-rail { flex: 0 0 300px; min-height: 0; display: flex; flex-direction: column; }
+      .flow-rail textarea {
+        flex: 1 1 auto; min-height: 0; width: 100%; resize: none;
+        font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+        white-space: pre; overflow: auto; margin-top: 6px;
+      }
+      .stepbody { display: none; flex-direction: column; gap: 12px; flex: 1 1 auto; min-height: 0; }
+      .stepbody.active { display: flex; }
+      /* Columns collapse as the working area narrows, so role names never
+         truncate against the config rail. */
+      .who-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 10px;
+      }
+      .grouplist { display: flex; flex-direction: column; gap: 6px; }
+      .lab {
+        font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+        color: var(--text-dim); margin: 0 0 2px;
+      }
+      .rcard {
+        display: flex; gap: 7px; align-items: center; padding: 6px 9px;
+        border: 1px solid var(--border); border-radius: 6px;
+        background: var(--bg-inset); cursor: pointer;
+        font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+      }
+      .rcard:hover { border-color: var(--text-dim); }
+      .rcard input { accent-color: var(--accent); margin: 0; }
+      .rcard:has(input:checked) { border-color: var(--accent); color: var(--text); background: var(--bg-raised); }
+      .rcard .linkish { margin-left: auto; }
+      .rcard.col { flex-direction: column; align-items: flex-start; gap: 3px; }
+      .rcard.col .top { display: flex; gap: 7px; align-items: center; }
+      .rcard .meta { font-size: 11px; color: var(--text-dim); }
+      .linkish {
+        background: none; border: none; padding: 0; color: var(--accent);
+        font-size: 11px; cursor: pointer; text-decoration: underline;
+      }
+      .fieldrow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .field { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--text-dim); min-width: 0; }
+      .seg {
+        display: inline-flex; border: 1px solid var(--border);
+        border-radius: var(--radius); background: var(--bg-inset);
+        overflow: hidden; width: 100%;
+      }
+      .seg label { flex: 1; position: relative; }
+      .seg input { position: absolute; opacity: 0; inset: 0; }
+      .seg span {
+        display: block; text-align: center; padding: 5px 8px;
+        font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+        cursor: pointer; border-left: 1px solid var(--border);
+      }
+      .seg label:first-child span { border-left: none; }
+      .seg input:checked + span {
+        color: var(--text); background: var(--bg-raised);
+        box-shadow: inset 0 0 0 1px var(--accent);
+      }
+      .seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
+      .step-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: auto; padding-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <div class="reviewbar">
+      <span>Example B — spawn as three steps: who, where, how it asks</span>
+      <span style="flex: 1"></span>
+      <a href="index.html">index</a>
+      <span>static mock, steps are clickable</span>
+    </div>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">▣</span>
+        <strong>capwrap</strong>
+        <span class="muted">capability-governed agent containers</span>
+      </div>
+      <div class="topbar-right">
+        <span class="pill pill-ok">live</span>
+        <button class="ghost">Spawn</button>
+        <button class="ghost">Team</button>
+        <button class="ghost">⊞</button>
+        <button class="ghost">◐</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="dock-left">
+        <div class="panel-bar">Containers</div>
+        <div class="node selected">
+          <span class="dot running"></span>
+          <span class="name">route-check</span>
+          <span class="meta">2 caps</span>
+        </div>
+        <div class="node">
+          <span class="dot running"></span>
+          <span class="name">parser-writer</span>
+          <span class="meta">5 caps</span>
+        </div>
+        <div class="node">
+          <span class="dot"></span>
+          <span class="name">test-runner</span>
+          <span class="meta">exited</span>
+        </div>
+
+        <h2>Send a message</h2>
+        <form class="compose">
+          <div class="targets">
+            <label class="target on"><input type="checkbox" checked />route-check</label>
+            <label class="target"><input type="checkbox" />parser-writer</label>
+          </div>
+          <textarea rows="3" placeholder="Message, delivered to each agent's mailbox…"></textarea>
+          <button type="submit">Send as operator</button>
+        </form>
+      </aside>
+
+      <section class="content">
+        <div class="flow-head">
+          <span class="mono">Spawn an agent</span>
+          <span class="muted small">three picks, one screen each</span>
+          <span style="flex: 1"></span>
+          <button class="ghost" title="Close">×</button>
+        </div>
+
+        <div class="steps">
+          <button class="step done" data-step="1"
+            title="accessibility-reviewer · cost-conscious · claude">
+            <span class="n">1</span>
+            <span class="t">Who</span>
+            <span class="sum">accessibility-reviewer · cost-conscious · claude</span>
+          </button>
+          <button class="step done" data-step="2" title="capwrap · base main">
+            <span class="n">2</span>
+            <span class="t">Where</span>
+            <span class="sum">capwrap · base main</span>
+          </button>
+          <button class="step active" data-step="3" title="forward · standard">
+            <span class="n">3</span>
+            <span class="t">How it asks</span>
+            <span class="sum">forward · standard</span>
+          </button>
+        </div>
+
+        <div class="flow">
+          <div class="flow-main">
+            <!-- step 1: who -->
+            <div class="stepbody" data-step="1">
+              <div class="who-grid">
+                <div>
+                  <div class="lab">Role</div>
+                  <div class="grouplist">
+                    <label class="rcard"><input type="radio" name="role" checked />accessibility-reviewer<button type="button" class="linkish">read</button></label>
+                    <label class="rcard"><input type="radio" name="role" />parser-writer<button type="button" class="linkish">read</button></label>
+                    <label class="rcard"><input type="radio" name="role" />test-runner<button type="button" class="linkish">read</button></label>
+                    <label class="rcard"><input type="radio" name="role" />docs-writer<button type="button" class="linkish">read</button></label>
+                  </div>
+                </div>
+                <div>
+                  <div class="lab">Persona</div>
+                  <div class="grouplist">
+                    <label class="rcard"><input type="radio" name="persona" checked />cost-conscious<button type="button" class="linkish">read</button></label>
+                    <label class="rcard"><input type="radio" name="persona" />thorough<button type="button" class="linkish">read</button></label>
+                    <label class="rcard"><input type="radio" name="persona" />quick<button type="button" class="linkish">read</button></label>
+                  </div>
+                </div>
+                <div>
+                  <div class="lab">Agent</div>
+                  <div class="grouplist">
+                    <label class="rcard"><input type="radio" name="agent" checked />claude</label>
+                    <label class="rcard"><input type="radio" name="agent" />opencode</label>
+                    <label class="rcard"><input type="radio" name="agent" />codex</label>
+                  </div>
+                </div>
+              </div>
+              <div class="fieldrow">
+                <label class="field">Model
+                  <input type="text" placeholder="empty = the agent's own current configuration" />
+                </label>
+                <label class="field">Custom instructions
+                  <input type="text" placeholder="appended to the role+persona prompt" />
+                </label>
+              </div>
+              <div class="step-actions">
+                <button class="primary" data-goto="2">Continue</button>
+              </div>
+            </div>
+
+            <!-- step 2: where -->
+            <div class="stepbody" data-step="2">
+              <div>
+                <div class="lab">Project</div>
+                <div class="grouplist">
+                  <label class="rcard col">
+                    <span class="top"><input type="radio" name="project" />(default)</span>
+                    <span class="meta">daemon workdir · no extra mounts · no routing default</span>
+                  </label>
+                  <label class="rcard col">
+                    <span class="top"><input type="radio" name="project" checked />capwrap</span>
+                    <span class="meta">/home/vagvaz/Projects/capwrap · base main · routing default forward</span>
+                  </label>
+                  <label class="rcard col">
+                    <span class="top"><input type="radio" name="project" />docs-site</span>
+                    <span class="meta">/home/vagvaz/Projects/docs-site · base main · 1 extra mount</span>
+                  </label>
+                </div>
+              </div>
+              <p class="hint">
+                A project fixes the workdir, mounts and a routing default.
+                Step 3 can still override the routing.
+              </p>
+              <div class="step-actions">
+                <button class="ghost" data-goto="1">Back</button>
+                <button class="primary" data-goto="3">Continue</button>
+              </div>
+            </div>
+
+            <!-- step 3: how it asks -->
+            <div class="stepbody active" data-step="3">
+              <div>
+                <div class="lab">Routing</div>
+                <div class="seg" role="radiogroup" aria-label="Routing">
+                  <label><input type="radio" name="routing" checked /><span>forward</span></label>
+                  <label><input type="radio" name="routing" /><span>block</span></label>
+                  <label><input type="radio" name="routing" /><span>auto</span></label>
+                </div>
+              </div>
+              <div>
+                <div class="lab">Preset</div>
+                <div class="seg" role="radiogroup" aria-label="Preset">
+                  <label><input type="radio" name="preset" checked /><span>standard</span></label>
+                  <label><input type="radio" name="preset" /><span>autonomous</span></label>
+                </div>
+                <p class="hint">
+                  Auto answers plain questions only; permission requests still
+                  card — opencode (v1) keeps its prompts in its own TUI.
+                  Autonomous sets routing to auto and answers plain questions
+                  itself. It never approves permissions.
+                </p>
+              </div>
+              <div class="step-actions">
+                <button class="ghost" data-goto="2">Back</button>
+                <button class="primary">Spawn</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-rail">
+            <div style="display: flex; align-items: center; gap: 8px">
+              <span class="muted small">Config preview</span>
+              <span style="flex: 1"></span>
+              <button type="button" class="ghost small">Regenerate</button>
+            </div>
+            <textarea spellcheck="false"># generated by /api/compose/preview
+# edit freely: spawn posts exactly what is in this box
+
+container = "a11y-reviewer-cost-conscious"
+role      = "accessibility-reviewer"
+persona   = "cost-conscious"
+agent     = "claude"
+project   = "capwrap"  # base main, routing default forward
+model     = ""         # empty: the agent's own config
+extra     = ""         # appended to role+persona prompt
+
+[questions]
+routing = "forward"    # forward | block | auto
+preset  = "standard"   # standard | autonomous</textarea>
+          </div>
+        </div>
+      </section>
+
+      <aside class="dock-right">
+        <div class="panel-bar">Inbox <span class="pill pill-quiet">1</span></div>
+        <nav class="inbox-tabs">
+          <button>Approvals <span class="pill pill-quiet">0</span></button>
+          <button class="active">Questions <span class="pill pill-quiet">1</span></button>
+        </nav>
+        <p class="muted small">
+          Permission requests and escalation cards land under Approvals;
+          plain questions — conversation, not permission — land under
+          Questions.
+        </p>
+
+        <div class="approval">
+          <div class="who">route-check · asking you</div>
+          <div class="q">Routing test: can you read this?</div>
+          <div class="chips">
+            <button type="button" class="chip">yes</button>
+            <button type="button" class="chip">no</button>
+          </div>
+          <details class="raw">
+            <summary>raw payload</summary>
+            <pre>{
+  "options": [
+    "yes",
+    "no"
+  ],
+  "container": "route-check"
+}</pre>
+          </details>
+          <textarea class="reply-text" rows="3"
+            placeholder="Type your answer — it goes straight back to the agent as text."></textarea>
+          <div class="actions">
+            <button class="primary small">Send</button>
+            <button class="ghost small">Open</button>
+          </div>
+        </div>
+
+        <h2>Operator inbox</h2>
+        <div class="messages">No messages yet.</div>
+      </aside>
+    </main>
+
+    <script>
+      // Step switching only; the radios and selects are real controls.
+      const steps = document.querySelectorAll(".step");
+      const bodies = document.querySelectorAll(".stepbody");
+      function goto(n) {
+        steps.forEach((s) => {
+          const k = +s.dataset.step;
+          s.classList.toggle("active", k === n);
+          s.classList.toggle("done", k < n);
+        });
+        bodies.forEach((b) =>
+          b.classList.toggle("active", +b.dataset.step === n),
+        );
+      }
+      steps.forEach((s) =>
+        s.addEventListener("click", () => goto(+s.dataset.step)),
+      );
+      document.querySelectorAll("[data-goto]").forEach((b) =>
+        b.addEventListener("click", () => goto(+b.dataset.goto)),
+      );
+    </script>
+  </body>
+</html>

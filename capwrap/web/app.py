@@ -35,12 +35,32 @@ from pydantic import BaseModel
 from .. import container_files
 from ..config import ContainerConfig, load_config, load_config_data
 from ..daemon import OPERATOR, Daemon
-from ..errors import CapabilityError, CapwrapError
+from ..errors import CapabilityError, CapwrapError, ConfigError
 from ..explain import ExplainError
 from ..kernel.kernel import ROOT
 from ..kernel.rights import parse_rights
-from ..teams import load_compose as load_team_compose
-from ..teams import parse_team_data
+from ..roles import (
+    builtin_role_names,
+    delete_role,
+    install_custom_roles,
+    load_role,
+    parse_role_data,
+    parse_role_toml,
+    roles_dir,
+    save_role,
+    validate_name as validate_role_name,
+)
+from ..teams import (
+    delete_team_file,
+    list_team_files,
+    load_compose as load_team_compose,
+    load_team_file,
+    parse_team_data,
+    parse_team_toml,
+    save_team_file,
+    team_files_dir,
+    validate_name as validate_team_name,
+)
 
 STATIC = Path(__file__).resolve().parent / "static"
 
@@ -55,12 +75,18 @@ def _load_compose():
     The module is a script with a `main()` that calls `sys.exit()` on bad input,
     so the web layer validates against its tables *before* calling `compose()`,
     which is the only function that writes files.
+
+    The import also merges the state dir's custom roles
+    (``$CAPWRAP_STATE/roles/*.toml``, see capwrap/roles.py) into this fresh
+    instance's ROLES: preview, spawn and validation then read the same files
+    team validation does, and built-ins cannot be shadowed.
     """
     spec = importlib.util.spec_from_file_location("capwrap_compose", COMPOSE_PATH)
     if spec is None or spec.loader is None:
         raise HTTPException(500, "compose.py could not be loaded")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    install_custom_roles(module)
     return module
 
 
@@ -267,15 +293,55 @@ class RoutingBody(BaseModel):
     routing: str
 
 
-class TeamBody(BaseModel):
-    """A whole team to spawn: the team TOML, as a mapping.
+class RoleBody(BaseModel):
+    """A custom role to save: either the edited TOML text or the fields.
 
-    `project` is an optional Project name applied to every member; it may also
-    be carried inside the team mapping itself (the CLI's shape).
+    The console's role editor carries both surfaces; the TOML text wins when
+    present (that is what the form was editing), the individual fields are
+    the structured shape. ``network`` accepts the three postures: ``true``,
+    ``false`` or ``"auto"``.
     """
 
-    team: dict
+    toml: str | None = None
+    name: str | None = None
+    summary: str | None = None
+    work: str | None = None
+    network: Any = None
+    shell: str | None = None
+    allow: list[str] | None = None
+    deny: list[str] | None = None
+    prompt: str | None = None
+
+
+class TeamBody(BaseModel):
+    """A whole team to spawn: the team TOML as a mapping, or its TOML text.
+
+    `project` is an optional Project name applied to every member; it may also
+    be carried inside the team mapping itself (the CLI's shape). The web
+    dialog's edited TOML textarea arrives as `toml` -- the daemon parses it
+    with the same validator a mapping goes through, so both shapes are
+    refused identically.
+    """
+
+    team: dict | None = None
     project: str | None = None
+    toml: str | None = None
+
+
+class TeamFileBody(BaseModel):
+    """A team definition to save: the edited TOML text or the fields.
+
+    The dialog's TOML textarea is the primary surface (it wins when present);
+    the individual fields are the structured shape the spawn form already
+    collects. Saving writes the definition file under the state dir and
+    nothing else -- no spawn, no teams.json.
+    """
+
+    toml: str | None = None
+    name: str | None = None
+    goal: str | None = None
+    success_criteria: str | None = None
+    members: list[dict] | None = None
 
 
 class ProjectBody(BaseModel):
@@ -735,6 +801,10 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         module = _load_compose()
         if role not in module.ROLES:
             raise HTTPException(404, f"no such role: {role!r}")
+        # A custom role has no markdown file: its prompt *is* the brief.
+        prompt_text = module.ROLES[role].get("prompt")
+        if prompt_text is not None:
+            return {"name": role, "markdown": prompt_text}
         path = Path(module.HERE) / "roles" / f"{role}.md"
         if not path.is_file():
             raise HTTPException(404, f"no markdown for role {role!r}")
@@ -788,6 +858,125 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         return await _spawn_registered(load_config(path))
 
     # ------------------------------------------------------------------
+    # roles -- built-in role tables plus file-backed custom roles
+    # ------------------------------------------------------------------
+
+    def _role_row(name: str, spec: dict, module: Any) -> dict:
+        """One row of the role list: the fields the spawn picker shows."""
+        return {
+            "name": name,
+            "summary": spec.get("summary", ""),
+            "builtin": name in builtin_role_names(module),
+            "shell": spec.get("shell"),
+            "work": spec.get("work", "worktree"),
+            "network": spec.get("network", True),
+        }
+
+    @app.get("/api/roles")
+    async def role_list() -> list[dict]:
+        """Every role the spawn dialog can offer: built-in and custom.
+
+        The fresh compose module already carries the custom-role merge, so
+        this lists exactly what a spawn would accept. A state file that
+        names a built-in role is inert (the built-in wins) and shows as
+        built-in, matching what spawning itself does.
+        """
+        module = _load_compose()
+        return sorted(
+            (_role_row(name, spec, module) for name, spec in module.ROLES.items()),
+            key=lambda row: row["name"],
+        )
+
+    @app.get("/api/roles/{name}")
+    async def role_detail(name: str) -> dict:
+        """One role's fields, plus its TOML when it is a custom role.
+
+        A built-in has no TOML of its own (its table lives in compose.py),
+        so ``toml`` comes back empty and ``builtin`` is true -- the editor
+        opens it read-only. A custom role's ``toml`` is exactly the file on
+        disk, so an untouched edit round-trips through Save.
+        """
+        validate_role_name(name)
+        module = _load_compose()
+        if name in builtin_role_names(module):
+            row = _role_row(name, module.ROLES[name], module)
+            row["toml"] = ""
+            return row
+        path = roles_dir() / f"{name}.toml"
+        if not path.is_file():
+            if name in module.ROLES:
+                row = _role_row(name, module.ROLES[name], module)
+                row["toml"] = ""
+                return row
+            raise HTTPException(404, f"no such role: {name!r}")
+        try:
+            spec = load_role(name)
+        except ConfigError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return {**spec, "builtin": False, "toml": path.read_text()}
+
+    @app.put("/api/roles/{name}")
+    async def save_custom_role(name: str, body: RoleBody) -> dict:
+        """Create or update a custom role: parse, validate, write its TOML.
+
+        The body is the edited TOML text or, without it, the individual
+        fields. A built-in name is refused with a 409 -- both the route's
+        name and, for a TOML body, the name the body declares -- so a save
+        can never overwrite compose.py's table. Validation errors come back
+        as 400 with the parser's message.
+        """
+        module = _load_compose()
+        builtins = builtin_role_names(module)
+        if name in builtins:
+            raise HTTPException(
+                409, f"{name!r} is a built-in role; built-ins are read-only"
+            )
+        try:
+            if body.toml is not None:
+                spec = parse_role_toml(body.toml, fallback_name=name)
+            else:
+                raw: dict[str, Any] = {
+                    "name": body.name if body.name is not None else name,
+                }
+                for field_name in ("summary", "allow", "deny", "prompt"):
+                    value = getattr(body, field_name)
+                    if value is not None:
+                        raw[field_name] = value
+                if body.work is not None:
+                    raw["work"] = body.work
+                if body.shell is not None:
+                    raw["shell"] = body.shell
+                if body.network is not None:
+                    raw["network"] = body.network
+                spec = parse_role_data(raw, fallback_name=name)
+            target = spec["name"]
+            if target in builtins:
+                raise HTTPException(
+                    409, f"{target!r} is a built-in role; built-ins are read-only"
+                )
+            save_role(spec, builtins)
+        except ConfigError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return {"name": target, "saved": True}
+
+    @app.delete("/api/roles/{name}")
+    async def remove_role(name: str) -> dict:
+        """Delete a custom role's file; built-ins are refused with a 409."""
+        module = _load_compose()
+        builtins = builtin_role_names(module)
+        if name in builtins:
+            raise HTTPException(
+                409, f"{name!r} is a built-in role; built-ins cannot be deleted"
+            )
+        try:
+            existed = delete_role(name, builtins)
+        except ConfigError as exc:
+            raise HTTPException(400, str(exc)) from None
+        if not existed:
+            raise HTTPException(404, f"no such role: {name!r}")
+        return {"name": name, "deleted": True}
+
+    # ------------------------------------------------------------------
     # projects
     # ------------------------------------------------------------------
 
@@ -815,6 +1004,23 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
     # teams
     # ------------------------------------------------------------------
 
+    def _team_data_from_body(body: TeamBody) -> dict:
+        """The team mapping a body carries: the mapping itself, or its TOML
+        text parsed.
+
+        The dialog edits both surfaces and sends the TOML when the operator
+        has touched it. Validation of the parsed mapping happens in the
+        caller, exactly as for a mapping body.
+        """
+        if body.toml is None:
+            if body.team is None:
+                raise HTTPException(400, "a team needs either a mapping or TOML text")
+            return body.team
+        try:
+            return tomllib.loads(body.toml)
+        except tomllib.TOMLDecodeError as exc:
+            raise HTTPException(400, f"invalid team TOML: {exc}") from None
+
     @app.get("/api/teams")
     async def teams() -> list[dict]:
         """Every team, with each member's running state."""
@@ -829,8 +1035,9 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         spawns. An optional project (top-level in the body, or inside the team
         mapping) applies to every member.
         """
-        team = parse_team_data(body.team, load_team_compose())
-        project_name = body.project or str(body.team.get("project", "") or "")
+        team_data = _team_data_from_body(body)
+        team = parse_team_data(team_data, load_team_compose())
+        project_name = body.project or str(team_data.get("project", "") or "")
         return await daemon.spawn_team(team, project_name=project_name)
 
     @app.post("/api/teams/{name}/edit")
@@ -843,13 +1050,91 @@ def create_app(daemon: Daemon, shutdown: Callable[[], None] | None = None) -> Fa
         (replaced/added/removed/kept). An optional project applies to every
         member this edit spawns.
         """
-        project_name = body.project or str(body.team.get("project", "") or "")
-        return await daemon.edit_team(name, body.team, project_name=project_name)
+        team_data = _team_data_from_body(body)
+        project_name = body.project or str(team_data.get("project", "") or "")
+        return await daemon.edit_team(name, team_data, project_name=project_name)
 
     @app.post("/api/teams/{name}/stop")
     async def stop_team(name: str) -> dict:
         """Stop every member of a team."""
         return await daemon.stop_team(name)
+
+    # ------------------------------------------------------------------
+    # team files -- saved team definitions the dialog loads and saves
+    # ------------------------------------------------------------------
+
+    @app.get("/api/team-files")
+    async def team_files() -> list[dict]:
+        """Saved team definitions: name, goal, member count."""
+        return list_team_files()
+
+    @app.get("/api/team-files/{name}")
+    async def team_file_detail(name: str) -> dict:
+        """One saved team definition: the fields plus the file's TOML.
+
+        The TOML is exactly the file on disk, so an untouched edit round-trips
+        through Save the way the role editor's does.
+        """
+        try:
+            validate_team_name(name)
+        except ConfigError as exc:
+            raise HTTPException(400, str(exc)) from None
+        path = team_files_dir() / f"{name}.toml"
+        if not path.is_file():
+            raise HTTPException(404, f"no such team file: {name!r}")
+        try:
+            team = load_team_file(name)
+        except ConfigError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return {**team.to_dict(), "toml": path.read_text()}
+
+    @app.put("/api/team-files/{name}")
+    async def save_team_definition(name: str, body: TeamFileBody) -> dict:
+        """Create or update a saved team definition: validate, write the
+        file, spawn nothing.
+
+        The body is the edited TOML text or, without it, the same fields the
+        spawn form posts. The route's name is the file's identity: a TOML
+        that names a different team is refused with a 400, so a save can
+        never land under a name its own text disagrees with. Nothing here
+        touches teams.json or any running team.
+        """
+        try:
+            if body.toml is not None:
+                team = parse_team_toml(body.toml)
+            else:
+                raw: dict[str, Any] = {
+                    "name": body.name if body.name is not None else name,
+                }
+                for field_name in ("goal", "success_criteria", "members"):
+                    value = getattr(body, field_name)
+                    if value is not None:
+                        raw[field_name] = value
+                team = parse_team_data(raw, load_team_compose())
+            if team.name != name:
+                raise ConfigError(
+                    f"the TOML names the team {team.name!r}; save it under "
+                    f"{team.name}.toml or rename the team to {name!r}"
+                )
+            path = save_team_file(team)
+        except ConfigError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return {"name": name, "saved": True, "path": str(path)}
+
+    @app.delete("/api/team-files/{name}")
+    async def remove_team_file(name: str) -> dict:
+        """Delete a saved team definition's file; nothing else.
+
+        A team already spawned from it keeps running -- this only forgets
+        where the definition lived.
+        """
+        try:
+            existed = delete_team_file(name)
+        except ConfigError as exc:
+            raise HTTPException(400, str(exc)) from None
+        if not existed:
+            raise HTTPException(404, f"no such team file: {name!r}")
+        return {"name": name, "deleted": True}
 
     @app.post("/api/containers/{name}/start")
     async def start(name: str) -> dict:

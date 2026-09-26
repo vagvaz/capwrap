@@ -328,6 +328,21 @@ SHELL_READONLY = [
     "cd*",
     "mkdir*",
     "node *",
+    # Nothing of consequence, but omitted from the denylist on principle:
+    # a sandbox that refuses `true` is writing checks it cannot cash.
+    "true",
+    "false",
+    "test*",
+    "basename*",
+    "dirname*",
+    "realpath*",
+    "readlink*",
+    "uname*",
+    "id",
+    "whoami",
+    "printenv",
+    "cut*",
+    "tr*",
 ]
 GIT_READONLY = [
     "git status*",
@@ -384,6 +399,17 @@ WORK_SHELL = [
     "python3*",
     "pip*",
     "pip3*",
+    # The python packaging front-ends: uv/uvx, poetry, pipx and the
+    # project-orchestration tools (pre-commit, tox, nox, hatch) all fetch
+    # and build like pip does, so they ride the same grant.
+    "uv*",
+    "uvx*",
+    "poetry*",
+    "pipx*",
+    "pre-commit*",
+    "tox*",
+    "nox*",
+    "hatch*",
     "npx*",
     "npm*",
     "yarn*",
@@ -523,7 +549,10 @@ AGENT_SETUP: dict[str, dict] = {
         "command": ["/opt/opencode/opencode"],
         "approvals": "native",
         "native_permissions": True,
-        "bash_tool": "Bash",
+        # The mounted binary is opencode v2 (the ~/.opencode/bin mount), and its
+        # shell tool is `shell`.  `Bash` lowercases to `bash` and never matches,
+        # so every shell command would prompt; `Shell` lowercases to `shell`.
+        "bash_tool": "Shell",
         "mounts": [
             ("~/.opencode/bin", "/opt/opencode", "ro"),
             ("~/.config/opencode", "/home/agent/.config/opencode", "copy"),
@@ -533,7 +562,10 @@ AGENT_SETUP: dict[str, dict] = {
         "files": False,
     },
     "opencode2": {
-        "command": ["/opt/opencode/opencode2", "--standalone"],
+        # `opencode2` on this host is a wrapper that execs opencode v2.0.18,
+        # which ignores the opencode2 config dir; `opencode2.bin` is the beta
+        # binary that reads it (both live in the ~/.opencode/bin mount).
+        "command": ["/opt/opencode/opencode2.bin", "--standalone"],
         "approvals": "capwrap",
         "native_permissions": True,
         "bash_tool": "Shell",
@@ -799,8 +831,15 @@ def compose(
     # /run/capwrap-role.md and delivers it natively for the agent -- claude
     # gets a system-prompt flag, opencode an instructions entry, pi a flag --
     # so the role and persona texts stay single copies editable on their own.
+    role_text = spec.get("prompt")
+    if role_text is not None:
+        # A custom role's prompt replaces the built-in role markdown: the
+        # spec carries the text, so no roles/<name>.md is read (or needed).
+        role_text = role_text.rstrip()
+    else:
+        role_text = (HERE / "roles" / f"{role}.md").read_text().rstrip()
     prompt = (
-        (HERE / "roles" / f"{role}.md").read_text().rstrip()
+        role_text
         + "\n\n---\n\n"
         + (HERE / "personas" / f"{persona}.md").read_text().rstrip()
         + "\n\n---\n\n"
@@ -843,7 +882,16 @@ def compose(
         to whichever tool name this agent's gate answers to."""
         return [f"{bash_tool}{r[4:]}" if r.startswith("Bash(") else r for r in rules]
 
-    readonly_shell = role in READONLY_SHELL_ROLES
+    # Shell posture. A custom role (capwrap/roles.py) states its own; a
+    # built-in role without a `shell` key keeps today's table membership:
+    # work roles build, read-only roles deny mutations, the rest ambient.
+    shell_mode = spec.get("shell")
+    readonly_shell = (
+        role in READONLY_SHELL_ROLES if shell_mode is None else shell_mode == "readonly"
+    )
+    work_shell = (
+        role in WORK_SHELL_ROLES if shell_mode is None else shell_mode == "work"
+    )
     # `--auto-allow` trades role precision for a quiet queue: everything
     # except the denylist. Read-only roles keep their guarantee regardless --
     # read-only-ness is the point of those roles, not a queue-saving measure.
@@ -856,7 +904,7 @@ def compose(
         else:
             # The ambient baseline: read-only shell, git reads, capctl comms.
             allow += [f"{bash_tool}({p})" for p in AMBIENT_SHELL]
-            if role in WORK_SHELL_ROLES:
+            if work_shell:
                 allow += [f"{bash_tool}({p})" for p in WORK_SHELL + GIT_WORK]
         deny += [f"{bash_tool}({p})" for p in SHELL_DENYLIST]
         if readonly_shell:
@@ -879,11 +927,7 @@ def compose(
                     "grep",
                     *retag(spec["allow"]),
                     *(f"bash({p})" for p in AMBIENT_SHELL),
-                    *(
-                        f"bash({p})"
-                        for p in (WORK_SHELL + GIT_WORK)
-                        if role in WORK_SHELL_ROLES
-                    ),
+                    *(f"bash({p})" for p in (WORK_SHELL + GIT_WORK) if work_shell),
                 ],
                 key=str.lower,
             )

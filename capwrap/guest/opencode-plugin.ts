@@ -10,7 +10,15 @@
  * opencode v2 runs the `permission.evaluate` hook for every tool call and
  * blocks until the handler resolves. Setting `event.effect` to "allow" or
  * "deny" overrides opencode's own decision; leaving it untouched lets opencode
- * fall back to the effect it computed itself.
+ * fall back to the effect it computed itself. The hook is only installed when
+ * the policy file loads -- a missing policy means native handling, never
+ * deny-all.
+ *
+ * The native `question` tool is overridden (not merely hooked): the routed
+ * answer is returned as a normal tool result, because a thrown Error reads
+ * as a failure and the model would retry. Only the transform fallback hook
+ * still delivers its answer by throwing, prefixed so the model reads it as
+ * the question's answer.
  *
  * Failure is deliberately fail-open — the opposite of the pi shim. If the
  * daemon cannot be reached we leave `event.effect` untouched, so opencode
@@ -46,21 +54,19 @@ const CONTAINER = process.env.CAPWRAP_CONTAINER ?? "?";
  * approve every single `Read`.
  */
 function loadPolicy(): { allow: string[]; deny: string[]; fallback?: string } {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(POLICY, "utf8")) as {
-      allow?: unknown;
-      deny?: unknown;
-      fallback?: unknown;
-    };
-    return {
-      allow: Array.isArray(parsed.allow) ? parsed.allow.map(String) : [],
-      deny: Array.isArray(parsed.deny) ? parsed.deny.map(String) : [],
-      fallback:
-        typeof parsed.fallback === "string" ? parsed.fallback : undefined,
-    };
-  } catch {
-    return { allow: [], deny: [] };
-  }
+  // Throws when the policy file cannot be read: the caller decides what that
+  // means (the permission hook is not registered at all, so a missing policy
+  // never becomes deny-all).
+  const parsed = JSON.parse(fs.readFileSync(POLICY, "utf8")) as {
+    allow?: unknown;
+    deny?: unknown;
+    fallback?: unknown;
+  };
+  return {
+    allow: Array.isArray(parsed.allow) ? parsed.allow.map(String) : [],
+    deny: Array.isArray(parsed.deny) ? parsed.deny.map(String) : [],
+    fallback: typeof parsed.fallback === "string" ? parsed.fallback : undefined,
+  };
 }
 
 /** Translate a fnmatch-style glob into a RegExp: `*`, `?`, `[...]`.
@@ -216,57 +222,182 @@ export default {
     // The agent's native `question` tool asks in the local TUI, which no
     // routing can see: the question never reaches the daemon, so the
     // container's question routing (forward / block / auto) cannot act on
-    // it and the console's Questions tab never shows it. Intercept the
-    // call before execution and route it through the daemon instead. The
-    // answer text -- the operator's reply, the auto-answer, or the block
-    // guidance -- rides back as the tool's error message, which is what
-    // the model reads. pi has no native question tool (its questions are
-    // `capctl ask` and already reach the daemon); claude's AskUserQuestion
-    // stays native by design.
-    try {
-      await ctx.tool.hook("execute.before", async (input: any, output: any) => {
-        if (String(input?.tool ?? "") !== "question") return;
-        // v2 invokes the hook with a single event payload ({tool, sessionID,
-        // agent, messageID, id, input}) — the tool's arguments ride in the
-        // payload's `input` field.  The v1-style contract passed them as
-        // `output.args`.  Accept both so the interception fires on either.
-        const args = (output && output.args) || (input && input.input) || {};
-        const questions = Array.isArray(args && args.questions)
-          ? args.questions
-          : [];
-        if (!questions.length) return;
-        const text = questions
-          .map((q: any) =>
-            typeof q === "string" ? q : String(q?.question ?? ""),
-          )
-          .filter(Boolean)
-          .join("\n");
-        if (!text) return;
-        const options = questions.flatMap((q: any) => {
-          if (typeof q !== "object" || q === null || !Array.isArray(q.options))
-            return [];
-          return q.options.map((o: any) =>
-            typeof o === "string" ? o : String(o?.label ?? o ?? ""),
-          );
+    // it and the console's Questions tab never shows it. Override the tool
+    // outright (v2 user plugins load after the builtins, so
+    // `ctx.tool.transform` wins) and route the call through the daemon.
+    // The answer text -- the operator's reply, the auto-answer, or the
+    // block guidance -- comes back as a normal tool result, which the
+    // model reads; a thrown Error reads as a tool failure and the model
+    // retries, so only a normal result settles the question. pi has no
+    // native question tool (its questions are `capctl ask` and already
+    // reach the daemon); claude's AskUserQuestion stays native by design.
+    const QUESTION_TOOL_SCHEMA = {
+      type: "object",
+      properties: {
+        questions: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              question: { type: "string" },
+              options: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    label: { type: "string" },
+                    description: { type: "string" },
+                  },
+                  required: ["label"],
+                },
+              },
+            },
+            required: ["question"],
+          },
+        },
+      },
+      required: ["questions"],
+    };
+
+    const askThroughDaemon = async (input: any) => {
+      // v2 delivers the override's arguments as `input` itself; be tolerant
+      // of builds that nest them under `input.input` instead.
+      const args =
+        input && typeof input === "object" && "questions" in input
+          ? input
+          : (input && input.input) || {};
+      const questions = Array.isArray(args && args.questions)
+        ? args.questions
+        : [];
+      if (!questions.length) throw new Error("no questions were given");
+      const text = questions
+        .map((q: any) =>
+          typeof q === "string" ? q : String(q?.question ?? ""),
+        )
+        .filter(Boolean)
+        .join("\n");
+      if (!text) throw new Error("no questions were given");
+      const options = questions.flatMap((q: any) => {
+        if (typeof q !== "object" || q === null || !Array.isArray(q.options))
+          return [];
+        return q.options.map((o: any) =>
+          typeof o === "string" ? o : String(o?.label ?? o ?? ""),
+        );
+      });
+      let routed = false;
+      let answer = "";
+      try {
+        const result = await askDaemon(text, {
+          container: CONTAINER,
+          session: String(input?.sessionID ?? ""),
+          ...(options.length ? { options } : {}),
         });
-        let result: any;
-        try {
-          result = await askDaemon(text, {
-            container: CONTAINER,
-            session: String(input?.sessionID ?? ""),
-            ...(options.length ? { options } : {}),
-          });
-        } catch {
-          return; // daemon unreachable: fall through to the native question UI
-        }
-        const answer = result?.message || result?.reason || "";
-        // Any routed answer (operator text, auto-answer, block guidance)
-        // becomes the tool's error message. A timeout with no text falls
-        // through to the native UI.
-        if (answer) throw new Error(answer);
+        answer = result?.message || result?.reason || "";
+        routed = true;
+      } catch {
+        routed = false;
+      }
+      if (routed && answer) {
+        // Built-in formatting, joined per question: one operator answer
+        // covers the whole batch.
+        const formatted =
+          `User has answered your questions: ` +
+          questions
+            .map((q: any) => `"${q?.question ?? q}"="${answer}"`)
+            .join(", ") +
+          `. You can now continue with the user's answers in mind.`;
+        return { content: formatted, output: formatted };
+      }
+      const unreachable =
+        routed && !answer
+          ? "capwrap delivered no answer"
+          : "capwrap console unreachable";
+      return {
+        content: `${unreachable}. State the question in your terminal and end your turn. Do not call the question tool again.`,
+        output: `${unreachable}. State the question in your terminal and end your turn. Do not call the question tool again.`,
+      };
+    };
+
+    try {
+      await ctx.tool.transform((editor: any) => {
+        editor.add({
+          name: "question",
+          description:
+            "Ask the operator a question through capwrap. Do not use this to request permissions; permission requests are routed separately.",
+          input: QUESTION_TOOL_SCHEMA,
+          // `codemode: false` keeps the tool call a plain structured call;
+          // editors that do not accept options just ignore the key.
+          options: { codemode: false },
+          execute: askThroughDaemon,
+        });
       });
     } catch {
-      // Older builds may not expose the tool hook; questions stay native.
+      // transform unavailable or refused: fall back to the execute.before
+      // hook. Hook return values are ignored, so there the answer is still
+      // delivered by throwing -- prefixed so the model reads it as the
+      // question's answer rather than a failure to retry.
+      try {
+        await ctx.tool.hook(
+          "execute.before",
+          async (input: any, output: any) => {
+            if (String(input?.tool ?? "") !== "question") return;
+            const args =
+              (output && output.args) || (input && input.input) || {};
+            const questions = Array.isArray(args && args.questions)
+              ? args.questions
+              : [];
+            if (!questions.length) return;
+            const text = questions
+              .map((q: any) =>
+                typeof q === "string" ? q : String(q?.question ?? ""),
+              )
+              .filter(Boolean)
+              .join("\n");
+            if (!text) return;
+            const options = questions.flatMap((q: any) => {
+              if (
+                typeof q !== "object" ||
+                q === null ||
+                !Array.isArray(q.options)
+              )
+                return [];
+              return q.options.map((o: any) =>
+                typeof o === "string" ? o : String(o?.label ?? o ?? ""),
+              );
+            });
+            let result: any;
+            try {
+              result = await askDaemon(text, {
+                container: CONTAINER,
+                session: String(input?.sessionID ?? ""),
+                ...(options.length ? { options } : {}),
+              });
+            } catch {
+              return; // daemon unreachable: fall through to the native question UI
+            }
+            const answer = result?.message || result?.reason || "";
+            // Any routed answer (operator text, auto-answer, block guidance)
+            // becomes the tool's error message. A timeout with no text falls
+            // through to the native UI.
+            if (answer)
+              throw new Error(
+                "capwrap: this is the answer to your question, delivered as the tool result — do not call the question tool again: " +
+                  answer,
+              );
+          },
+        );
+      } catch {
+        // Older builds may not expose the tool hook; questions stay native.
+      }
+    }
+
+    try {
+      loadPolicy();
+    } catch {
+      // No policy, no gate: an unreadable policy file must not become
+      // deny-all, so the permission hook is not registered and opencode
+      // falls back to its own permission handling.
+      return;
     }
 
     await ctx.permission.hook("evaluate", async (event: any) => {

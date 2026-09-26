@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>capwrap — example C</title>
+    <style>
+      :root {
+        --bg: #0e1116;
+        --bg-raised: #161b22;
+        --bg-inset: #0a0d12;
+        --border: #262d38;
+        --text: #d7dee8;
+        --text-dim: #8b95a5;
+        --accent: #4c9aff;
+        --ok: #3fb950;
+        --warn: #d29922;
+        --danger: #f85149;
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas,
+          monospace;
+        --radius: 7px;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .mono { font-family: var(--mono); font-size: 13px; }
+      .muted { color: var(--text-dim); }
+      .small { font-size: 12px; }
+      .hint { color: var(--text-dim); font-size: 11.5px; line-height: 1.5; margin: 0; }
+      a { color: var(--accent); }
+
+      button, select, textarea, input[type="text"] {
+        font: inherit; color: var(--text); background: var(--bg-inset);
+        border: 1px solid var(--border); border-radius: var(--radius);
+        padding: 6px 10px; font-size: 12.5px;
+      }
+      button { cursor: pointer; }
+      button:hover { border-color: var(--accent); }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button.ghost { background: none; font-size: 12.5px; padding: 5px 10px; }
+      button.small { font-size: 11.5px; padding: 3px 8px; }
+      .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-inset); }
+      .pill-ok { color: var(--ok); border-color: var(--ok); }
+      .pill-quiet { color: var(--text-dim); }
+      .pill-accent { color: var(--accent); border-color: var(--accent); }
+
+      .reviewbar {
+        flex: 0 0 auto; display: flex; gap: 10px; align-items: center;
+        padding: 4px 16px; background: var(--bg-inset);
+        border-bottom: 1px solid var(--border);
+        color: var(--text-dim); font-size: 11.5px;
+      }
+      .topbar {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 8px 16px; background: var(--bg-raised);
+        border-bottom: 1px solid var(--border); flex: 0 0 auto;
+      }
+      .brand { display: flex; align-items: center; gap: 10px; }
+      .logo { color: var(--accent); font-size: 18px; }
+      .topbar-right { display: flex; align-items: center; gap: 10px; }
+
+      /* one surface: the crew */
+      .crew-head {
+        display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+        background: var(--bg-raised); border-bottom: 1px solid var(--border);
+        flex: 0 0 auto;
+      }
+      .crew-head .title { font-family: var(--mono); font-size: 13px; }
+      .crew { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 16px 40px; }
+      .crew-grid {
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+        gap: 12px; align-items: start;
+      }
+      .ccard {
+        background: var(--bg-raised); border: 1px solid var(--border);
+        border-radius: var(--radius); display: flex; flex-direction: column;
+      }
+      .ccard.asking { border-color: var(--accent); }
+      .ccard.new { border-style: dashed; background: transparent; }
+      .ccard.done { opacity: 0.6; }
+      .ccard-head {
+        display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+        border-bottom: 1px solid var(--border);
+        font-family: var(--mono); font-size: 12px;
+      }
+      .ccard.new .ccard-head { border-bottom-style: dashed; }
+      .ccard-head .meta { margin-left: auto; font-size: 11px; color: var(--text-dim); }
+      .ccard-body { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); flex: 0 0 auto; }
+      .dot.running { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+      .tag {
+        font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
+        letter-spacing: 0.07em; color: var(--accent);
+      }
+      .q { word-break: break-word; margin: 0; }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      .chip {
+        font-family: var(--mono); font-size: 11.5px; padding: 3px 9px;
+        border-radius: 999px; background: var(--bg); border: 1px solid var(--border);
+        color: var(--text); cursor: pointer;
+      }
+      .chip:hover { border-color: var(--accent); color: var(--accent); }
+      details.raw { margin: 0; }
+      details.raw summary { cursor: pointer; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+      details.raw summary:hover { color: var(--text); }
+      details.raw pre {
+        margin: 6px 0 0; font-family: var(--mono); font-size: 11px;
+        color: var(--text-dim); background: var(--bg); border: 1px solid var(--border);
+        border-radius: 4px; padding: 6px; overflow: auto;
+      }
+      .reply-text { width: 100%; resize: vertical; margin: 0; }
+      .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+      .logline { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); }
+
+      /* the spawn seat: a sentence with inline picks */
+      .sentence { font-size: 13px; line-height: 2.3; margin: 0; }
+      select.inline {
+        font-family: var(--mono); font-size: 12px; padding: 3px 6px;
+        border-radius: 5px; max-width: 190px;
+      }
+      .fieldrow { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .field { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--text-dim); min-width: 0; }
+      details.pv { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-inset); }
+      details.pv summary {
+        cursor: pointer; padding: 6px 9px; font-size: 12px; color: var(--text-dim);
+      }
+      details.pv summary:hover { color: var(--text); }
+      details.pv[open] summary { border-bottom: 1px solid var(--border); }
+      .pvhead { display: flex; align-items: center; gap: 8px; padding: 6px 9px; }
+      .pvhead .spacer { flex: 1; }
+      details.pv pre {
+        margin: 0; padding: 8px 9px; font-family: var(--mono); font-size: 11px;
+        line-height: 1.5; color: var(--text); overflow: auto; max-height: 220px;
+      }
+      h2 {
+        font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em;
+        color: var(--text-dim); margin: 26px 0 8px;
+        display: flex; align-items: center; gap: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="reviewbar">
+      <span>Example C — one crew surface: questions sit on the asking agent, a new agent is an empty seat</span>
+      <span style="flex: 1"></span>
+      <a href="index.html">index</a>
+      <span>static mock</span>
+    </div>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">▣</span>
+        <strong>capwrap</strong>
+        <span class="muted">capability-governed agent containers</span>
+      </div>
+      <div class="topbar-right">
+        <span class="pill pill-ok">live</span>
+        <button class="ghost">⊞</button>
+        <button class="ghost">◐</button>
+      </div>
+    </header>
+
+    <div class="crew-head">
+      <span class="title">crew</span>
+      <span class="pill pill-accent">Questions 1</span>
+      <span class="pill pill-quiet">Approvals 0</span>
+      <span style="flex: 1"></span>
+      <span class="muted small">3 containers · 2 running</span>
+    </div>
+
+    <main class="crew">
+      <div class="crew-grid">
+        <!-- the agent that is asking, with its question on its own card -->
+        <div class="ccard asking">
+          <div class="ccard-head">
+            <span class="dot running"></span>
+            route-check
+            <span class="meta">2 caps</span>
+          </div>
+          <div class="ccard-body">
+            <span class="tag">asking you</span>
+            <p class="q">Routing test: can you read this?</p>
+            <div class="chips">
+              <button type="button" class="chip">yes</button>
+              <button type="button" class="chip">no</button>
+            </div>
+            <p class="hint">
+              Plain question. Your reply goes back as text and decides
+              nothing; permission requests would card instead.
+            </p>
+            <details class="raw">
+              <summary>raw payload</summary>
+              <pre>{
+  "options": [
+    "yes",
+    "no"
+  ],
+  "container": "route-check"
+}</pre>
+            </details>
+            <textarea class="reply-text" rows="2"
+              placeholder="Type your answer — it goes straight back to the agent as text."></textarea>
+            <div class="actions">
+              <button class="primary small">Send</button>
+              <button class="ghost small">Open terminal</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- a working agent with nothing pending -->
+        <div class="ccard">
+          <div class="ccard-head">
+            <span class="dot running"></span>
+            parser-writer
+            <span class="meta">5 caps</span>
+          </div>
+          <div class="ccard-body">
+            <div class="logline">last: wrote parser/tests/test_expr.py</div>
+            <div class="logline">4 min ago · mailbox 0 · nothing waiting</div>
+            <div class="actions">
+              <button class="ghost small">Open terminal</button>
+              <button class="ghost small">Send message</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- the empty seat: spawning, on the same surface -->
+        <div class="ccard new">
+          <div class="ccard-head">
+            + New agent
+            <span class="meta">empty seat</span>
+          </div>
+          <div class="ccard-body">
+            <p class="sentence">
+              Seat a
+              <select class="inline" aria-label="persona">
+                <option selected>cost-conscious</option>
+                <option>thorough</option>
+                <option>quick</option>
+              </select>
+              persona,
+              <select class="inline" aria-label="role">
+                <option selected>accessibility-reviewer</option>
+                <option>parser-writer</option>
+                <option>test-runner</option>
+                <option>docs-writer</option>
+              </select>
+              role, on
+              <select class="inline" aria-label="agent">
+                <option selected>claude</option>
+                <option>opencode</option>
+                <option>codex</option>
+              </select>
+              agent in
+              <select class="inline" aria-label="project">
+                <option>(default)</option>
+                <option selected>capwrap</option>
+                <option>docs-site</option>
+              </select>
+              project; it asks you
+              <select class="inline" aria-label="routing">
+                <option selected>forward</option>
+                <option>block</option>
+                <option>auto</option>
+              </select>
+              routing on the
+              <select class="inline" aria-label="preset">
+                <option selected>standard</option>
+                <option>autonomous</option>
+              </select>
+              preset.
+            </p>
+            <div class="fieldrow">
+              <label class="field">Model
+                <input type="text" placeholder="empty = the agent's own current configuration" />
+              </label>
+              <label class="field">Custom instructions
+                <input type="text" placeholder="appended to the role+persona prompt" />
+              </label>
+            </div>
+            <p class="hint">
+              Auto answers plain questions only; permission requests still
+              card — opencode (v1) keeps its prompts in its own TUI.
+              Autonomous sets routing to auto and answers plain questions
+              itself. It never approves permissions.
+            </p>
+            <details class="pv">
+              <summary>Config preview</summary>
+              <div class="pvhead">
+                <span class="muted small">edit it and spawn posts exactly what's here</span>
+                <span class="spacer"></span>
+                <button type="button" class="ghost small">Regenerate</button>
+              </div>
+              <pre># generated by /api/compose/preview
+
+container = "a11y-reviewer-cost-conscious"
+role      = "accessibility-reviewer"
+persona   = "cost-conscious"
+agent     = "claude"
+project   = "capwrap"  # base main, routing default forward
+model     = ""         # empty: the agent's own config
+extra     = ""         # appended to role+persona prompt
+
+[questions]
+routing = "forward"    # forward | block | auto
+preset  = "standard"   # standard | autonomous</pre>
+            </details>
+            <div class="actions" style="justify-content: flex-end">
+              <button class="primary">Spawn</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- a finished agent, quiet -->
+        <div class="ccard done">
+          <div class="ccard-head">
+            <span class="dot"></span>
+            test-runner
+            <span class="meta">exited 12 min ago</span>
+          </div>
+          <div class="ccard-body">
+            <div class="logline">1 cap · last run: 42 passed, 0 failed</div>
+            <div class="actions">
+              <button class="ghost small">Files</button>
+              <button class="ghost small">Dismiss</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <h2>Approvals <span class="pill pill-quiet">0</span></h2>
+      <p class="hint">
+        Nothing waiting. Permission requests and escalation cards land here;
+        plain questions stay on the asking agent's card above.
+      </p>
+    </main>
+  </body>
+</html>

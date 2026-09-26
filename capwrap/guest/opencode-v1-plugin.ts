@@ -18,8 +18,10 @@
  * surfaces it with any options as answer chips.
  *
  * The answer text -- the operator's reply, the auto-answer, or the block
- * guidance -- is thrown as the tool's error message, which is what the
- * model reads. Fail-safe: if the daemon cannot be reached, the hook falls
+ * guidance -- is thrown as the tool's error message, because v1 ignores hook
+ * return values: a prefixed Error is the only channel the model reads, so it
+ * is a message that carries the answer, not a normal tool result. Fail-safe:
+ * if the daemon cannot be reached, the hook falls
  * through and v1's own question UI asks locally, exactly as without the
  * shim.
  *
@@ -142,7 +144,14 @@ export const CapwrapQuestions = async (ctx: unknown) => {
       // Any routed answer (operator text, auto-answer, block guidance)
       // becomes the tool's error message. A timeout with no text falls
       // through to the native UI.
-      if (answer) throw new Error(answer);
+      if (answer)
+        // v1 ignores hook return values, so the answer rides out as a
+        // prefixed tool error: the model reads the Error message and is
+        // told not to retry the question tool with it.
+        throw new Error(
+          "capwrap: this is the answer to your question, delivered as the tool result — do not call the question tool again: " +
+            answer,
+        );
     },
   };
 };

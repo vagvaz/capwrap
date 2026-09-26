@@ -173,6 +173,25 @@ def get_profile(name: str) -> AgentProfile:
         ) from None
 
 
+def require_approval_shim(config: ContainerConfig) -> None:
+    """Refuse `approvals="capwrap"` for agents with no approval shim.
+
+    `daemon.register` calls this before the container is registered with the
+    kernel, so a refused config never lands in `daemon.containers` -- the
+    failure must surface at registration, not later when `start` reaches
+    `fsprep.prepare` with a half-registered container behind it.
+    `guest_injections` keeps its own raise as the backstop for direct callers.
+    """
+    if config.runtime.approvals != "capwrap":
+        return
+    profile = get_profile(config.runtime.agent)
+    if profile.hook_protocol is None:
+        raise ConfigError(
+            f"agent {profile.name!r} has no approval shim; set approvals='native' "
+            "or pick an agent with shim support"
+        )
+
+
 @dataclass(frozen=True)
 class Injection:
     """One file to stage into the container's state dir and bind read-only.

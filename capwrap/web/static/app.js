@@ -1278,16 +1278,18 @@ async function loadAuthority(name) {
   renderAuthority();
 }
 
-/** A compact monospace pill list, the same chip style the inbox uses. */
-function authorityPills(items) {
+/** A compact monospace pill list, the same chip style the inbox uses.
+ * `hint` says what this class of rule does. It is not a repeat of the label. */
+function authorityPills(items, hint = "") {
   if (!items || !items.length) return '<span class="muted small">none</span>';
   return items
-    .map(
-      (p) =>
-        `<span class="pill pill-quiet mono">${escapeHtml(
-          typeof p === "string" ? p : JSON.stringify(p),
-        )}</span>`,
-    )
+    .map((p) => {
+      const text = typeof p === "string" ? p : JSON.stringify(p);
+      const title = hint ? `${text}: ${hint}` : text;
+      return `<span class="pill pill-quiet mono" data-hint="${escapeHtml(
+        title,
+      )}">${escapeHtml(text)}</span>`;
+    })
     .join(" ");
 }
 
@@ -1322,34 +1324,50 @@ function renderAuthority() {
       ? "through the capability proxy"
       : "closed";
   const routingNote =
-    routing.override && routing.override !== routing.config
+    (routing.override && routing.override !== routing.config
       ? `live override (config: ${escapeHtml(routing.config || "")})`
-      : "from config";
+      : "from config") +
+    "; auto answers plain questions only — approvals and escalations still card";
 
   host.innerHTML = `
     ${authoritySection(
       "Allow · ambient",
-      `<div class="chips">${authorityPills(allow.ambient)}</div>`,
+      `<div class="chips">${authorityPills(
+        allow.ambient,
+        "allowed without a prompt. Read-only baseline. A prompt means this list is missing an entry.",
+      )}</div>`,
       "the read-only baseline every role starts from",
     )}
     ${authoritySection(
       "Allow · work-shell",
-      `<div class="chips">${authorityPills(allow.work_shell)}</div>`,
+      `<div class="chips">${authorityPills(
+        allow.work_shell,
+        "allowed without a prompt. Dev toolchain and git work. Push, reset, and clean still prompt.",
+      )}</div>`,
       "the dev toolchain and git work verbs",
     )}
     ${authoritySection(
       "Allow · role",
-      `<div class="chips">${authorityPills(allow.role)}</div>`,
+      `<div class="chips">${authorityPills(
+        allow.role,
+        "allowed without a prompt. Role-specific grants, not a blanket allow.",
+      )}</div>`,
       "tool grants and role-specific patterns",
     )}
     ${authoritySection(
       "Deny",
-      `<div class="chips">${authorityPills(authority.deny)}</div>`,
+      `<div class="chips">${authorityPills(
+        authority.deny,
+        "refused without asking. Deny wins over an allow for the same command.",
+      )}</div>`,
       "auto_deny and permissions.deny, merged",
     )}
     ${authoritySection(
       "Grants",
-      `<div class="chips">${authorityPills(grants.map((g) => g.pattern))}</div>
+      `<div class="chips">${authorityPills(
+        grants.map((g) => g.pattern),
+        "always-allow. The same request will not ask again. Revoke it from Capabilities.",
+      )}</div>
        ${
          grants.length
            ? '<p class="muted small">Always-allow entries. Revoke them from the <button type="button" class="linkish" data-authority-caps>Capabilities</button> tab.</p>'
@@ -1361,6 +1379,7 @@ function renderAuthority() {
       "Network",
       `<div class="chips">${authorityPills(
         network.rules.map((r) => `${r.name}: ${r.pattern}`),
+        "a named hole through the proxy. Closed means no network.",
       )}</div>`,
       networkNote,
     )}
@@ -1370,6 +1389,7 @@ function renderAuthority() {
         (authority.peers || []).map(
           (p) => `${p.container} (${(p.rights || []).join(", ")})`,
         ),
+        "who this container may message, and with which rights. Not a permission approval.",
       )}</div>`,
       "peer messaging targets",
     )}
@@ -1379,14 +1399,15 @@ function renderAuthority() {
         (authority.boards || []).map(
           (b) => `${b.topic} (${(b.rights || []).join(", ")})`,
         ),
+        "shared boards this container may read or post to.",
       )}</div>`,
       "team and shared boards",
     )}
     ${authoritySection(
       "Routing",
-      `<div class="chips"><span class="pill pill-quiet mono">${escapeHtml(
-        routing.effective || "forward",
-      )}</span></div>`,
+      `<div class="chips"><span class="pill pill-quiet mono" data-hint="${escapeHtml(
+        `${routing.effective || "forward"}: where plain questions go. Approvals still card. Auto does not approve permission requests.`,
+      )}">${escapeHtml(routing.effective || "forward")}</span></div>`,
       routingNote,
     )}`;
 
@@ -2740,6 +2761,10 @@ function clearSpawnDirty() {
 function openSpawnDialog() {
   $("spawn-dialog").hidden = false;
   $("spawn-error").hidden = true;
+  // A previous autonomous choice must not survive into the next spawn and
+  // override a project's routing default.
+  $("spawn-preset").value = "standard";
+  $("spawn-routing").value = "forward";
   clearSpawnDirty();
   loadSpawnOptions();
 }
@@ -2828,8 +2853,16 @@ function refreshSpawnPreview(force = false) {
       $("spawn-preview").value = data.toml;
       // A project carries a routing default; the preview is where it shows
       // up, so the select follows it (an explicit pick still wins, since the
-      // select's value is what gets sent).
-      if (project && data.routing) $("spawn-routing").value = data.routing;
+      // select's value is what gets sent).  An explicit Autonomous preset
+      // beats the project default too: a project's forward/block must not
+      // silently de-autonomize the agent.
+      if (project && data.routing) {
+        if ($("spawn-preset").value === "autonomous") {
+          $("spawn-routing").value = "auto";
+        } else {
+          $("spawn-routing").value = data.routing;
+        }
+      }
       $("spawn-error").hidden = true;
     } catch (err) {
       if (spawnDirty) return;
@@ -2858,12 +2891,197 @@ function closeDoc() {
   $("doc-overlay").hidden = true;
 }
 
+// ----------------------------------------------------------- custom roles
+//
+// The role editor behind the spawn dialog's "New role" / "Edit role". A
+// custom role is one TOML file in the state dir; built-ins are compose.py's
+// table and open read-only. Fields are the primary surface: editing them
+// rebuilds the TOML textarea live, and a hand-edited TOML wins at save and
+// stops the rebuilds until the dialog is reopened.
+
+let roleTomlDirty = false;
+// The TOML an Edit loaded; saved verbatim unless a field or the text was
+// touched (null for a New dialog, where the form is always the source).
+let roleOriginalToml = null;
+
+const ROLE_FIELD_IDS = [
+  "role-name",
+  "role-summary",
+  "role-work",
+  "role-network",
+  "role-shell",
+  "role-allow",
+  "role-deny",
+  "role-prompt",
+];
+
+function markRoleTomlDirty() {
+  roleTomlDirty = true;
+  $("role-dirty").hidden = false;
+}
+
+function clearRoleTomlDirty() {
+  roleTomlDirty = false;
+  $("role-dirty").hidden = true;
+}
+
+/** The same encoding capwrap/roles.py writes: json.dumps-style basic
+ * strings, a multi-line basic string for the prompt. */
+function buildRoleToml() {
+  const lines = [
+    `name = ${JSON.stringify($("role-name").value.trim())}`,
+    `summary = ${JSON.stringify($("role-summary").value.trim())}`,
+    `work = ${JSON.stringify($("role-work").value)}`,
+  ];
+  const network = $("role-network").value;
+  if (network === "false") lines.push("network = false");
+  else if (network === "auto") lines.push('network = "auto"');
+  const shell = $("role-shell").value;
+  if (shell !== "ambient") lines.push(`shell = ${JSON.stringify(shell)}`);
+  const list = (id) =>
+    $(id)
+      .value.split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((item) => JSON.stringify(item));
+  lines.push(`allow = [${list("role-allow").join(", ")}]`);
+  lines.push(`deny = [${list("role-deny").join(", ")}]`);
+  const prompt = $("role-prompt")
+    .value.replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"');
+  lines.push("", `prompt = """\n${prompt}"""`, "");
+  return lines.join("\n");
+}
+
+function setRoleFields(spec) {
+  $("role-name").value = spec.name || "";
+  $("role-summary").value = spec.summary || "";
+  $("role-work").value = spec.work || "worktree";
+  $("role-network").value =
+    spec.network === false
+      ? "false"
+      : spec.network === "auto"
+        ? "auto"
+        : "true";
+  $("role-shell").value = spec.shell || "ambient";
+  $("role-allow").value = (spec.allow || []).join(", ");
+  $("role-deny").value = (spec.deny || []).join(", ");
+  $("role-prompt").value = spec.prompt || "";
+}
+
+function setRoleEditable(builtin) {
+  for (const id of [...ROLE_FIELD_IDS, "role-toml"]) $(id).disabled = builtin;
+  $("role-save").disabled = builtin;
+  $("role-delete").hidden = builtin;
+}
+
+async function openRoleDialog(mode) {
+  $("role-dialog").hidden = false;
+  $("role-error").hidden = true;
+  $("role-note").hidden = true;
+  $("role-note").textContent = "";
+  clearRoleTomlDirty();
+  setRoleEditable(false);
+  const selected = $("spawn-role").value;
+  let data = null;
+  if (selected) {
+    try {
+      data = await api(`/api/roles/${encodeURIComponent(selected)}`);
+    } catch (err) {
+      data = null; // prefill comes up empty; the editor still opens
+    }
+  }
+  if (mode === "edit") {
+    $("role-dialog-title").textContent = `Edit role: ${selected}`;
+    if (data) {
+      setRoleFields(data);
+      roleOriginalToml = data.toml || "";
+      $("role-toml").value = roleOriginalToml;
+      if (data.builtin) {
+        // Read-only, with the way out said once: a copy goes through
+        // "New role" under a different name.
+        $("role-note").textContent =
+          "Built-in roles are read-only. Save a copy under a new name.";
+        $("role-note").hidden = false;
+        setRoleEditable(true);
+      }
+    }
+  } else {
+    $("role-dialog-title").textContent = "New role";
+    roleOriginalToml = null;
+    // The selected role (built-in or not) pre-fills the form, so the
+    // read-only note's "save a copy" is one name edit away. The name
+    // stays free: that is the one thing a copy must change.
+    setRoleFields(data ? { ...data, name: "" } : {});
+    $("role-toml").value = buildRoleToml();
+  }
+}
+
+function closeRoleDialog() {
+  $("role-dialog").hidden = true;
+  roleOriginalToml = null;
+  clearRoleTomlDirty();
+}
+
+async function saveRoleDialog() {
+  const name = $("role-name").value.trim();
+  $("role-error").hidden = true;
+  if (!name) {
+    $("role-error").textContent = "Give the role a name.";
+    $("role-error").hidden = false;
+    return;
+  }
+  // A hand-edited textarea wins; an untouched Edit saves the file verbatim
+  // (unknown TOML keys survive); otherwise the form is the source.
+  const toml = roleTomlDirty
+    ? $("role-toml").value
+    : roleOriginalToml !== null
+      ? roleOriginalToml
+      : buildRoleToml();
+  try {
+    const result = await api(`/api/roles/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      body: JSON.stringify({ toml }),
+    });
+    closeRoleDialog();
+    await loadSpawnOptions();
+    $("spawn-role").value = result.name;
+    refreshSpawnPreview();
+  } catch (err) {
+    $("role-error").textContent = err.message;
+    $("role-error").hidden = false;
+  }
+}
+
+async function deleteRoleDialog() {
+  const name = $("role-name").value.trim();
+  if (!name || !confirm(`Delete role ${name}?`)) return;
+  try {
+    await api(`/api/roles/${encodeURIComponent(name)}`, { method: "DELETE" });
+    closeRoleDialog();
+    await loadSpawnOptions();
+  } catch (err) {
+    $("role-error").textContent = err.message;
+    $("role-error").hidden = false;
+  }
+}
+
 function wireSpawn() {
   $("btn-spawn").addEventListener("click", openSpawnDialog);
   $("spawn-close").addEventListener("click", closeSpawnDialog);
   $("spawn-cancel").addEventListener("click", closeSpawnDialog);
   $("spawn-dialog").addEventListener("click", (event) => {
     if (event.target === $("spawn-dialog")) closeSpawnDialog();
+  });
+
+  // The preset is a routing shortcut, not a permission mode (the default
+  // stays forward): autonomous flips routing to auto, standard returns to
+  // forward.  A later explicit Routing pick still wins -- the routing
+  // select's value is what gets sent.
+  $("spawn-preset").addEventListener("change", () => {
+    $("spawn-routing").value =
+      $("spawn-preset").value === "autonomous" ? "auto" : "forward";
+    refreshSpawnPreview();
   });
 
   for (const id of [
@@ -2894,6 +3112,24 @@ function wireSpawn() {
   $("spawn-persona-doc").addEventListener("click", () =>
     openDoc("persona", $("spawn-persona").value),
   );
+
+  // The role editor: New starts (pre-filled) from the selection, Edit
+  // loads it read-only for built-ins, writable for custom roles.
+  $("spawn-role-new").addEventListener("click", () => openRoleDialog("new"));
+  $("spawn-role-edit").addEventListener("click", () => openRoleDialog("edit"));
+  $("role-close").addEventListener("click", closeRoleDialog);
+  $("role-cancel").addEventListener("click", closeRoleDialog);
+  $("role-dialog").addEventListener("click", (event) => {
+    if (event.target === $("role-dialog")) closeRoleDialog();
+  });
+  $("role-save").addEventListener("click", saveRoleDialog);
+  $("role-delete").addEventListener("click", deleteRoleDialog);
+  for (const id of ROLE_FIELD_IDS) {
+    $(id).addEventListener("input", () => {
+      if (!roleTomlDirty) $("role-toml").value = buildRoleToml();
+    });
+  }
+  $("role-toml").addEventListener("input", markRoleTomlDirty);
   $("doc-close").addEventListener("click", closeDoc);
   $("doc-overlay").addEventListener("click", (event) => {
     if (event.target === $("doc-overlay")) closeDoc();
@@ -2947,11 +3183,135 @@ let teamOptions = { roles: [], personas: [], agents: [] };
 // The team being edited, or null when the dialog is spawning a new one.
 let editingTeam = null;
 
+// Whether the operator has edited the team TOML textarea. The dirty state is
+// the whole switch: a dirty textarea is what Spawn sends and what Save file
+// writes; while it is clean the form fields are the source and the textarea
+// mirrors them.
+let teamTomlDirty = false;
+
+function markTeamTomlDirty() {
+  teamTomlDirty = true;
+  $("team-dirty").hidden = false;
+}
+
+function clearTeamTomlDirty() {
+  teamTomlDirty = false;
+  $("team-dirty").hidden = true;
+}
+
+function refreshTeamToml() {
+  if (!teamTomlDirty) $("team-toml").value = buildTeamToml();
+}
+
+/** The same shape teams.py writes: basic strings, one [[members]] table per
+ * row, the agent line only when it is not the default. */
+function buildTeamToml() {
+  const lines = [
+    `name = ${JSON.stringify($("team-name").value.trim())}`,
+    `goal = ${JSON.stringify($("team-goal").value.trim())}`,
+  ];
+  const criteria = $("team-success").value.trim();
+  if (criteria) lines.push(`success_criteria = ${JSON.stringify(criteria)}`);
+  for (const row of $("team-members").querySelectorAll(".team-member-row")) {
+    lines.push("", "[[members]]");
+    lines.push(`role = ${JSON.stringify(row.querySelector(".tm-role").value)}`);
+    lines.push(
+      `persona = ${JSON.stringify(row.querySelector(".tm-persona").value)}`,
+    );
+    const agent = row.querySelector(".tm-agent").value;
+    if (agent !== "claude") lines.push(`agent = ${JSON.stringify(agent)}`);
+  }
+  return lines.join("\n") + "\n";
+}
+
+/** The saved definitions the Load select offers, from /api/team-files. */
+async function loadTeamFileChoices() {
+  const select = $("team-file-select");
+  try {
+    const files = await api("/api/team-files");
+    select.innerHTML =
+      `<option value="">${files.length ? "saved…" : "none saved"}</option>` +
+      files
+        .map(
+          (f) =>
+            `<option value="${escapeHtml(f.name)}">${escapeHtml(f.name)}</option>`,
+        )
+        .join("");
+  } catch (err) {
+    select.innerHTML = `<option value="">unavailable</option>`;
+  }
+}
+
+/** Fill the whole dialog from one saved definition. Loading starts a spawn
+ * from the file, so an edit in progress gives way: the loaded name becomes
+ * writable again and Spawn goes to /api/teams/spawn. */
+function fillTeamFromSaved(data) {
+  editingTeam = null;
+  $("team-dialog-title").textContent = "Spawn a team";
+  $("team-submit").textContent = "Spawn team";
+  $("team-name").readOnly = false;
+  $("team-name").value = data.name || "";
+  $("team-goal").value = data.goal || "";
+  $("team-success").value = data.success_criteria || "";
+  $("team-members").innerHTML = "";
+  for (const member of data.members || []) {
+    addTeamMemberRow(member.role, member.persona, member.agent);
+  }
+  if (!$("team-members").children.length) addTeamMemberRow();
+  $("team-toml").value = data.toml || "";
+  clearTeamTomlDirty();
+}
+
+async function loadSavedTeam() {
+  const name = $("team-file-select").value;
+  if (!name) return;
+  $("team-error").hidden = true;
+  try {
+    const data = await api(`/api/team-files/${encodeURIComponent(name)}`);
+    fillTeamFromSaved(data);
+  } catch (err) {
+    $("team-error").textContent = err.message;
+    $("team-error").hidden = false;
+  }
+}
+
+/** Save the current form (or the edited textarea) as a definition file via
+ * PUT. Nothing is spawned and no running team is touched. */
+async function saveTeamFile() {
+  const name = $("team-name").value.trim();
+  $("team-error").hidden = true;
+  if (!name) {
+    $("team-error").textContent =
+      "Give the team a name before saving the file.";
+    $("team-error").hidden = false;
+    return;
+  }
+  // A hand-edited textarea wins; otherwise the form fields are the source.
+  const toml = teamTomlDirty ? $("team-toml").value : buildTeamToml();
+  try {
+    await api(`/api/team-files/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      body: JSON.stringify({ toml }),
+    });
+    // The daemon re-serializes what it validated: show the file itself and
+    // mark the textarea clean, so the text and the file stay the same thing.
+    const saved = await api(`/api/team-files/${encodeURIComponent(name)}`);
+    $("team-toml").value = saved.toml;
+    clearTeamTomlDirty();
+    await loadTeamFileChoices();
+    $("team-file-select").value = name;
+  } catch (err) {
+    $("team-error").textContent = err.message;
+    $("team-error").hidden = false;
+  }
+}
+
 function openTeamDialog(team = null) {
   editingTeam = team;
   $("team-dialog").hidden = false;
   $("team-error").hidden = true;
   $("team-results").hidden = true;
+  clearTeamTomlDirty();
   $("team-dialog-title").textContent = team
     ? `Edit team: ${team.name}`
     : "Spawn a team";
@@ -2966,11 +3326,13 @@ function openTeamDialog(team = null) {
   $("team-members").innerHTML = "";
   $("team-project").value = "";
   loadTeamOptions(team);
+  loadTeamFileChoices();
 }
 
 function closeTeamDialog() {
   $("team-dialog").hidden = true;
   editingTeam = null;
+  clearTeamTomlDirty();
 }
 
 async function loadTeamOptions(team = null) {
@@ -2988,6 +3350,7 @@ async function loadTeamOptions(team = null) {
     }
   }
   if (!$("team-members").children.length) addTeamMemberRow();
+  refreshTeamToml();
 }
 
 function teamSelect(id, values, selected) {
@@ -3022,8 +3385,10 @@ function addTeamMemberRow(
     <button type="button" class="ghost remove" title="Remove member">×</button>`;
   row.querySelector(".remove").addEventListener("click", () => {
     row.remove();
+    refreshTeamToml();
   });
   host.appendChild(row);
+  refreshTeamToml();
 }
 
 function collectTeam() {
@@ -3049,11 +3414,34 @@ function wireTeam() {
   });
   $("team-add-member").addEventListener("click", addTeamMemberRow);
 
+  // The form fields are the source while the TOML textarea is clean: editing
+  // them rebuilds it. Touching the textarea marks it dirty and stops the
+  // rebuilds, and then Save file and Spawn both take the text verbatim.
+  for (const id of ["team-name", "team-goal", "team-success"]) {
+    $(id).addEventListener("input", refreshTeamToml);
+  }
+  // Member rows' selects are created per row, so listen on the container;
+  // change bubbles up from every select.
+  $("team-members").addEventListener("change", refreshTeamToml);
+  $("team-toml").addEventListener("input", markTeamTomlDirty);
+  $("team-save-file").addEventListener("click", saveTeamFile);
+  $("team-load").addEventListener("click", loadSavedTeam);
+
   $("team-submit").addEventListener("click", async () => {
+    const dirty = teamTomlDirty;
     const team = collectTeam();
     $("team-error").hidden = true;
     $("team-results").hidden = true;
-    if (!team.name || !team.goal || !team.members.length) {
+    if (dirty) {
+      // The textarea is the source; the daemon validates its TOML and comes
+      // back with a 400 the same way it refuses a bad form.
+      if (!$("team-toml").value.trim()) {
+        $("team-error").textContent =
+          "The TOML is empty; edit it or undo the change.";
+        $("team-error").hidden = false;
+        return;
+      }
+    } else if (!team.name || !team.goal || !team.members.length) {
       $("team-error").textContent =
         "Give the team a name, a goal, and at least one member.";
       $("team-error").hidden = false;
@@ -3064,12 +3452,16 @@ function wireTeam() {
       ? `/api/teams/${encodeURIComponent(editing.name)}/edit`
       : "/api/teams/spawn";
     // The project is a top-level body field, applying to every member; a
-    // member-level override can come later.
+    // member-level override can come later. A dirty TOML replaces the form's
+    // team mapping as the body's source.
     const project = $("team-project").value;
+    const body = dirty
+      ? { toml: $("team-toml").value, ...(project ? { project } : {}) }
+      : { team, ...(project ? { project } : {}) };
     try {
       const result = await api(path, {
         method: "POST",
-        body: JSON.stringify({ team, ...(project ? { project } : {}) }),
+        body: JSON.stringify(body),
       });
       if (result && result.ok === false) {
         // The edit was refused in validation, before anything was applied.

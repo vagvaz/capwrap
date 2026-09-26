@@ -1,0 +1,3 @@
+# Keep local deepwork notes visible to OpenCode even though git ignores them.
+!.slim/deepwork/
+!.slim/deepwork/**

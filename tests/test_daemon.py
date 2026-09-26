@@ -16,7 +16,7 @@ import pytest
 
 from capwrap.config import load_config_data
 from capwrap.daemon import Daemon
-from capwrap.errors import CapwrapError
+from capwrap.errors import CapwrapError, ConfigError
 from capwrap.ipc.protocol import Request, Response
 from capwrap.runtime import supervisor
 
@@ -65,6 +65,37 @@ async def test_identity_comes_from_the_socket_not_the_request(daemon, tmp_path):
 
     assert alpha.result["container"] == "alpha"
     assert beta.result["container"] == "beta"
+
+
+async def test_register_refuses_capwrap_approvals_for_an_agent_without_a_shim(
+    daemon, tmp_path
+):
+    """opencode v1's permission hook is declared but never wired upstream, so
+    approvals="capwrap" is refused at registration -- before the kernel object
+    exists, so the daemon is not left holding a half-registered container for
+    `start` to trip over later.
+    """
+    with pytest.raises(ConfigError, match="no approval shim"):
+        daemon.register(
+            config(
+                "bad-shim",
+                tmp_path,
+                runtime={"agent": "opencode", "approvals": "capwrap"},
+            )
+        )
+    assert "bad-shim" not in daemon.containers
+
+
+async def test_agents_with_a_shim_still_register_with_capwrap_approvals(
+    daemon, tmp_path
+):
+    """The refusal is for hookless agents only: claude and opencode2 both have
+    an approval shim and register normally under approvals="capwrap"."""
+    for name, agent in (("claude-shim", "claude"), ("oc2-shim", "opencode2")):
+        container = daemon.register(
+            config(name, tmp_path, runtime={"agent": agent, "approvals": "capwrap"})
+        )
+        assert daemon.containers[name] is container
 
 
 async def test_a_request_cannot_smuggle_in_an_actor(daemon, tmp_path):
@@ -450,6 +481,38 @@ async def test_an_ask_with_options_lands_them_in_the_context(daemon, tmp_path):
     daemon.resolve_approval(pending["id"], "explain", "main")
     reply = await asyncio.wait_for(asking, timeout=5)
     assert reply.ok and reply.result["message"] == "main"
+
+
+async def test_the_question_shims_ask_json_creates_a_question_card(daemon, tmp_path):
+    """The opencode shims send `op: ask` with options in the context and no
+    `tool` key: a plain question, so forward creates a question-kind card and
+    the options reach the console as answer chips."""
+    daemon.register(config("alpha", tmp_path))
+    c = daemon.containers["alpha"]
+    c.server = await daemon._serve_container(c)
+
+    asking = asyncio.ensure_future(
+        request(
+            c.paths.socket,
+            "ask",
+            {
+                "question": "which line of the routing?",
+                "context": {
+                    "container": "alpha",
+                    "session": "",
+                    "options": ["yes", "no"],
+                },
+            },
+        )
+    )
+    await asyncio.sleep(0.05)
+    pending = daemon.pending_approvals()[0]
+    assert pending["kind"] == "question"
+    assert pending["context"]["options"] == ["yes", "no"]
+
+    daemon.resolve_approval(pending["id"], "explain", "yes")
+    reply = await asyncio.wait_for(asking, timeout=5)
+    assert reply.ok and reply.result["message"] == "yes"
 
 
 async def test_a_question_answered_via_explain_gets_the_text_back(daemon, tmp_path):

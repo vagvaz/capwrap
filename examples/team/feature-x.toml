@@ -1,0 +1,19 @@
+# A team definition in the format the console's team dialog reads and writes
+# (capwrap/teams.py). This file is an example, not a live store: the dialog
+# saves definitions under the state root's team-files/<name>.toml.
+#
+# Spawn it with `capwrap team up examples/team/feature-x.toml`, or open the
+# console's Team dialog, press "Load saved" after copying it there.
+
+name = "feature-x"
+goal = "ship the parser rewrite"
+success_criteria = "all tests green"
+
+[[members]]
+role = "implementer"
+persona = "pragmatist"
+
+[[members]]
+role = "reviewer"
+persona = "devils-advocate"
+agent = "claude"

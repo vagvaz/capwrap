@@ -12,3 +12,6 @@ endpoint.env
 examples/roles-and-personas/built/
 todo.md
 pr_comments.md
+
+# Local deepwork session state, not project source.
+.slim/deepwork/

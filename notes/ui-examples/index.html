@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>capwrap — spawn UI examples</title>
+    <style>
+      :root {
+        --bg: #0e1116;
+        --bg-raised: #161b22;
+        --bg-inset: #0a0d12;
+        --border: #262d38;
+        --text: #d7dee8;
+        --text-dim: #8b95a5;
+        --accent: #4c9aff;
+        --ok: #3fb950;
+        --warn: #d29922;
+        --danger: #f85149;
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas,
+          monospace;
+        --radius: 7px;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      main {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 40px 24px 80px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 4px;
+      }
+      h1 .logo {
+        color: var(--accent);
+      }
+      .sub {
+        color: var(--text-dim);
+        margin: 0 0 28px;
+      }
+      h2 {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
+        color: var(--text-dim);
+        margin: 32px 0 8px;
+      }
+      p {
+        margin: 0 0 10px;
+      }
+      ul {
+        margin: 0;
+        padding-left: 20px;
+      }
+      li {
+        margin-bottom: 6px;
+      }
+      a {
+        color: var(--accent);
+      }
+      .card {
+        background: var(--bg-raised);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 14px 16px;
+        margin-bottom: 12px;
+      }
+      .card h3 {
+        margin: 0 0 6px;
+        font-size: 15px;
+      }
+      .card h3 a {
+        text-decoration: none;
+      }
+      .card h3 a:hover {
+        text-decoration: underline;
+      }
+      .card p {
+        margin: 0;
+        color: var(--text);
+      }
+      .mono {
+        font-family: var(--mono);
+        font-size: 12.5px;
+      }
+      .muted {
+        color: var(--text-dim);
+      }
+      .small {
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1><span class="logo">▣</span> capwrap — spawn UI examples</h1>
+      <p class="sub">
+        Three static mocks of one operator moment: spawning an agent while a
+        question waits in the inbox. They reuse the live console's palette,
+        controls and words; only the structure changes. Compare against the
+        live app at <span class="mono">http://127.0.0.1:8420</span>. Nothing
+        here talks to the daemon.
+      </p>
+
+      <h2>What the current console gets wrong</h2>
+      <ul>
+        <li>
+          The spawn dialog stacks Role, Persona, Agent, Project, Routing and
+          Preset in one column, with a paragraph under Routing and another
+          under Preset. The config preview starts below the fold, so the
+          operator picks values without seeing the config that will run.
+        </li>
+        <li>
+          The two paragraphs overlap: both explain what <em>auto</em> does.
+          Together they take more room than the six controls they explain.
+        </li>
+        <li>
+          The Questions card shows the question and its yes/no chips, then
+          dumps the raw JSON of the ask underneath. The JSON repeats what the
+          header and the chips already say, and reads as noise next to the
+          reply box.
+        </li>
+      </ul>
+
+      <h2>The examples</h2>
+
+      <div class="card">
+        <h3><a href="example-a.html">Example A — same console, rebuilt spawn sheet</a></h3>
+        <p>
+          Keeps the three-pane console. The spawn dialog becomes a sheet
+          scoped to the working area, so the inbox stays lit and readable
+          while you spawn. Inside, the picks sit left and the config preview
+          sits right at full height: the TOML that will actually run is on
+          screen from the first click, and editing it never pushes the picks
+          away. Routing and Preset become segmented controls sharing one
+          quiet line instead of two paragraphs. The raw JSON on the question
+          card collapses behind a disclosure.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3><a href="example-b.html">Example B — spawn as three steps: who, where, how it asks</a></h3>
+        <p>
+          Replaces the field wall with three steps, each one screen tall.
+          Finished steps collapse into their picks inside the stepper, so on
+          the last step you still see who and where without re-reading a
+          form. Routing and preset sit together on step 3 because they are
+          one decision: how much the agent settles on its own. The config
+          preview is a rail beside every step, so it updates as you go
+          instead of appearing at the end.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3><a href="example-c.html">Example C — one crew surface, spawn as an empty seat</a></h3>
+        <p>
+          Drops the dialog and the wizard. Every agent is a card on one
+          surface; a pending question sits on the card of the agent that
+          asked, and spawning is an empty seat in the same grid. The spawn
+          form is a sentence with inline picks, so the config reads as intent
+          in the order you think it. The question card says in one line what
+          answering does, and keeps the raw payload behind a disclosure
+          instead of using it as the explanation.
+        </p>
+      </div>
+
+      <p class="muted small">
+        Words and controls are the live app's: role, persona, agent, project,
+        routing (forward / block / auto), preset (standard / autonomous),
+        model, custom instructions, config preview, Approvals and Questions.
+        Autonomous answers plain questions only; permission requests still
+        card, and opencode v1 keeps its permission prompts in its own TUI.
+        There is no mode that auto-approves permissions.
+      </p>
+    </main>
+  </body>
+</html>

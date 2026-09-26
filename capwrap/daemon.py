@@ -23,6 +23,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from . import agents as agents_mod
 from .config import ContainerConfig, load_config, load_config_data
 from .errors import CapabilityError, CapwrapError, SandboxError
 from .explain import Explainer
@@ -387,6 +388,10 @@ class Daemon:
 
     def register(self, config: ContainerConfig, parent: str = ROOT) -> Container:
         """Register a container with the kernel without starting it."""
+        # Before anything is created: an agent with no approval shim must not
+        # end up half-registered under approvals="capwrap" (opencode v1's
+        # hook is never wired upstream -- see agents.AgentProfile).
+        agents_mod.require_approval_shim(config)
         config.validate_sources()
         obj = self.kernel.register_container(config, parent=parent)
         container = Container(config, obj)

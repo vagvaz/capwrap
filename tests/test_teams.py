@@ -146,6 +146,42 @@ def test_compose_emits_the_chosen_question_routing(compose, tmp_path, monkeypatc
     assert 'question_routing = "forward"' in path.read_text()
 
 
+def test_the_opencode2_command_is_the_beta_binary(compose, tmp_path, monkeypatch):
+    """compose launches the opencode2 beta, not the v2.0.18 wrapper.
+
+    On hosts where `opencode2` is a wrapper that execs opencode v2.0.18, the
+    wrapper reads `~/.config/opencode`, not the opencode2 config dir, so the
+    staged shim never loads. `opencode2.bin` is the beta that reads it.
+    """
+    monkeypatch.setattr(compose, "BUILT", tmp_path)
+
+    path = compose.compose("implementer", "pragmatist", agent="opencode2")
+    assert 'command = ["/opt/opencode/opencode2.bin", "--standalone"]' in (
+        path.read_text()
+    )
+
+
+def test_the_opencode_shell_rules_are_retagged_to_shell(compose, tmp_path, monkeypatch):
+    """The mounted opencode binary (v2.0.18) calls its shell tool `shell`.
+
+    `Bash(...)` rules lowercase to `bash` and never match it, so every shell
+    command would prompt.  compose retags the role table's shell rules to
+    whichever tool name the agent's gate answers to -- the generated config
+    must carry `Shell(...)` rules, none in the `Bash(...)` vocabulary, and
+    the work shell must include the python packaging tools.
+    """
+    monkeypatch.setattr(compose, "BUILT", tmp_path)
+
+    path = compose.compose("implementer", "pragmatist", agent="opencode")
+    text = path.read_text()
+    assert "Shell(git status*)" in text, "ambient shell not retagged to Shell"
+    assert "Shell(uv*)" in text, "the packaging tools are missing from WORK_SHELL"
+    # One straggler by design: the hardcoded runtime auto_deny ["Bash(sudo *)"]
+    # predates the retag and is shared by every agent; the permission block is
+    # the part that must speak this agent's vocabulary.
+    assert "Bash(git " not in text, "role-table rules were not retagged"
+
+
 # ==========================================================================
 # spawning, membership and boards
 # ==========================================================================

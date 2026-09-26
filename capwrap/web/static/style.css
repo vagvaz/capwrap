@@ -808,6 +808,29 @@ button:disabled {
 .pill-quiet {
   color: var(--text-dim);
 }
+.pill[data-hint] {
+  position: relative;
+  cursor: help;
+}
+.pill[data-hint]:hover::after {
+  content: attr(data-hint);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  width: max-content;
+  max-width: 280px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised, #161b22);
+  color: var(--text);
+  font:
+    12px/1.4 system-ui,
+    sans-serif;
+  white-space: normal;
+  pointer-events: none;
+}
 
 .empty {
   color: var(--text-dim);

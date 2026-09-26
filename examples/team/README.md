@@ -1,5 +1,11 @@
 # A team of role-specialised agents
 
+> **Note:** the other TOML files in this directory (`architect.toml`,
+> `explorer.toml`, …) are the **old per-container format** — one whole container
+> config per file — and are not what the console's team dialog reads or writes.
+> The team dialog's format is the one in [`feature-x.toml`](feature-x.toml) and
+> in `capwrap/teams.py`: a `name`, a `goal`, and `[[members]]` picked by role.
+
 Seven roles, each a container: orchestrator, explorer, programmer, tester,
 reviewer, writer, architect.
 

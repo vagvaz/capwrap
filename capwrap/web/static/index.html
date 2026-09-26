@@ -338,6 +338,22 @@
                 >
                   read
                 </button>
+                <button
+                  type="button"
+                  id="spawn-role-new"
+                  class="linkish"
+                  title="Create a custom role in the state dir"
+                >
+                  New role
+                </button>
+                <button
+                  type="button"
+                  id="spawn-role-edit"
+                  class="linkish"
+                  title="Edit the selected role"
+                >
+                  Edit role
+                </button>
               </span>
             </label>
             <label
@@ -371,6 +387,26 @@
                 <option value="block">block</option>
                 <option value="auto">auto</option>
               </select>
+              <span class="muted small"
+                >Auto answers plain questions only. Permission requests still
+                card — except opencode (v1), whose permission prompts stay in
+                its own TUI.</span
+              >
+            </label>
+            <label
+              >Preset
+              <select
+                id="spawn-preset"
+                title="standard keeps forward. autonomous sets routing to auto. It does not auto-approve permission requests."
+              >
+                <option value="standard" selected>standard</option>
+                <option value="autonomous">autonomous</option>
+              </select>
+              <span class="muted small"
+                >Autonomous sets routing to auto. It answers plain questions
+                with best judgment. It does not auto-approve permission
+                requests.</span
+              >
             </label>
           </div>
           <label class="spawn-extra"
@@ -429,6 +465,114 @@
       </div>
     </div>
 
+    <!-- Role editor: custom roles are TOML files under the state dir's
+         roles/, built-ins are compose.py's table and stay read-only. -->
+    <div id="role-dialog" class="modal" hidden>
+      <div class="modal-card">
+        <div class="panel-head">
+          <span id="role-dialog-title" class="mono">New role</span>
+          <span class="spacer"></span>
+          <button id="role-close" class="ghost" title="Close">×</button>
+        </div>
+        <div class="spawn-body">
+          <div class="spawn-row">
+            <label
+              >Name
+              <input
+                id="role-name"
+                type="text"
+                placeholder="parser-writer"
+                required
+              />
+            </label>
+            <label
+              >Summary
+              <input
+                id="role-summary"
+                type="text"
+                placeholder="writes parsers and their tests"
+              />
+            </label>
+            <label
+              >Work
+              <select
+                id="role-work"
+                title="worktree gives the role its own branch. none means no repository."
+              >
+                <option value="worktree" selected>worktree</option>
+                <option value="none">none</option>
+              </select>
+            </label>
+            <label
+              >Network
+              <select
+                id="role-network"
+                title="false is closed. true is the host network. auto emits named holes for the model endpoint, not every provider URL."
+              >
+                <option value="true" selected>true</option>
+                <option value="false">false</option>
+                <option value="auto">auto</option>
+              </select>
+            </label>
+            <label
+              >Shell
+              <select
+                id="role-shell"
+                title="ambient is the read-only shell. work adds the dev toolchain. readonly denies mutating git. None of these auto-approve permission requests."
+              >
+                <option value="ambient" selected>ambient</option>
+                <option value="work">work</option>
+                <option value="readonly">readonly</option>
+              </select>
+            </label>
+          </div>
+          <label
+            >Allow (comma-separated)
+            <input
+              id="role-allow"
+              type="text"
+              placeholder="Read, Write, Edit"
+            />
+          </label>
+          <label
+            >Deny (comma-separated)
+            <input id="role-deny" type="text" placeholder="Bash(sudo *)" />
+          </label>
+          <div class="spawn-preview">
+            <div class="preview-head">
+              <span class="muted small">Prompt</span>
+            </div>
+            <textarea
+              id="role-prompt"
+              class="trace-payload"
+              spellcheck="false"
+              rows="6"
+              placeholder="# You are the …"
+            ></textarea>
+          </div>
+          <div class="spawn-preview">
+            <div class="preview-head">
+              <span class="muted small">Role TOML</span>
+              <span id="role-dirty" class="dirty" hidden>edited</span>
+            </div>
+            <textarea
+              id="role-toml"
+              class="trace-payload"
+              spellcheck="false"
+              rows="8"
+            ></textarea>
+          </div>
+          <div id="role-note" class="muted small" hidden></div>
+          <div id="role-error" class="spawn-error" hidden></div>
+          <div class="spawn-actions">
+            <button id="role-delete" class="ghost danger" hidden>Delete</button>
+            <button id="role-cancel" class="ghost">Cancel</button>
+            <button id="role-save" class="primary">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Team dialog: name, goal, success criteria, and a list of members. -->
     <div id="team-dialog" class="modal" hidden>
       <div class="modal-card">
@@ -480,10 +624,33 @@
           </div>
           <div id="team-members" class="team-members"></div>
 
+          <div class="spawn-preview">
+            <div class="preview-head">
+              <span class="muted small">Team TOML</span>
+              <span id="team-dirty" class="dirty" hidden>edited</span>
+              <span class="spacer"></span>
+              <span class="muted small">Load saved</span>
+              <select id="team-file-select"></select>
+              <button type="button" id="team-load" class="ghost small">
+                Load
+              </button>
+            </div>
+            <textarea
+              id="team-toml"
+              class="trace-payload"
+              spellcheck="false"
+              rows="8"
+            ></textarea>
+            <div class="muted small">
+              Saving writes the file. Spawning still starts the members.
+            </div>
+          </div>
+
           <div id="team-error" class="spawn-error" hidden></div>
           <div id="team-results" class="team-results" hidden></div>
           <div class="spawn-actions">
             <button id="team-cancel" class="ghost">Cancel</button>
+            <button id="team-save-file" class="ghost">Save file</button>
             <button id="team-submit" class="primary">Spawn team</button>
           </div>
         </div>
