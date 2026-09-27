@@ -54,6 +54,9 @@ typecheck-pyright: ## Static type checks with pyright (alternative to mypy)
 test: ## Run the test suite (sandbox tests skip when bwrap is unavailable)
 	$(PYTHON) -m pytest
 
+test-shims: ## Wire-conformance tests for the guest shims (bun; no bwrap or model needed)
+	bun test tests/*.test.ts
+
 check: lint format-check typecheck ## All static checks
 
 ci: check test ## Static checks + tests
