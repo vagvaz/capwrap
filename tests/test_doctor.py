@@ -343,9 +343,75 @@ class TestWorktreeChecks:
         warns = [r for r in results if r.status == "warn"]
         assert len(warns) == 1
         assert (
-            f"branch capwrap/t is checked out at {git_repo.parent / 'wt'}; "
-            "spawn will fail until it is released"
+            f"branch capwrap/t is checked out at {git_repo.parent / 'wt'} "
+            "by another container; spawn will fail until it is released"
         ) in warns[0].detail
+
+    def test_own_target_checkout_is_not_a_warning(self, git_repo):
+        """A checkout at the container's own worktree target is healthy.
+
+        The runtime reuses an existing worktree at
+        `<state>/containers/<name>/worktrees/<slug>` instead of running
+        `git worktree add`, so no branch conflict can occur (regression:
+        doctor used to warn on this, implying a spawn that would succeed).
+        """
+        state_dir = git_repo.parent / "state"
+        own_target = state_dir / "containers" / "t" / "worktrees" / "work"
+        subprocess.run(
+            ["git", "worktree", "add", str(own_target), "-b", "capwrap/t"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+        )
+        config = load_config_data(
+            {
+                "name": "t",
+                "mounts": [
+                    {
+                        "src": str(git_repo),
+                        "dest": "/work",
+                        "mode": "worktree",
+                        "branch": "capwrap/t",
+                        "base": "main",
+                    }
+                ],
+            },
+            base_dir=git_repo.parent,
+        )
+        results = doctor.check_worktrees(config, state_dir=state_dir)
+        assert [r.status for r in results] == ["ok"], [r.detail for r in results]
+
+    def test_foreign_checkout_still_warns_with_path(self, git_repo):
+        """A checkout at any path other than the container's own target
+        means a foreign worktree holds the branch: warn, with the path."""
+        state_dir = git_repo.parent / "state"
+        foreign = git_repo.parent / "elsewhere"
+        subprocess.run(
+            ["git", "worktree", "add", str(foreign), "-b", "capwrap/t"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+        )
+        config = load_config_data(
+            {
+                "name": "t",
+                "mounts": [
+                    {
+                        "src": str(git_repo),
+                        "dest": "/work",
+                        "mode": "worktree",
+                        "branch": "capwrap/t",
+                        "base": "main",
+                    }
+                ],
+            },
+            base_dir=git_repo.parent,
+        )
+        results = doctor.check_worktrees(config, state_dir=state_dir)
+        warns = [r for r in results if r.status == "warn"]
+        assert len(warns) == 1
+        assert f"checked out at {foreign}" in warns[0].detail
+        assert "another container" in warns[0].detail
 
 
 # ---------------------------------------------------------------------------

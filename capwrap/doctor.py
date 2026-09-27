@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .paths import slugify, state_root
+
 #: Where the daemon answers by default; `capwrap up` binds here.
 DAEMON_HOST = "127.0.0.1"
 DAEMON_PORT = 8420
@@ -355,14 +357,46 @@ def check_env(config, environ: dict[str, str] | None = None) -> list[Result]:
     ]
 
 
-def check_worktrees(config, runner: Callable = subprocess.run) -> list[Result]:
+def own_worktree_target(config, state_dir: str | Path | None = None) -> dict[str, Path]:
+    """mount.dest -> the host path this container's own worktree would live at.
+
+    Mirrors capwrap.runtime.fsprep._prep_worktree, which passes
+    `paths.worktree(mount.dest)` as gitwt.prepare_worktree's target:
+    ``<state>/containers/<name>/worktrees/<slug-of-dest>``.
+
+    WHY this matters: _prepare_linked_worktree *reuses* that target when
+    `<target>/.git` already exists -- `git worktree add` is never invoked, so
+    the branch being checked out there cannot conflict.  So a checkout at the
+    container's OWN target path is the normal, healthy state of a re-spawned
+    container, not a problem; only a checkout at some OTHER path means a
+    foreign worktree would race us for the branch and make the spawn fail.
+    """
+    root = state_root() if state_dir is None else Path(state_dir).expanduser().resolve()
+    paths_root = root / "containers" / config.name
+    return {
+        mount.dest: paths_root / "worktrees" / slugify(mount.dest)
+        for mount in config.mounts
+        if mount.mode == "worktree"
+    }
+
+
+def check_worktrees(
+    config,
+    runner: Callable = subprocess.run,
+    state_dir: str | Path | None = None,
+) -> list[Result]:
     """Worktree mounts: repo exists, base resolves, branch not taken elsewhere.
 
     The branch conflict is the sneaky one: `git worktree add` refuses a branch
     that is already checked out in another worktree, so the spawn dies after
     the operator walked away.  Caught here, before the spawn.
+
+    A checkout at the container's own target path is exempt: the runtime
+    reuses an existing worktree there instead of running `git worktree add`
+    (see own_worktree_target).
     """
     results: list[Result] = []
+    own_targets = own_worktree_target(config, state_dir=state_dir)
     for mount in config.mounts:
         if mount.mode != "worktree" or mount.src is None:
             continue
@@ -417,12 +451,19 @@ def check_worktrees(config, runner: Callable = subprocess.run) -> list[Result]:
             continue
         checked_out = _worktree_branches(listing.stdout)
         if branch in checked_out:
+            holder = Path(checked_out[branch]).resolve()
+            own = own_targets.get(mount.dest)
+            if own is not None and holder == own.resolve():
+                # The container's own worktree: the runtime reuses it, no
+                # `git worktree add`, no conflict.
+                continue
             results.append(
                 Result(
                     f"worktree {mount.dest}",
                     "warn",
-                    f"branch {branch} is checked out at {checked_out[branch]}; "
-                    "spawn will fail until it is released",
+                    f"branch {branch} is checked out at {checked_out[branch]} "
+                    "by another container; spawn will fail until it is "
+                    "released",
                 )
             )
     return results
