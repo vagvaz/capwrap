@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Architecture review — capwrap</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+    </script>
+    <style>
+      .seam { stroke-dasharray: 4 4; }
+      .leak { stroke: #dc2626; }
+      .deep { background: linear-gradient(135deg, #0f172a, #1e293b); }
+      pre.mermaid { background: transparent; }
+      .lane { min-height: 280px; }
+      .verdict { border-left: 4px solid #059669; }
+      .verdict.reject { border-left-color: #dc2626; }
+      .verdict.revise { border-left-color: #d97706; }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans">
+    <main class="max-w-5xl mx-auto px-6 py-12 space-y-12">
+      <header class="border-b border-slate-300 pb-6 space-y-3">
+        <h1 class="font-serif text-3xl">Architecture review — capwrap</h1>
+        <p class="text-sm text-slate-500">Deepening opportunities · 27 Sep 2026 · generalize_agents @ 33265c5</p>
+        <div class="flex flex-wrap gap-5 text-xs uppercase tracking-wider text-slate-600">
+          <span class="flex items-center gap-2"><span class="inline-block w-4 h-4 border-2 border-slate-700 bg-white"></span>module</span>
+          <span class="flex items-center gap-2"><svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" class="seam" stroke="#64748b" stroke-width="2"/></svg>seam</span>
+          <span class="flex items-center gap-2"><svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" class="leak" stroke-width="2"/></svg>leakage</span>
+          <span class="flex items-center gap-2"><span class="inline-block w-4 h-4 deep border-2 border-slate-800"></span>deep module</span>
+        </div>
+        <div class="rounded-lg bg-indigo-50 border border-indigo-200 px-4 py-3 text-sm">
+          <strong>Revised after an adversarial pass.</strong> Every citation was re-verified against source.
+          One claim was withdrawn (see candidate 8), one candidate was rejected as scoped (candidate 9),
+          and two findings the first draft missed have been added (candidates 5 and 6).
+          Order below is the corrected priority, not the original one.
+        </div>
+      </header>
+
+      <section id="candidates" class="space-y-12">
+
+        <!-- 1 -->
+        <article id="c-kind" class="verdict rounded-xl border border-slate-200 bg-white p-6 space-y-4 pl-5">
+          <div class="flex flex-wrap items-center gap-3">
+            <h2 class="font-serif text-2xl">1 · Stamp <code class="font-mono">kind</code> at the ask seam</h2>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-emerald-100 text-emerald-800">Strong</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-slate-100 text-slate-600">ports &amp; adapters</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-emerald-50 text-emerald-700">accepted, revised</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">daemon.py:120-147, 1328-1335 · ipc/protocol.py · hook.py:236 · the three TS shims</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 lane">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Before — inferred from shape</p>
+              <pre class="mermaid">
+sequenceDiagram
+  participant H as hook.py
+  participant V as the three TS shims
+  participant I as _invoke
+  Note over I: context passed unvalidated<br/>protocol.py never mentions kind
+  H->>I: kind "question", no tool
+  V->>I: neither kind nor tool
+  I->>I: classify by absence of tool
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-800 p-4 lane">
+              <p class="text-xs uppercase tracking-wider text-slate-400 mb-2">After — enforced at one seam</p>
+              <pre class="mermaid">
+sequenceDiagram
+  participant H as hook.py
+  participant V as the three TS shims
+  participant I as _invoke
+  Note over I: absent kind → infer and stamp<br/>unknown explicit kind → ProtocolError
+  H->>I: kind "question"
+  V->>I: kind "question" | "approval"
+  I->>I: accepted or refused
+              </pre>
+            </div>
+          </div>
+
+          <p class="text-sm"><strong>Problem.</strong> Approval-versus-question is load-bearing three times per ask (auto-decide, routing, escalation re-derivation) and three of four shims classify by the <em>absence</em> of <code class="font-mono text-sm">tool</code>. The contract is written in prose at <code class="font-mono text-sm">daemon.py:128-133</code> — <em>shims must send kind explicitly</em> — but <code class="font-mono text-sm">_invoke</code> never enforces it, and <code class="font-mono text-sm">ipc/protocol.py</code> never mentions it.</p>
+          <p class="text-sm"><strong>Solution.</strong> Validate in <code class="font-mono text-sm">_invoke</code>: an <em>unknown explicit</em> value is a protocol error; an <em>absent</em> value is inferred and stamped.</p>
+          <div class="rounded bg-amber-50 border border-amber-200 px-3 py-2 text-sm"><strong>Constraint from the adversarial pass:</strong> do not fail closed on <em>absence</em>. Shims are staged at spawn, so a container outliving a daemon upgrade runs an old shim — refusing it would break in-flight asks. That is an availability regression, not deny-by-default.</div>
+          <ul class="text-sm space-y-1 list-disc list-inside text-slate-700">
+            <li>Prose contract becomes enforced</li>
+            <li>Shims stop knowing the heuristic</li>
+            <li>Reinforces ADR 0001, does not re-litigate it</li>
+            <li>Precondition for candidate 2's interface</li>
+          </ul>
+        </article>
+
+        <!-- 2 -->
+        <article id="c-approvals" class="verdict rounded-xl border border-slate-200 bg-white p-6 space-y-4 pl-5">
+          <div class="flex flex-wrap items-center gap-3">
+            <h2 class="font-serif text-2xl">2 · Give the approvals subsystem a home</h2>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-emerald-100 text-emerald-800">Strong</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-slate-100 text-slate-600">in-process</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-amber-50 text-amber-700">interface count corrected</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">daemon.py:1663-2280 (~617 lines, 14 methods) · init fields :338, :358, :362 · web consumers app.py:172, 428, 448, 1174, 1278, 1288</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 lane">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Before</p>
+              <pre class="mermaid">
+flowchart TB
+  W[web + shims] --> D["Daemon — 2330 lines"]
+  D --> A1[ask_operator]
+  D --> A2[_auto_decide]
+  D --> A3[_route_question]
+  D --> A4[resolve_approval]
+  D --> A5[_apply_grant]
+  D --> A6["request_capability / escalate"]
+  classDef box fill:#fff,stroke:#94a3b8;
+  class A1,A2,A3,A4,A5,A6 box
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-800 p-4 lane">
+              <p class="text-xs uppercase tracking-wider text-slate-400 mb-2">After</p>
+              <pre class="mermaid">
+flowchart TB
+  W[web + shims] --> D[Daemon]
+  D -->|"~7 facade methods"| AP["approvals module"]
+  AP --> I1[route · grant table · cards]
+  CAP["capability ops — request_capability, escalate"] -.->|boundary decision| AP
+  classDef deep fill:#0f172a,color:#f8fafc,stroke:#0f172a;
+  class AP deep
+              </pre>
+            </div>
+          </div>
+
+          <p class="text-sm"><strong>Problem.</strong> ~617 lines of routing, auto-decide, resolution and grant application live as loose methods on the largest module in the repo, over three daemon-init fields.</p>
+          <p class="text-sm"><strong>Solution.</strong> Extract one module over six collaborator handles (audit, operator mailbox, <code class="font-mono text-sm">_emit</code>, containers, explainer, grants).</p>
+          <div class="rounded bg-amber-50 border border-amber-200 px-3 py-2 text-sm"><strong>Two things the first draft got wrong:</strong> the interface is <strong>~6–7 methods, not 3</strong> — the web console alone consumes five (grants list/revoke, routing, pending, resolve). And the cited range includes <code class="font-mono text-sm">request_capability</code> (:1883-1976) and <code class="font-mono text-sm">escalate</code> (:1978-2024), which are capability-domain ops layered on <code class="font-mono text-sm">ask</code> — <strong>deciding where they land is the actual extraction boundary</strong>, and the report previously never said so.</div>
+          <ul class="text-sm space-y-1 list-disc list-inside text-slate-700">
+            <li>Deletion test passes emphatically</li>
+            <li>One ADR-defined concern, one home</li>
+            <li>Shims untouched; web needs only re-pointing</li>
+          </ul>
+        </article>
+
+        <!-- 3 -->
+        <article id="c-test-seam" class="verdict rounded-xl border border-slate-200 bg-white p-6 space-y-4 pl-5">
+          <div class="flex flex-wrap items-center gap-3">
+            <h2 class="font-serif text-2xl">3 · Publish <code class="font-mono">bind_ipc</code> and split hook verdicts from transport</h2>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-amber-100 text-amber-800">Worth exploring</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-slate-100 text-slate-600">local-substitutable</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-amber-50 text-amber-700">two claims struck</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">daemon.py:1085 · guest/hook.py:208-312 · tests/test_daemon.py — 35 call sites</p>
+
+          <p class="text-sm"><strong>Problem.</strong> Tests reach <code class="font-mono text-sm">daemon._serve_container</code> 35 times because there is no public "registered but not running" seam, and <code class="font-mono text-sm">hook.py main()</code> mixes transport with the four-way verdict mapping.</p>
+          <p class="text-sm"><strong>Solution.</strong> Publish <code class="font-mono text-sm">bind_ipc(container)</code> (a rename), and split <code class="font-mono text-sm">decide(event, policy, ask) → verdict</code> from the socket/stdio edges.</p>
+          <div class="rounded bg-amber-50 border border-amber-200 px-3 py-2 text-sm"><strong>Struck:</strong> "health-check reuses it" — no health check exists in the codebase. <strong>Struck:</strong> "decision matrix only testable in a sandbox" — the bun conformance suite already covers the pi / opencode2 / v1 matrices off-sandbox; for <code class="font-mono text-sm">hook.py</code> it is convention, not structure (it is stdlib-only and host-runnable today).</div>
+          <ul class="text-sm space-y-1 list-disc list-inside text-slate-700">
+            <li>The interface is the test surface</li>
+            <li>35 private reaches become one call</li>
+            <li>Verdict mapping testable without bwrap</li>
+          </ul>
+        </article>
+
+        <!-- 4 -->
+        <article id="c-web-kernel" class="verdict rounded-xl border border-slate-200 bg-white p-6 space-y-4 pl-5">
+          <div class="flex flex-wrap items-center gap-3">
+            <h2 class="font-serif text-2xl">4 · The web console reaches through the facade into the kernel</h2>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-amber-100 text-amber-800">Worth exploring</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-red-100 text-red-700">leakage</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-indigo-50 text-indigo-700">added after review</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">web/app.py — 1479 lines, second-largest module · :149, :164, :412, :554-593, :1230-1240, :1347, :1354</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 lane">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Before</p>
+              <pre class="mermaid">
+flowchart TB
+  HTTP[web/app.py] -->|facade| D[Daemon]
+  HTTP -.->|~15 sites, incl. two hops| K["daemon.kernel.root.find(oid)"]
+  HTTP -.-> V["authority_view assembled in the HTTP layer"]
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class K,V leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-800 p-4 lane">
+              <p class="text-xs uppercase tracking-wider text-slate-400 mb-2">After</p>
+              <pre class="mermaid">
+flowchart TB
+  HTTP[web/app.py] -->|"facade methods only"| D[Daemon]
+  D --> K[kernel]
+  D --> V[view assembly]
+  classDef deep fill:#0f172a,color:#f8fafc,stroke:#0f172a;
+  class D deep
+              </pre>
+            </div>
+          </div>
+
+          <p class="text-sm"><strong>Problem.</strong> Candidate 2 claimed "web untouched" — true only because the console is already coupled to everything: it hops to <code class="font-mono text-sm">daemon.kernel.root.find(target.oid)</code> and assembles <code class="font-mono text-sm">authority_view</code> itself.</p>
+          <p class="text-sm"><strong>Solution.</strong> Push those behind daemon facade methods so the kernel is reachable from exactly one place.</p>
+          <ul class="text-sm space-y-1 list-disc list-inside text-slate-700">
+            <li>One reach-through, not fifteen</li>
+            <li>Domain assembly leaves HTTP</li>
+            <li>Makes candidate 2's claim actually true</li>
+          </ul>
+        </article>
+
+        <!-- 5 -->
+        <article id="c-matcher" class="verdict rounded-xl border border-slate-200 bg-white p-6 space-y-4 pl-5">
+          <div class="flex flex-wrap items-center gap-3">
+            <h2 class="font-serif text-2xl">5 · Four matchers, one rule language — and only deny is re-checked</h2>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-emerald-100 text-emerald-800">Strong</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-red-100 text-red-700">silent allow</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-indigo-50 text-indigo-700">added after review</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">kernel/policy.py:68-124 · hook.py:73-90, 115-127 · pi-extension.ts:73-117, 151-163 · opencode2-plugin/index.ts:83-144 · daemon.py:100-114, 1760-1762</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 lane">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Before — the allow side never crosses back</p>
+              <pre class="mermaid">
+flowchart LR
+  P[policy.json] --> HM["guest matcher ×3"]
+  P --> HM2["host Rule.covers"]
+  HM -->|allow, decided locally| GO[call proceeds]
+  HM -->|ask| D[daemon]
+  D -.->|re-checks DENY only| HM2
+  GO --> S["permitted without host agreement"]
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class GO,S leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-800 p-4 lane">
+              <p class="text-xs uppercase tracking-wider text-slate-400 mb-2">After</p>
+              <pre class="mermaid">
+flowchart LR
+  P[policy.json] --> M["one matcher, one conformance suite"]
+  M --> D[daemon]
+  D --> GO[verdict]
+  classDef deep fill:#0f172a,color:#f8fafc,stroke:#0f172a;
+  class M deep
+              </pre>
+            </div>
+          </div>
+
+          <p class="text-sm"><strong>Problem.</strong> <code class="font-mono text-sm">Tool(glob)</code> semantics are implemented four times, the tool-summary key list three times, and the daemon re-checks only the <em>deny</em> side — so a guest matcher broader than the host <code class="font-mono text-sm">Rule</code> engine silently allows asks the host would have refused.</p>
+          <p class="text-sm"><strong>Solution.</strong> One matcher behind a seam, with the conformance suite asserting glob agreement across runtimes — not just wire behaviour against a fake daemon.</p>
+          <ul class="text-sm space-y-1 list-disc list-inside text-slate-700">
+            <li>Allow side stops bypassing the host</li>
+            <li>One rule language, four runtimes</li>
+            <li>The trap a maintainer actually hits</li>
+          </ul>
+        </article>
+
+        <!-- 6 -->
+        <article id="c-wire" class="verdict rounded-xl border border-slate-200 bg-white p-6 space-y-4 pl-5">
+          <div class="flex flex-wrap items-center gap-3">
+            <h2 class="font-serif text-2xl">6 · One wire client for the TypeScript shims</h2>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-amber-100 text-amber-800">Worth exploring</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-slate-100 text-slate-600">ports &amp; adapters</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-amber-50 text-amber-700">obstacle corrected</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">opencode2-plugin/index.ts:151-219 · pi-extension.ts:182-250 · opencode-v1-plugin.ts:42-110 · hook.py:168-205 · capctl.py:55-92</p>
+
+          <p class="text-sm"><strong>Problem.</strong> Three near-identical <code class="font-mono text-sm">askDaemon</code> implementations plus two Python ones. Genuine drift exists: pi races a <code class="font-mono text-sm">Promise.race</code> timeout while opencode uses <code class="font-mono text-sm">sock.setTimeout</code>.</p>
+          <p class="text-sm"><strong>Solution.</strong> One <code class="font-mono text-sm">wire.ts</code>, with the adapter shell — context shape, decision mapping, failure posture — left per harness.</p>
+          <div class="rounded bg-amber-50 border border-amber-200 px-3 py-2 text-sm"><strong>The stated obstacle was wrong:</strong> no staging change is needed. <code class="font-mono text-sm">capwrap/guest/</code> already binds read-only at <code class="font-mono text-sm">/opt/capwrap</code> in every container, so a sibling import is delivered today. <strong>The real obstacle:</strong> pi is "staged, never live-verified", and its jiti-on-Node import resolution cannot be proven on this host — so land this only after one live pi run. Also: the timeout postures are <em>documented</em>, not accidental (pi-extension.ts:18-19), and pi's hard timeout must survive the merge.</div>
+          <ul class="text-sm space-y-1 list-disc list-inside text-slate-700">
+            <li>Protocol fixes land once per family</li>
+            <li>Matcher duplication halves too</li>
+            <li>Python clients stay two — or add a twin</li>
+          </ul>
+        </article>
+
+        <!-- 7 -->
+        <article id="c-compose" class="verdict rounded-xl border border-slate-200 bg-white p-6 space-y-4 pl-5">
+          <div class="flex flex-wrap items-center gap-3">
+            <h2 class="font-serif text-2xl">7 · One compose loader (perf, not correctness)</h2>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-amber-100 text-amber-800">Worth exploring</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-red-100 text-red-800 line-through">correctness</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-amber-50 text-amber-700">claim withdrawn</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">teams.py:42-65 · web/app.py:68-91, 10 endpoints · doctor.py:40-64 · compose.py:497</p>
+
+          <p class="text-sm"><strong>Problem.</strong> Three loaders, three <code class="font-mono text-sm">REPO_ROOT/COMPOSE_PATH</code> copies; <code class="font-mono text-sm">compose.py</code> shells <code class="font-mono text-sm">npm root -g</code> at import, and the web console re-execs it across ten endpoints.</p>
+          <p class="text-sm"><strong>Solution.</strong> Share <code class="font-mono text-sm">COMPOSE_PATH</code> and memoize the npm lookup (cache keyed on roles-dir mtime). No new seam, no lifetime unification.</p>
+          <div class="rounded bg-red-50 border border-red-200 px-3 py-2 text-sm"><strong>Withdrawn:</strong> the "doctor reports a different role world" claim was <em>the report's only asserted live bug</em>, and it is false — doctor reads compose only for <code class="font-mono text-sm">AGENT_SETUP</code> (doctor.py:47, 149, 202, 533) and never <code class="font-mono text-sm">ROLES</code>, so custom roles cannot affect it. The differing lifetimes are also deliberate: teams/web need fresh loads to see just-saved roles; doctor is a one-shot CLI over a static table.</div>
+        </article>
+
+        <!-- 8 -->
+        <article id="c-toml" class="verdict revise rounded-xl border border-slate-200 bg-white p-6 space-y-4 pl-5">
+          <div class="flex flex-wrap items-center gap-3">
+            <h2 class="font-serif text-2xl">8 · Fold the TOML store boilerplate (optional)</h2>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-slate-200 text-slate-700">Speculative</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-amber-50 text-amber-700">both claims struck</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">roles.py:150-207 · teams.py:120-132, 237-355 · projects.py:51, 240-303</p>
+
+          <p class="text-sm"><strong>Problem.</strong> ~40 lines of load/save/delete/name-check boilerplate and three one-line <code class="font-mono text-sm">_toml_str</code> copies.</p>
+          <p class="text-sm"><strong>Solution.</strong> Fold them if convenient — and treat the name alphabet as a <em>deliberate decision</em>, not a cleanup.</p>
+          <div class="rounded bg-red-50 border border-red-200 px-3 py-2 text-sm"><strong>Both red flags struck:</strong> there is no latent serializer bug in two of three — only roles has a multi-line field, and teams/projects use <code class="font-mono text-sm">json.dumps</code>, whose escapes are valid TOML. And the three do <em>not</em> share one alphabet: roles/teams allow a leading <code class="font-mono">-</code> or <code class="font-mono">.</code> (roles.py:72, teams.py:127) while projects require a leading alphanumeric (projects.py:51) — unifying changes behaviour for one store.</div>
+        </article>
+
+        <!-- 9 -->
+        <article id="c-registry" class="verdict reject rounded-xl border border-slate-200 bg-white p-6 space-y-4 pl-5">
+          <div class="flex flex-wrap items-center gap-3">
+            <h2 class="font-serif text-2xl">9 · RoleRegistry — rejected as scoped</h2>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-red-100 text-red-800">Rejected</span>
+            <span class="text-xs uppercase tracking-wider px-2 py-1 rounded bg-amber-50 text-amber-700">kept to prevent re-suggestion</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">roles.py:273-325 · examples/roles-and-personas/compose.py:810, 824</p>
+
+          <p class="text-sm"><strong>Why it was suggested:</strong> the custom-role registry lives as mutated state on a synthesised compose module, with identity-based refresh.</p>
+          <p class="text-sm"><strong>Why it is rejected:</strong> the invariant it claims is missing is enforced everywhere roles are consumed — merge refuses shadowing (roles.py:309-311), save refuses to create it (roles.py:288), delete refuses built-ins (roles.py:273-275), and both role-consuming loaders install custom roles (teams.py:64, web/app.py:89). "Doctor does not enforce it" was vacuous: doctor consumes no roles. More decisively, the mutation is <em>forced</em>: <code class="font-mono text-sm">compose()</code> is a standalone example CLI reading its own module-global <code class="font-mono text-sm">ROLES</code>, so a registry "passed to validate and spawn" cannot reach spawn without rewriting the example.</p>
+          <div class="rounded bg-slate-100 border border-slate-300 px-3 py-2 text-sm">Reopen only as part of a larger decision to move <code class="font-mono">ROLES</code> ownership out of <code class="font-mono">examples/</code>.</div>
+        </article>
+
+      </section>
+
+      <section id="top-recommendation" class="pt-8 border-t border-slate-300">
+        <div class="rounded-xl deep text-slate-100 p-6 space-y-3">
+          <p class="text-xs uppercase tracking-wider text-slate-400">Top recommendation</p>
+          <h2 class="font-serif text-2xl"><a href="#c-kind" class="underline decoration-slate-500 underline-offset-4">1 · Stamp <code class="font-mono">kind</code> at the ask seam</a></h2>
+          <p class="text-sm text-slate-200">Smallest change, and it unlocks the largest: candidate 2's extracted module should take a <em>declared</em> kind at its <code class="font-mono">ask()</code> rather than inheriting a heuristic. It reinforces ADR 0001 instead of re-litigating it, needs one validation point in <code class="font-mono">_invoke</code> plus one line per shim, and must infer-on-absence so upgraded daemons keep serving containers running older staged shims.</p>
+          <p class="text-sm text-slate-300"><strong>Then</strong> candidate 2 — approvals out of <code class="font-mono">daemon.py</code>, with an honest ~7-method interface and an explicit decision on where <code class="font-mono">request_capability</code> and <code class="font-mono">escalate</code> land.</p>
+          <p class="text-xs text-slate-400">Correction to the original top pick: the "most urgent bug" footnote — <em>"doctor reports a role world that does not match the one you spawn into"</em> — has been removed. It was false.</p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
