@@ -2,11 +2,11 @@
  * capwrap question shim for opencode v1 — route the native `question` tool
  * to the operator's console.
  *
- * Dropped at `/home/agent/.config/opencode/plugins/capwrap.ts` by capwrap's
- * fsprep (the config dir is copied into the container). opencode v1
- * auto-loads `.ts` plugins from that directory (Bun runtime, no build
- * step), so this file stays dependency-free: `node:` builtins only, no
- * `@opencode-ai/plugin` import.
+ * Loaded via the `plugins` array in capwrap's generated opencode.json, which
+ * names the in-container copy `file:///opt/capwrap/opencode-v1-plugin.ts`
+ * (the capwrap guest dir binds at /opt/capwrap in every sandbox). opencode
+ * v1 runs `.ts` plugins directly on Bun, no build step, so this file stays
+ * dependency-free: `node:` builtins only, no `@opencode-ai/plugin` import.
  *
  * v1's plugin API exposes tool hooks but no permission hooks (unlike the
  * v2 `permission.evaluate` API this build's v2 shim uses), so permissions

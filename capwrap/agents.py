@@ -383,13 +383,17 @@ def guest_injections(profile: AgentProfile, config: ContainerConfig) -> list[Inj
     policy = config.runtime.permissions.to_policy()
     if profile.permission_encoder == "opencode":
         # One opencode.json carries the permission block, the role prompt's
-        # instructions entry and the model; skip the file entirely when none of
-        # them is set.  It is a different file from the approval plugin, so
-        # approvals and permissions compose in both modes -- and this also fixes
-        # the old silent drop of permissions under approvals="capwrap", which
-        # used to skip the opencode.json entirely.
+        # instructions entry, the model and the shim's `plugins` entry (the
+        # loading mechanism for the shim lives in this file).  Skip the file
+        # only when none of those applies; skipping it while a plugin entry
+        # exists would silently leave the shim unloaded.  It is a different
+        # file from the approval policy, so approvals and permissions compose
+        # in both modes -- and this also fixes the old silent drop of
+        # permissions under approvals="capwrap", which used to skip the
+        # opencode.json entirely.
         if (
-            not policy.is_empty
+            profile.plugin_entry
+            or not policy.is_empty
             or config.runtime.role_prompt is not None
             or config.runtime.model is not None
         ):
@@ -427,9 +431,10 @@ def _opencode_settings(profile: AgentProfile, config: ContainerConfig) -> Inject
     opencode reads a single config file, so both halves land in the same dict:
     `permission` encodes the policy, `instructions` points the system prompt at
     the bound role prompt, and `model` selects the agent's model.  Any of the
-    three may be absent; callers skip the file entirely when all are, so a
-    role-prompt-only container still gets its instructions entry without
-    inventing an empty permission block.
+    three may be absent; callers skip the file only when none of them (or the
+    shim's `plugins` entry, the shim's load path) applies, so a role-prompt-only
+    container still gets its instructions entry without inventing an empty
+    permission block.
 
     opencode's config is config-dense -- providers, MCP servers and agents all
     live in the same file -- so when a mount covers the settings path (e.g. the

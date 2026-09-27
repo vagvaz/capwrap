@@ -409,11 +409,50 @@ def test_opencode_native_permissions_and_role_prompt_share_one_file(tmp_path):
     }
 
 
-def test_opencode_with_neither_permissions_nor_role_prompt_skips_the_file(
-    tmp_path,
-):
+def test_bare_opencode_config_still_carries_the_plugin_entry(tmp_path):
     config = _config(tmp_path, agent="opencode")
-    assert agents.guest_injections(agents.get_profile("opencode"), config) == []
+    injections = agents.guest_injections(agents.get_profile("opencode"), config)
+    assert len(injections) == 1
+    assert injections[0].dest.endswith("opencode.json")
+    assert loads(injections[0]) == {
+        "plugins": ["file:///opt/capwrap/opencode-v1-plugin.ts"]
+    }
+
+
+@pytest.mark.parametrize("name", ["opencode", "opencode2"])
+def test_bare_opencode_profile_plugin_entry_is_never_null(name):
+    """The `plugins` entry in opencode.json is how the question shim loads;
+    a profile without it would silently leave the shim unloaded."""
+    assert agents.get_profile(name).plugin_entry is not None
+
+
+@pytest.mark.parametrize("name", ["opencode", "opencode2"])
+def test_bare_opencode_profile_with_native_approvals_emits_settings_only(
+    tmp_path, name
+):
+    """With nothing configured, opencode.json exists only to load the shim
+    via its `plugins` entry: no invented permission block, no instructions,
+    no model."""
+    config = _config(tmp_path, agent=name)
+    injections = agents.guest_injections(agents.get_profile(name), config)
+
+    assert len(injections) == 1
+    assert injections[0].dest.endswith("opencode.json")
+    profile = agents.get_profile(name)
+    assert loads(injections[0]) == {"plugins": [profile.plugin_entry]}
+
+
+def test_bare_opencode2_capwrap_approvals_compose_policy_and_plugin(tmp_path):
+    config = _config(tmp_path, agent="opencode2", approvals="capwrap")
+    injections = agents.guest_injections(agents.get_profile("opencode2"), config)
+
+    dests = [i.dest for i in injections]
+    assert GUEST_POLICY in dests
+
+    settings = [i for i in injections if i.dest.endswith("opencode.json")]
+    assert len(settings) == 1
+    profile = agents.get_profile("opencode2")
+    assert loads(settings[0]) == {"plugins": [profile.plugin_entry]}
 
 
 # --------------------------------------------------------------------------
