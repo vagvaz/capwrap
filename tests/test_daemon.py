@@ -10,12 +10,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from capwrap.config import load_config_data
-from capwrap.daemon import Daemon
+from capwrap.daemon import Daemon, _approval_kind
 from capwrap.errors import CapwrapError, ConfigError
 from capwrap.ipc.protocol import Request, Response
 from capwrap.runtime import supervisor
@@ -402,6 +405,29 @@ async def test_ask_times_out_rather_than_hanging_forever(daemon, tmp_path):
         c.paths.socket, "ask", {"question": "anyone there?", "timeout": 0.1}
     )
     assert reply.ok and reply.result["decision"] == "timeout"
+
+
+def test_approval_kind_honours_an_explicit_kind_over_the_tool_heuristic():
+    """A shim speaking for a question tool stamps kind: "question" explicitly.
+
+    The daemon honours it even when the context also carries a tool key --
+    that tool key is what used to turn claude's AskUserQuestion into an
+    approval card.  The legacy signal (no kind at all) is unchanged.
+    """
+    # Explicit question kind wins over the tool-key heuristic.
+    assert _approval_kind({"kind": "question", "tool": "AskUserQuestion"}) == (
+        "question"
+    )
+    # An explicit approval kind is honoured too.
+    assert _approval_kind({"kind": "approval"}) == "approval"
+    # Legacy: a tool key with no kind is still an approval...
+    assert _approval_kind({"tool": "Bash", "input": {"command": "git push"}}) == (
+        "approval"
+    )
+    # ...and a structured card kind still is one.
+    assert _approval_kind({"kind": "escalation"}) == "approval"
+    # Neither tool nor kind: conversation, as before.
+    assert _approval_kind({}) == "question"
 
 
 async def test_pending_approvals_carry_a_kind_for_the_inbox_tabs(daemon, tmp_path):
@@ -883,6 +909,128 @@ async def test_hook_policy_is_read_only_to_the_agent(daemon, tmp_path, require_s
     output = container.session.scrollback().decode(errors="replace")
     assert "Read-only file system" in output or "Permission denied" in output, output
     assert '"allow": []' in output or "sudo" in output, output
+
+
+ASK_QUESTION_INPUT = (
+    '{"questions":[{"question":"which database should I use?","header":"DB",'
+    '"options":[{"label":"postgres","description":"boring and solid"},'
+    '{"label":"sqlite","description":"zero admin"}]}]}'
+)
+
+
+@pytest.mark.sandbox
+async def test_hook_sends_a_claude_question_card_to_the_operator(
+    daemon, tmp_path, require_sandbox
+):
+    """claude's AskUserQuestion is a question, not a permission: with
+    routing=forward it queues as a question card in the operator's inbox, and
+    the answer rides back as the hook's verdict text.
+
+    The card is asserted through the inbox's question surface -- the same
+    messages the console's Questions tab renders -- not through the raw
+    pending-approval queue, which would pass even if the card were misfiled
+    as an approval.
+    """
+    daemon.register(
+        config(
+            "curious",
+            tmp_path,
+            runtime={
+                "approvals": "capwrap",
+                "command": hook_command("AskUserQuestion", ASK_QUESTION_INPUT),
+            },
+        )
+    )
+    container = await daemon.start("curious")
+
+    message = None
+    for _ in range(200):
+        asked = [
+            m
+            for m in daemon.mailboxes.get("operator").recent(10)
+            if m.kind == "question"
+        ]
+        if asked:
+            message = asked[-1]
+            break
+        await asyncio.sleep(0.05)
+
+    assert message is not None, "the question never reached the operator"
+    payload = message.payload
+    assert "which database should I use?" in payload["question"]
+    assert payload["context"]["kind"] == "question"
+    assert "tool" not in payload["context"], "a tool key would misfile the card"
+    assert payload["context"]["options"] == ["postgres", "sqlite"]
+
+    daemon.resolve_approval(payload["id"], "explain", "postgres")
+    await asyncio.wait_for(container.session.wait(), timeout=30)
+
+    verdict = container.session.scrollback().decode(errors="replace")
+    # PreToolUse has no tool-result channel: the answer is handed back as the
+    # denial reason, prefixed so the model reads it as an answer, not a
+    # failure, and does not re-ask.
+    assert '"permissionDecision": "deny"' in verdict, verdict
+    assert "do not call the question tool again" in verdict, verdict
+    assert "postgres" in verdict, verdict
+
+
+@pytest.mark.sandbox
+async def test_block_routing_keeps_the_question_in_the_agent_terminal(
+    daemon, tmp_path, require_sandbox
+):
+    """routing=block: the hook is told not to queue a card and lets the native
+    picker through -- the behaviour the old AskUserQuestion bypass defended."""
+    daemon.register(
+        config(
+            "reserved",
+            tmp_path,
+            runtime={
+                "approvals": "capwrap",
+                "question_routing": "block",
+                "command": hook_command("AskUserQuestion", ASK_QUESTION_INPUT),
+            },
+        )
+    )
+    container = await daemon.start("reserved")
+    await asyncio.wait_for(container.session.wait(), timeout=30)
+
+    verdict = container.session.scrollback().decode(errors="replace")
+    assert '"permissionDecision": "allow"' in verdict, verdict
+    assert not daemon.pending_approvals(), "block must not create a card"
+    assert not [
+        m for m in daemon.mailboxes.get("operator").recent(10) if m.kind == "question"
+    ], "block must not ping the operator's inbox"
+
+
+def test_hook_without_a_daemon_lets_the_question_through_natively(tmp_path):
+    """Fail toward the native human prompt: with no daemon to route through,
+    the question tool runs and the agent asks in its own terminal."""
+    hook = Path(__file__).resolve().parents[1] / "capwrap" / "guest" / "hook.py"
+    event = json.dumps(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [{"question": "which port?", "options": []}]},
+            "session_id": "s1",
+            "cwd": "/work",
+        }
+    )
+    proc = subprocess.run(
+        [sys.executable, str(hook)],
+        input=event,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            **os.environ,
+            "CAPWRAP_SOCKET": str(tmp_path / "missing.sock"),
+            "CAPWRAP_POLICY": str(tmp_path / "missing-policy.json"),
+        },
+    )
+    assert proc.returncode == 0, proc.stderr
+    verdict = json.loads(proc.stdout)["hookSpecificOutput"]
+    assert verdict["permissionDecision"] == "allow"
+    assert "unreachable" in verdict["permissionDecisionReason"], verdict
 
 
 # ==========================================================================

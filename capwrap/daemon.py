@@ -124,10 +124,21 @@ def _approval_kind(context: dict) -> str:
     card -- a capability request, an escalation, a permission escalation -- is
     an *approval*: it wants a decision.  A plain question (no tool, no
     structured kind) is conversation: it wants an answer, not a verdict.
+
+    A shim speaking for a question tool (claude's AskUserQuestion) stamps
+    ``kind: "question"`` on its context, and that is honoured *before* the
+    tool-key heuristic: a question stays a question even when the context
+    happens to carry a tool.  Absence of a ``tool`` key is only the legacy
+    signal, which is why shims must send ``kind`` explicitly.
     """
+    kind = context.get("kind")
+    if kind == "question":
+        return "question"
+    if kind == "approval":
+        return "approval"
     if context.get("tool"):
         return "approval"
-    if context.get("kind") in (
+    if kind in (
         "capability_request",
         "escalation",
         "permission_escalation",

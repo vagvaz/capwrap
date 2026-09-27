@@ -135,6 +135,36 @@ def _short(value: object, limit: int = 120) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def question_text(tool_input: dict) -> str:
+    """The agent's questions as the operator will read them on the card.
+
+    One line per question, the way the opencode2 shim renders a batch.
+    ``describe`` collapses it to the first question plus a count, which is
+    right for a queue summary but hides what was actually asked.
+    """
+    questions = tool_input.get("questions") or []
+    asked = [
+        str(q.get("question", "")).strip() for q in questions if isinstance(q, dict)
+    ]
+    return "\n".join(text for text in asked if text)
+
+
+def question_options(tool_input: dict) -> list[str]:
+    """The answer choices, flattened across questions, as chip labels.
+
+    The console turns this list into clickable chips -- the same surface
+    `capctl ask --options` feeds (see `cmd_ask`).
+    """
+    questions = tool_input.get("questions") or []
+    return [
+        str(option.get("label", "")).strip()
+        for q in questions
+        if isinstance(q, dict)
+        for option in (q.get("options") or [])
+        if isinstance(option, dict) and option.get("label")
+    ]
+
+
 def ask_operator(question: str, context: dict) -> dict:
     """Block on the capwrap daemon until the operator answers."""
     if not os.path.exists(SOCKET):
@@ -191,14 +221,63 @@ def main() -> None:
     if matches(policy.get("allow", []), tool, summary):
         respond("allow", f"capwrap policy allows {tool}")
 
-    if tool == "AskUserQuestion":
-        # Not a permission: the agent asking its human a question. Diverting it
-        # to the queue turned a conversation into approval cards; the picker
-        # belongs in this agent's own terminal, where the operator answers it
-        # natively. Allow it through untouched.
-        respond("allow", "questions are conversation, not permission")
-
     container = os.environ.get("CAPWRAP_CONTAINER", "?")
+
+    if tool == "AskUserQuestion":
+        # Not a permission: the agent asking its human a question. It still
+        # goes through the daemon so the container's question routing decides
+        # where it surfaces -- "forward" queues a question card in the
+        # console, "block" keeps it in this agent's terminal, "auto" answers
+        # it autonomously. (The old local bypass existed because the daemon
+        # classified any context carrying a tool as an approval; it now
+        # honours an explicit kind, so this context carries kind: "question"
+        # and deliberately no tool key.)
+        context = {
+            "kind": "question",
+            "container": container,
+            "cwd": event.get("cwd"),
+            "session": event.get("session_id"),
+            "questions": tool_input.get("questions"),
+        }
+        options = question_options(tool_input)
+        if options:
+            context["options"] = options
+
+        try:
+            result = ask_operator(question_text(tool_input) or summary, context)
+        except (OSError, json.JSONDecodeError, socket.timeout) as exc:
+            # Fail toward the native human prompt: the tool runs and Claude
+            # asks in its own terminal. Allowing a question tool is harmless
+            # -- unlike a permission check, there is nothing to bypass.
+            respond("allow", f"capwrap unreachable ({exc}); asking natively")
+
+        decision = result.get("decision")
+        answer = result.get("message") or result.get("reason") or ""
+        if decision == "block":
+            # routing=block: no card was queued. The question belongs in this
+            # agent's own terminal -- the behaviour the old bypass defended --
+            # so let the native picker through.
+            respond("allow", answer or "questions are conversation, not permission")
+        if decision in ("allow", "explain"):
+            # "forward" answered by the operator, or "auto" answered by the
+            # daemon: a decision was made either way. PreToolUse has no
+            # tool-result channel, so the only way to hand the answer back is
+            # as the denial reason; the prefix frames it as an answer rather
+            # than a failure so the model does not re-ask (wording proven in
+            # the opencode2 shim).
+            respond(
+                "deny",
+                "capwrap: this is the answer to your question, delivered as the "
+                "denial reason — do not call the question tool again: "
+                + (answer or "(no text was given)"),
+            )
+        if decision in ("deny", "reject"):
+            # The operator refused the question outright.
+            respond("deny", answer or "the operator declined to answer")
+        # timeout (or an unknown reply shape): nobody decided. Fall back to
+        # the native picker rather than answering on the operator's behalf.
+        respond("allow", answer or "no answer from the operator; asking natively")
+
     question = f"{tool}: {summary}" if summary else f"run {tool}"
 
     context = {
