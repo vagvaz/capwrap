@@ -1253,23 +1253,11 @@ class CapKernel:
 
     # -- operator --------------------------------------------------------
 
-    def ask(self, actor: str, question: str, context: dict | None = None) -> dict:
-        """Route a question to the operator's inbox.
-
-        Deliberately not gated on a capability the agent could lose: reaching
-        the human is granted to every container at creation and is the one
-        channel that must never be revocable by another agent.
-        """
-        message = {
-            "from": actor,
-            "kind": "question",
-            "payload": {"question": question, "context": context or {}},
-        }
-        self.audit.record(
-            actor, "ask", allowed=True, target="operator", detail=question[:200]
-        )
-        self.hooks.deliver_message(self.operator_gate.label, message)
-        return {"asked": True}
+    # No bare `Kernel.ask()` here, on purpose: the "ask" op is handled
+    # end-to-end by the daemon (`daemon._invoke` -> `Daemon.ask_operator`),
+    # which owns question routing, approval classification, blocking and
+    # reply delivery. A kernel-side shortcut would silently bypass that
+    # routing for every harness. Extend `capwrap/daemon.py` instead.
 
     def operator_grant(
         self,

@@ -372,21 +372,6 @@ def test_a_child_inherits_only_what_its_parent_delegates(kernel):
         kernel.register_container(greedy, parent="parent")
 
 
-# ==========================================================================
-# the operator channel
-# ==========================================================================
-
-
-def test_every_container_can_always_reach_the_operator(kernel):
-    kernel.register_container(config("a"))
-    asked = []
-    kernel.hooks.deliver_message = lambda target, msg: asked.append((target, msg))
-
-    kernel.ask("a", "may I write to /etc?")
-    assert asked and asked[0][0] == "operator"
-    assert asked[0][1]["payload"]["question"] == "may I write to /etc?"
-
-
 def test_container_tree_reflects_parentage(kernel):
     kernel.register_container(
         config("root-agent", factory={"rights": ["create"], "quota": {"containers": 1}})
