@@ -22,7 +22,8 @@ process.env.CAPWRAP_POLICY = POLICY_PATH;
 // the timeout only has to be shorter than the test's failure timeout.
 process.env.CAPWRAP_ASK_TIMEOUT = "5";
 
-const plugin = (await import("../capwrap/guest/opencode-plugin.ts")).default;
+const plugin = (await import("../capwrap/guest/opencode2-plugin/index.ts"))
+  .default;
 
 describe("opencode2 question shim", () => {
   const added: any[] = [];
@@ -71,9 +72,9 @@ describe("opencode2 question shim", () => {
     const text = String((result as any)?.content ?? "");
     expect(text).toContain("console unreachable");
     expect(text).toContain("Do not call the question tool again");
-    expect(String((result as any)?.output ?? "")).toContain(
-      "Do not call the question tool again",
-    );
+    // `content` only: v2 rejects a result carrying `output` when the tool
+    // declares no output schema, and the model reads that as an error.
+    expect((result as any)?.output).toBeUndefined();
     // The transform path wins: no throwing execute.before hook alongside it.
     expect(unusedHook).toBeNull();
   });

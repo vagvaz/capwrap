@@ -1,11 +1,13 @@
 /**
  * capwrap gate for opencode v2 — route permission prompts to the operator's inbox.
  *
- * Dropped at `/home/agent/.config/opencode2/plugins/capwrap.ts` by capwrap's
- * fsprep (v2 reads its own config dir, not v1's `~/.config/opencode`). opencode
- * auto-loads every `.ts` file in that directory (Bun runtime, no build step),
- * so this file must stay dependency-free: `node:` builtins only, a plain
- * object export, no `@opencode-ai/plugin` import.
+ * Lives at `capwrap/guest/opencode2-plugin/` in the repo (the v2 plugin API
+ * loads a directory containing `index.ts`, not a bare file); the guest dir is
+ * bind-mounted read-only at `/opt/capwrap` in every container, and the
+ * generated opencode.json's `plugins` array names the entry
+ * `file:///opt/capwrap/opencode2-plugin` so v2 loads it from there. The file
+ * must stay dependency-free: `node:` builtins only, a plain object export
+ * (an `id` plus a `setup`), no `@opencode-ai/plugin` import.
  *
  * opencode v2 runs the `permission.evaluate` hook for every tool call and
  * blocks until the handler resolves. Setting `event.effect` to "allow" or
@@ -306,7 +308,11 @@ export default {
             .map((q: any) => `"${q?.question ?? q}"="${answer}"`)
             .join(", ") +
           `. You can now continue with the user's answers in mind.`;
-        return { content: formatted, output: formatted };
+        // Return `content` only: the tool declares no output schema, and v2
+        // rejects a result carrying `output` ("Tool result declared output
+        // without an output schema"), which the model then reads as an error
+        // instead of the answer.
+        return { content: formatted };
       }
       const unreachable =
         routed && !answer
@@ -314,7 +320,6 @@ export default {
           : "capwrap console unreachable";
       return {
         content: `${unreachable}. State the question in your terminal and end your turn. Do not call the question tool again.`,
-        output: `${unreachable}. State the question in your terminal and end your turn. Do not call the question tool again.`,
       };
     };
 

@@ -146,19 +146,25 @@ def test_compose_emits_the_chosen_question_routing(compose, tmp_path, monkeypatc
     assert 'question_routing = "forward"' in path.read_text()
 
 
-def test_the_opencode2_command_is_the_beta_binary(compose, tmp_path, monkeypatch):
-    """compose launches the opencode2 beta, not the v2.0.18 wrapper.
+def test_the_opencode2_command_and_own_config_dir(compose, tmp_path, monkeypatch):
+    """The opencode2 profile runs opencode2 and pins its config dir.
 
-    On hosts where `opencode2` is a wrapper that execs opencode v2.0.18, the
-    wrapper reads `~/.config/opencode`, not the opencode2 config dir, so the
-    staged shim never loads. `opencode2.bin` is the beta that reads it.
+    opencode2 reads `~/.config/opencode` by default -- the same dir the v1
+    profile uses -- so OPENCODE_CONFIG_DIR points it at its own dir.  The
+    profile keeps its own binary name so a host shipping both products still
+    runs the v2 one.
     """
     monkeypatch.setattr(compose, "BUILT", tmp_path)
 
     path = compose.compose("implementer", "pragmatist", agent="opencode2")
-    assert 'command = ["/opt/opencode/opencode2.bin", "--standalone"]' in (
-        path.read_text()
-    )
+    text = path.read_text()
+    assert 'command = ["/opt/opencode/opencode2", "--standalone"]' in text
+    assert "[runtime.env]" in text
+    assert 'OPENCODE_CONFIG_DIR = "/home/agent/.config/opencode2"' in text
+
+    # The v1 profile must not inherit the v2 config-dir override.
+    v1 = compose.compose("implementer", "pragmatist", agent="opencode")
+    assert "OPENCODE_CONFIG_DIR" not in v1.read_text()
 
 
 def test_the_opencode_shell_rules_are_retagged_to_shell(compose, tmp_path, monkeypatch):

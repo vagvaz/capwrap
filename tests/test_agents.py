@@ -167,18 +167,16 @@ def test_claude_hook_with_empty_policy_omits_permissions(tmp_path):
     assert "permissions" not in settings
 
 
-def test_opencode2_hook_stages_the_real_plugin_and_policy(tmp_path):
+def test_opencode2_hook_stages_only_the_policy(tmp_path):
+    """v2 loads the plugin from the guest dir via the config `plugins` entry,
+    so the hook stages only the policy -- never a config-dir shim."""
     config = _config(tmp_path, approvals="capwrap", auto_allow=["Read"])
     injections = agents.guest_injections(agents.get_profile("opencode2"), config)
 
-    plugin = injections[0]
-    assert plugin.src is not None and plugin.src.is_file()
-    assert plugin.src.name == "opencode-plugin.ts"
-    assert plugin.dest == f"{GUEST_HOME}/.config/opencode2/plugins/capwrap.ts"
-
-    policy = loads(injections[1])
+    policy = loads(injections[0])
     assert policy == {"allow": ["read"], "deny": [], "fallback": "deny"}
-    assert injections[1].dest == GUEST_POLICY
+    assert injections[0].dest == GUEST_POLICY
+    assert all("plugins/capwrap.ts" not in i.dest for i in injections)
 
 
 def test_pi_hook_stages_the_real_extension_and_policy(tmp_path):
@@ -361,14 +359,13 @@ def test_opencode2_capwrap_permissions_compose_with_opencode_json(tmp_path):
     injections = agents.guest_injections(agents.get_profile("opencode2"), config)
 
     dests = [i.dest for i in injections]
-    assert f"{GUEST_HOME}/.config/opencode2/plugins/capwrap.ts" in dests
     assert GUEST_POLICY in dests
 
     settings = [i for i in injections if i.dest.endswith("opencode.json")]
     assert len(settings) == 1
-    assert loads(settings[0]) == {
-        "permission": {"read": "allow"},
-    }
+    payload = loads(settings[0])
+    assert payload["permission"] == {"read": "allow"}
+    assert payload["plugins"] == ["file:///opt/capwrap/opencode2-plugin"]
 
 
 def test_opencode2_capwrap_role_prompt_gets_instructions_only(tmp_path):
@@ -383,7 +380,10 @@ def test_opencode2_capwrap_role_prompt_gets_instructions_only(tmp_path):
 
     settings = [i for i in injections if i.dest.endswith("opencode.json")]
     assert len(settings) == 1
-    assert loads(settings[0]) == {"instructions": [GUEST_ROLE_PROMPT]}
+    assert loads(settings[0]) == {
+        "instructions": [GUEST_ROLE_PROMPT],
+        "plugins": ["file:///opt/capwrap/opencode2-plugin"],
+    }
 
     bound = [i for i in injections if i.dest == GUEST_ROLE_PROMPT]
     assert len(bound) == 1
@@ -451,7 +451,14 @@ def _opencode_settings(config) -> dict:
     injections = agents.guest_injections(agents.get_profile("opencode2"), config)
     settings = [i for i in injections if i.dest.endswith("opencode.json")]
     assert len(settings) == 1
-    return loads(settings[0])
+    payload = loads(settings[0])
+    # Every opencode2 config names the shim in `plugins`; it is a constant, not
+    # part of how the user's config merges with capwrap's keys.  Assert it and
+    # drop it so the merge tests below stay focused.  The entry itself is
+    # covered by test_opencode2_hook_stages_only_the_policy and
+    # test_opencode2_capwrap_permissions_compose_with_opencode_json.
+    assert payload.pop("plugins") == ["file:///opt/capwrap/opencode2-plugin"]
+    return payload
 
 
 def test_opencode_merge_preserves_user_config_and_adds_permission(tmp_path):
@@ -611,7 +618,9 @@ def test_policy_rules_are_normalized_for_the_guest_matchers(tmp_path):
         auto_deny=["Bash(sudo *)"],
     )
     injections = agents.guest_injections(agents.get_profile("opencode2"), config)
-    policy = loads(injections[1])
+    # The opencode2 hook stages only the policy now; the shim is loaded from
+    # the guest dir via the config's `plugins` entry.
+    policy = loads(injections[0])
     assert policy["allow"] == ["read", "bash(git log*)"]
     assert policy["deny"] == ["bash(sudo *)"]
 
@@ -625,13 +634,13 @@ def test_policy_fallback_follows_the_ask_floor(tmp_path):
         permissions={"ask": ["Write"]},
     )
     policy = loads(
-        agents.guest_injections(agents.get_profile("opencode2"), with_ask)[1]
+        agents.guest_injections(agents.get_profile("opencode2"), with_ask)[0]
     )
     assert policy["fallback"] == "ask"
 
     without_ask = _config(tmp_path, approvals="capwrap", auto_allow=["Read"])
     policy = loads(
-        agents.guest_injections(agents.get_profile("opencode2"), without_ask)[1]
+        agents.guest_injections(agents.get_profile("opencode2"), without_ask)[0]
     )
     assert policy["fallback"] == "deny"
 
@@ -861,7 +870,7 @@ def test_to_opencode_drops_default_mode():
 # --------------------------------------------------------------------------
 
 
-def test_opencode2_capwrap_approvals_stage_plugin_policy_and_skill(tmp_path, state_dir):
+def test_opencode2_capwrap_approvals_wire_plugin_policy_and_skill(tmp_path, state_dir):
     config = make(
         {
             "name": "oc2",
@@ -869,18 +878,22 @@ def test_opencode2_capwrap_approvals_stage_plugin_policy_and_skill(tmp_path, sta
                 "agent": "opencode2",
                 "approvals": "capwrap",
                 "auto_allow": ["Read"],
+                # A permissions block makes the opencode.json exist, so the
+                # `plugins` entry that loads the shim can be asserted here.
+                "permissions": {"allow": ["Read"]},
             },
         },
         tmp_path,
     )
     files = files_by_dest(fsprep.prepare(config, ContainerPaths("oc2")))
 
-    plugin = files[f"{GUEST_HOME}/.config/opencode2/plugins/capwrap.ts"]
-    assert plugin.is_file()
-    guest_plugin = (
-        Path(agents.__file__).resolve().parent / "guest" / "opencode-plugin.ts"
+    # No shim is staged into the config dir: the guest dir carries it and the
+    # config's `plugins` entry loads it from /opt/capwrap.
+    assert f"{GUEST_HOME}/.config/opencode2/plugins/capwrap.ts" not in files
+    settings = json.loads(
+        files[f"{GUEST_HOME}/.config/opencode2/opencode.json"].read_text()
     )
-    assert plugin.read_text() == guest_plugin.read_text()
+    assert settings["plugins"] == ["file:///opt/capwrap/opencode2-plugin"]
 
     policy = json.loads(files[GUEST_POLICY].read_text())
     assert policy == {"allow": ["read"], "deny": [], "fallback": "deny"}
@@ -1020,3 +1033,41 @@ def test_validate_sources_rejects_a_missing_role_prompt(tmp_path):
     config = make({"name": "a", "runtime": {"role_prompt": "nope.md"}}, tmp_path)
     with pytest.raises(ConfigError, match="role_prompt"):
         config.validate_sources()
+
+
+# --------------------------------------------------------------------------
+# plugin wiring: the config entries name the guest shims
+# --------------------------------------------------------------------------
+
+
+def test_plugin_entries_name_the_guest_shims():
+    """Each opencode profile names its own shim, which ships in the guest dir.
+
+    v2 loads a plugin *directory* (``index.ts``); v1 loads a bare file.  Both
+    live under ``capwrap/guest``, bound read-only at ``/opt/capwrap`` in every
+    container -- so the entry is a ``file://`` URL to that copy, never a staged
+    file inside the config dir.
+    """
+    guest = Path(agents.__file__).resolve().parent / "guest"
+
+    opencode = agents.get_profile("opencode")
+    assert opencode.plugin_entry == "file:///opt/capwrap/opencode-v1-plugin.ts"
+    assert (guest / "opencode-v1-plugin.ts").is_file()
+
+    opencode2 = agents.get_profile("opencode2")
+    assert opencode2.plugin_entry == "file:///opt/capwrap/opencode2-plugin"
+    assert (guest / "opencode2-plugin" / "index.ts").is_file()
+
+    for name in ("claude", "pi", "generic"):
+        assert agents.get_profile(name).plugin_entry is None
+
+
+def test_opencode_v1_settings_name_the_v1_plugin_entry(tmp_path):
+    config = _config(tmp_path, agent="opencode", permissions={"allow": ["Read"]})
+    injections = agents.guest_injections(agents.get_profile("opencode"), config)
+
+    settings = [i for i in injections if i.dest.endswith("opencode.json")]
+    assert len(settings) == 1
+    assert loads(settings[0])["plugins"] == [
+        "file:///opt/capwrap/opencode-v1-plugin.ts"
+    ]

@@ -277,7 +277,7 @@ auto_allow = [{auto_allow}]
 auto_deny  = [{auto_deny}]
 
 env_from_host = [{env}]
-
+{env_literal}
 {permissions}[sandbox]
 network  = {network}
 hostname = "{fname}"
@@ -562,10 +562,10 @@ AGENT_SETUP: dict[str, dict] = {
         "files": False,
     },
     "opencode2": {
-        # `opencode2` on this host is a wrapper that execs opencode v2.0.18,
-        # which ignores the opencode2 config dir; `opencode2.bin` is the beta
-        # binary that reads it (both live in the ~/.opencode/bin mount).
-        "command": ["/opt/opencode/opencode2.bin", "--standalone"],
+        # The opencode2 (v2) binary. On a host that ships both products,
+        # `opencode2` is the v2 one; the config dir is pinned below so the
+        # opencode and opencode2 profiles never share a config.
+        "command": ["/opt/opencode/opencode2", "--standalone"],
         "approvals": "capwrap",
         "native_permissions": True,
         "bash_tool": "Shell",
@@ -575,6 +575,10 @@ AGENT_SETUP: dict[str, dict] = {
             ("~/.local/share/opencode", "/home/agent/.local/share/opencode", "rw"),
         ],
         "env": ["OPENCODE_API_KEY"],
+        # opencode2 reads ~/.config/opencode by default -- the same dir the
+        # opencode profile uses -- so OPENCODE_CONFIG_DIR pins it to its own
+        # dir, the copy mount above, and the two profiles never share one.
+        "env_literal": {"OPENCODE_CONFIG_DIR": "/home/agent/.config/opencode2"},
         "files": False,
     },
     "pi": _pi_setup(),
@@ -978,6 +982,18 @@ def compose(
     # A model line only when the operator chose one at spawn; absent, the
     # agent's own current configuration (merged at prepare) decides.
     model_line = f'model     = "{model}"' if model else ""
+    # A literal `[runtime.env]` table only for agents that need one (opencode2
+    # points the beta binary at its own config dir); absent otherwise, so the
+    # generated config carries no empty table.
+    env_literal_toml = ""
+    if setup.get("env_literal"):
+        lines = "\n".join(
+            f'{key} = "{value}"' for key, value in setup["env_literal"].items()
+        )
+        env_literal_toml = (
+            "\n# Literal env vars, per agent (see AGENT_SETUP).\n[runtime.env]\n"
+            + lines
+        )
     config = TEMPLATE.format(
         role=role,
         persona=persona,
@@ -989,6 +1005,7 @@ def compose(
         command=quote(setup["command"]),
         summary=spec["summary"],
         env=quote(env_vars),
+        env_literal=env_literal_toml,
         auto_allow=quote(auto_allow),
         auto_deny=quote(auto_deny),
         permissions=permissions,

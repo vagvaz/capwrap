@@ -7,10 +7,17 @@
 # v2 is the beta that actually wires opencode's `permission.evaluate` plugin
 # hook, which runs for every tool call and blocks until it resolves -- that is
 # what makes approval routing possible. v1 declares the hook but never invokes
-# it (see opencode-agent.toml). The plugin is staged into
-# ~/.config/opencode2/plugins/capwrap.ts (v2 reads its own config dir,
-# ~/.config/opencode2 -- not v1's ~/.config/opencode), so that directory
-# must exist on the host (opencode2 creates it on first run).
+# it (see opencode-agent.toml). The plugin is NOT staged into the config dir:
+# v2 loads plugin *directories* (a bare .ts file is never discovered there),
+# so the shim ships as the repo's capwrap/guest/opencode2-plugin/index.ts,
+# visible in-container at /opt/capwrap, and the generated opencode.json's
+# `plugins` array names it (file:///opt/capwrap/opencode2-plugin). That json
+# is what capwrap stages under ~/.config/opencode2.
+#
+# Binary: `opencode2` is the v2 product. It reads ~/.config/opencode by
+# DEFAULT -- the same dir the v1 profile uses -- so OPENCODE_CONFIG_DIR below
+# points it at ~/.config/opencode2 and the two profiles stay separate. Keeping
+# its own name means a host that ships both products still runs the v2 one.
 #
 # Daemon-loss behavior: this container configures auto_allow/auto_deny only,
 # so its policy file carries fallback = "deny" -- if the capwrap daemon goes
@@ -59,15 +66,23 @@ auto_deny = [
 # Which agent profile governs guest-side injection.
 agent = "opencode2"
 
+# Literal env vars: opencode2 reads ~/.config/opencode by default (v1's dir),
+# so OPENCODE_CONFIG_DIR points it at its own config dir and the two
+# profiles' configs stay separate (see the header note above).  Kept last in
+# [runtime]: a `[runtime.env]` table would otherwise swallow the keys below
+# it into the env dict.
+[runtime.env]
+OPENCODE_CONFIG_DIR = "/home/agent/.config/opencode2"
+
 [sandbox]
 base     = "host-ro"
 network  = true          # models.dev + your provider endpoints
 hostname = "opencode2-a"
 unshare  = ["pid", "ipc", "uts", "cgroup"]
 
-# The opencode install dir, mounted read-only (opencode2 is a wrapper script
-# that resolves opencode2.bin relative to its own path, so the whole dir must
-# be mounted, not individual files).
+# The opencode install dir, mounted read-only: the binary resolves its own
+# install dir relative to its path, so the whole dir must be mounted, not
+# individual files.
 [[mounts]]
 src  = "~/.opencode/bin"
 dest = "/opt/opencode"

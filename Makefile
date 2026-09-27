@@ -9,7 +9,7 @@ PRETTIER := npx --yes prettier@3
 
 # Frontend sources: console static assets + guest-side TS plugins.
 # Vendored libs (xterm) are excluded via .prettierignore.
-FRONTEND_PATHS := capwrap/web/static capwrap/guest/opencode-plugin.ts capwrap/guest/pi-extension.ts
+FRONTEND_PATHS := capwrap/web/static capwrap/guest/opencode-v1-plugin.ts capwrap/guest/opencode2-plugin capwrap/guest/pi-extension.ts
 
 .DEFAULT_GOAL := help
 .PHONY: help venv install install-dev lint lint-fix format format-backend format-frontend \

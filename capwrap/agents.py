@@ -55,19 +55,20 @@ class AgentProfile:
     hook_protocol: str | None  # "claude" | "opencode2" | "pi" | None
     #: Guest dest for the capctl skill, or None if unknown/unread.
     skill_path: str | None
-    #: Whether the v1 question shim applies to this profile: v1's plugin
-    #: API exposes tool hooks but no permission hooks, so its shim routes
-    #: the native `question` tool to the daemon (question routing, the
-    #: console's Questions tab) while permissions stay native. The shim
-    #: file ships inside the bound guest dir at /opt/capwrap; the profile
-    #: value doubles as the marker that the settings entry should name it.
-    plugin_path: str | None
     #: Host-side, non-interactive command that explains a permission request
     #: with this agent's own harness -- the binary and credentials the
     #: operator already has, never a new dependency.  "{prompt}" and
     #: "{model}" are placeholders (see fill_explain_argv); None = no
     #: explainer for this agent.
     explain_argv: tuple[str, ...] | None
+    #: The literal entry for the `plugins` array of the agent's opencode.json,
+    #: as a `file://` directory URL -- None for agents without one.  v2's
+    #: plugin API loads a DIRECTORY containing `index.ts` (a bare `.ts` file
+    #: there is not discovered), and outside `~/.config/opencode/plugins/`
+    #: entries must be listed in the config.  The guest dir is visible in every
+    #: container at /opt/capwrap, so both entries point at that copy of the
+    #: shipped shim.  v1 loads a bare file (hence the .ts path); v2 the dir.
+    plugin_entry: str | None
 
 
 _PROFILES: dict[str, AgentProfile] = {
@@ -77,7 +78,7 @@ _PROFILES: dict[str, AgentProfile] = {
         permission_encoder="claude",
         hook_protocol="claude",
         skill_path=f"{GUEST_HOME}/.claude/skills/capwrap/SKILL.md",
-        plugin_path=None,
+        plugin_entry=None,
         # Print mode with the mutating tools denied: the explainer describes,
         # it must not act.  Best-effort deny-list, not a sandbox -- a tool
         # added to a future claude version is not covered until it is listed
@@ -103,7 +104,7 @@ _PROFILES: dict[str, AgentProfile] = {
         permission_encoder="opencode",
         hook_protocol=None,
         skill_path=f"{GUEST_HOME}/.config/opencode/skills/capwrap/SKILL.md",
-        plugin_path=f"{GUEST_HOME}/.config/opencode/plugins/capwrap.ts",
+        plugin_entry="file:///opt/capwrap/opencode-v1-plugin.ts",
         # v1's CLI has no tools-off flag for `run`; the explainer runs it in a
         # scratch cwd with a prompt that demands a direct answer (see
         # explain.py).  v2 has no `run` subcommand at all, so both opencode
@@ -126,7 +127,12 @@ _PROFILES: dict[str, AgentProfile] = {
         permission_encoder="opencode",
         hook_protocol="opencode2",
         skill_path=f"{GUEST_HOME}/.config/opencode2/skills/capwrap/SKILL.md",
-        plugin_path=None,
+        # A directory of `index.ts`, not a bare file: v2's plugin API loads
+        # plugin directories (a bare `.ts` in the plugins dir is not
+        # discovered), and entries outside the auto-load dir must be listed in
+        # opencode.json's `plugins` array.  The guest dir binds at
+        # /opt/capwrap, so the entry points at that copy.
+        plugin_entry="file:///opt/capwrap/opencode2-plugin",
         explain_argv=("opencode", "run", "--model", "{model}", "{prompt}"),
     ),
     "pi": AgentProfile(
@@ -135,7 +141,7 @@ _PROFILES: dict[str, AgentProfile] = {
         permission_encoder=None,
         hook_protocol="pi",
         skill_path=f"{GUEST_HOME}/.pi/agent/skills/capwrap/SKILL.md",
-        plugin_path=None,
+        plugin_entry=None,
         # --no-tools is the hard guarantee: the explainer must not act.
         # --thinking mirrors the example's runtime command: some models
         # (glm-5.3-flash) refuse to run without an explicit level.
@@ -157,7 +163,7 @@ _PROFILES: dict[str, AgentProfile] = {
         permission_encoder=None,
         hook_protocol=None,
         skill_path=None,
-        plugin_path=None,
+        plugin_entry=None,
         explain_argv=None,
     ),
 }
@@ -257,22 +263,22 @@ def _claude_hook(config: ContainerConfig) -> list[Injection]:
 
 
 def _opencode_hook(config: ContainerConfig) -> list[Injection]:
-    """opencode v2 plugin that diverts prompts, plus the policy file.
+    """opencode v2 approval shim, plus the policy file.
 
     Uses v2's `permission.evaluate` hook, which runs for every tool call and
     blocks until it resolves -- v1's `permission.ask` is declared but never
-    triggered, which is why the v1 profile has no shim at all.  The plugin and
-    opencode.json are different files, so approvals and native permission
+    triggered, which is why the v1 profile has no shim at all.
+
+    The plugin itself is NOT staged: v2 loads plugin *directories* (never a
+    bare `.ts` file), and the shipped shim already sits in the guest dir that
+    binds read-only at /opt/capwrap in every container.  What loads it is the
+    `plugins` array entry in the injected opencode.json
+    (`file:///opt/capwrap/opencode2-plugin`, see AgentProfile.plugin_entry) --
+    which is also why this injection is just the policy file.  The permission
+    block lives in the same opencode.json, so approvals and native permission
     rules compose without ever needing to merge JSON.
     """
-    return [
-        Injection(
-            staged_name="opencode-plugin.ts",
-            src=Path(__file__).resolve().parent / "guest" / "opencode-plugin.ts",
-            dest=f"{GUEST_HOME}/.config/opencode2/plugins/capwrap.ts",
-        ),
-        _policy_injection(config),
-    ]
+    return [_policy_injection(config)]
 
 
 def _pi_hook(config: ContainerConfig) -> list[Injection]:
@@ -454,15 +460,15 @@ def _opencode_settings(profile: AgentProfile, config: ContainerConfig) -> Inject
             name: {"model": config.runtime.model}
             for name in ("build", "plan", "general", "orchestrator")
         }
-    if profile.plugin_path:
-        # v1 loads plugins only from its config's `plugins` array (file://
-        # entries) or the project's .opencode/plugins/ dir — never the global
-        # plugins dir. The shim is already visible in-container at /opt/capwrap
-        # (the guest dir binds there in every sandbox), so the entry points at
-        # that copy. v1's plugin API has tool hooks but no permission hooks:
-        # this routes the native `question` tool to the daemon (question
-        # routing, the console's Questions tab); permissions stay native.
-        settings["plugins"] = ["file:///opt/capwrap/opencode-v1-plugin.ts"]
+    if profile.plugin_entry:
+        # opencode's plugin API loads entries listed in the config's `plugins`
+        # array (v2 loads directories, v1 bare files -- see plugin_entry).
+        # The shim is already visible in-container at /opt/capwrap (the guest
+        # dir binds there in every sandbox), so the entry points at that copy.
+        # v1's plugin API has tool hooks but no permission hooks: this routes
+        # the native `question` tool to the daemon (question routing, the
+        # console's Questions tab); permissions stay native.
+        settings["plugins"] = [profile.plugin_entry]
 
     assert profile.settings_path is not None, "opencode encoder implies a settings file"
     user = _read_user_settings(config, profile.settings_path)

@@ -119,7 +119,9 @@ export const CapwrapQuestions = async (ctx: unknown) => {
         : [];
       if (!questions.length) return;
       const text = questions
-        .map((q: any) => (typeof q === "string" ? q : String(q?.question ?? "")))
+        .map((q: any) =>
+          typeof q === "string" ? q : String(q?.question ?? ""),
+        )
         .filter(Boolean)
         .join("\n");
       if (!text) return;
