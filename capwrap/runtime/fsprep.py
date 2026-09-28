@@ -184,6 +184,42 @@ def _prep_tmpfs(mount, config, paths, prepared, backend) -> None:
     )
 
 
+#: Injection destinations capwrap has retired.  Paths relative to `GUEST_HOME`
+#: that older generations of capwrap staged into config-dir copies.  opencode
+#: auto-loads `plugins/*.ts` from its config dir, so a leftover at one of these
+#: is reported as a failed plugin on every boot -- and the agent cannot remove
+#: it, because staged files are mode 0444.  See docs and issue #7.
+RETIRED_INJECTION_PATHS = (
+    ".config/opencode/plugins/capwrap.ts",
+    ".config/opencode2/plugins/capwrap.ts",
+)
+
+
+def _drop_retired_injections(guest_dest: str, copy_root: Path) -> list[Path]:
+    """Remove capwrap's own retired bind targets from an existing copy.
+
+    `_prep_copy` reuses a copy that already exists, deliberately: it holds
+    state the agent has written, and refreshing it from the host would throw
+    that away.  But capwrap has also staged files *into* those copies in the
+    past and later stopped, and nothing else would ever remove them.
+
+    Only paths capwrap itself once declared are touched.  Anything the agent
+    wrote is left alone, and a path that is not under this mount is not
+    considered at all.
+    """
+    removed: list[Path] = []
+    prefix = guest_dest.rstrip("/")
+    for retired in RETIRED_INJECTION_PATHS:
+        guest_path = f"{GUEST_HOME}/{retired}"
+        if not guest_path.startswith(prefix + "/"):
+            continue
+        stale = copy_root / guest_path[len(prefix) + 1 :]
+        if stale.is_file() or stale.is_symlink():
+            stale.unlink(missing_ok=True)
+            removed.append(stale)
+    return removed
+
+
 def _prep_copy(mount, config, paths, prepared, backend) -> None:
     """A private copy: the agent gets the contents but shares nothing."""
     target = paths.copy(mount.dest)
@@ -194,6 +230,10 @@ def _prep_copy(mount, config, paths, prepared, backend) -> None:
             shutil.copytree(mount.src, target, symlinks=True, dirs_exist_ok=False)
         else:
             shutil.copy2(mount.src, target)
+    else:
+        # Reused: reconcile capwrap's own leftovers before binding, so a
+        # retired shim stops failing to load on every subsequent start.
+        _drop_retired_injections(mount.dest, target)
     prepared.mounts.append(
         ResolvedMount(mount.dest, "rw", src=target, origin=f"copy of {mount.src}")
     )

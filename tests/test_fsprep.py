@@ -84,6 +84,69 @@ def test_copy_mode_makes_a_private_copy(tmp_path, state_dir):
     assert (src / "seed.txt").read_text() == "original\n"
 
 
+def test_existing_copy_drops_capwrap_retired_injections_only(tmp_path, state_dir):
+    """A reused copy loses capwrap's own retired files, not the agent's state.
+
+    opencode auto-loads `plugins/*.ts` from its config dir, so a capwrap shim
+    staged there by an older generation and never removed fails to load on
+    every boot -- reported as `1 plugin failed` on an otherwise healthy
+    container (issue #7).  The agent cannot clean it up: staged files are 0444.
+    """
+    dest = "/home/agent/.config/opencode2"
+    src = tmp_path / "cfg"
+    src.mkdir()
+    (src / "keep.txt").write_text("host\n")
+
+    config = make(
+        {"name": "c", "mounts": [{"src": "cfg", "dest": dest, "mode": "copy"}]},
+        tmp_path,
+    )
+    paths = ContainerPaths("c")
+    fsprep.prepare(config, paths)
+    copy_root = paths.copy(dest)
+
+    # Simulate what an older capwrap left behind in the copy.
+    stale = copy_root / "plugins" / "capwrap.ts"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("")
+    stale.chmod(0o444)
+
+    # State the agent has written must survive the reconciliation.
+    (copy_root / "agent-notes.txt").write_text("mine\n")
+
+    fsprep.prepare(config, paths)
+
+    assert not stale.exists(), "capwrap's retired shim must not outlive its mechanism"
+    assert (copy_root / "agent-notes.txt").read_text() == "mine\n"
+    assert (copy_root / "keep.txt").read_text() == "host\n"
+    # The directory opencode scans stays usable even if now empty.
+    assert (copy_root / "plugins").is_dir()
+
+
+def test_retired_paths_outside_the_mount_are_not_touched(tmp_path, state_dir):
+    """Reconciliation is scoped to the mount: another dir's leftovers stay."""
+    dest = "/data"
+    src = tmp_path / "data"
+    src.mkdir()
+    (src / "seed.txt").write_text("original\n")
+
+    config = make(
+        {"name": "c", "mounts": [{"src": "data", "dest": dest, "mode": "copy"}]},
+        tmp_path,
+    )
+    paths = ContainerPaths("c")
+    fsprep.prepare(config, paths)
+    copy_root = paths.copy(dest)
+
+    # A file that merely shares a suffix with a retired path, but is not one.
+    decoy = copy_root / "capwrap.ts"
+    decoy.write_text("not ours to judge\n")
+
+    fsprep.prepare(config, paths)
+
+    assert decoy.read_text() == "not ours to judge\n"
+
+
 def test_overlay_creates_upper_and_work_dirs(tmp_path, state_dir):
     src = tmp_path / "db"
     src.mkdir()
